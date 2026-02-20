@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Worzel Voice Assistant</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #f3f4f6;
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 20px;
+    }
+    worzel-app {
+      width: 100%;
+      max-width: 480px;
+      height: 600px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.1);
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111827; }
+      worzel-app {
+        --worzel-bg: #1f2937;
+        --worzel-header-bg: #111827;
+        --worzel-text: #f9fafb;
+        --worzel-text-secondary: #9ca3af;
+        --worzel-border: #374151;
+        --worzel-input-bg: #374151;
+        --worzel-assistant-bg: #374151;
+        --worzel-hover-bg: #374151;
+      }
+    }
+  </style>
+</head>
+<body>
+  <worzel-app server="http://localhost:3000"></worzel-app>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "app.title": "Worzel",
+  "connect.placeholder": "Server URL",
+  "connect.button.connect": "Connect",
+  "connect.button.disconnect": "Disconnect",
+  "status.disconnected": "Disconnected",
+  "status.connecting": "Connecting...",
+  "status.authenticating": "Authenticating...",
+  "status.connected": "Connected",
+  "status.error": "Connection Error",
+  "audio.hint": "Hold to talk",
+  "audio.recording": "Recording...",
+  "chat.empty": "Press and hold to talk",
+  "settings.language": "Language",
+  "settings.voice": "Voice",
+  "settings.deviceName": "Device Name"
+}
