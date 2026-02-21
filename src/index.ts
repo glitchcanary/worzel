@@ -1,9 +1,10 @@
 import { loadConfig } from './config/loader.js';
 import { createLogger } from './utils/logger.js';
-import { createHttpServer } from './server/http.js';
+import { createHttpServer, registerFillerRoutes } from './server/http.js';
 import { createWebSocketServer } from './server/websocket.js';
 import { SessionManager } from './session/manager.js';
 import { createProviders } from './providers/registry.js';
+import { FillerCache } from './pipeline/filler-cache.js';
 
 async function main(): Promise<void> {
   // Load and validate config
@@ -36,10 +37,20 @@ async function main(): Promise<void> {
   const app = await createHttpServer(config, logger);
 
   // Start HTTP server
-  const address = await app.listen({
-    port: config.server.port,
-    host: config.server.host,
-  });
+  let address: string;
+  try {
+    address = await app.listen({
+      port: config.server.port,
+      host: config.server.host,
+    });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      console.error(`\nERROR: Port ${config.server.port} is already in use.`);
+      console.error(`Kill the existing server first: pkill -f 'node worzel/dist/index.js'\n`);
+      process.exit(1);
+    }
+    throw err;
+  }
 
   logger.info({ address }, 'HTTP server listening');
 
@@ -59,6 +70,13 @@ async function main(): Promise<void> {
     asrProvider: config.asr.provider,
     ttsProvider: config.tts.provider,
   }, 'Worzel server started');
+
+  // Pre-cache filler audio in background (non-blocking)
+  const fillerCache = new FillerCache();
+  registerFillerRoutes(app, fillerCache);
+  fillerCache.init(providers.tts, logger).catch(err => {
+    logger.warn({ err }, 'Filler cache init failed (non-fatal)');
+  });
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {

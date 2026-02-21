@@ -11,6 +11,7 @@ export interface VoicePipelineOptions {
   asr: ASRProvider;
   llm: LLMProvider;
   tts: TTSProvider;
+  llmSmart?: LLMProvider;
   logger: pino.Logger;
 }
 
@@ -26,6 +27,7 @@ export class VoicePipeline {
   private readonly asr: ASRProvider;
   private readonly llm: LLMProvider;
   private readonly tts: TTSProvider;
+  private readonly llmSmart?: LLMProvider;
   private readonly logger: pino.Logger;
   private audioBuffer: Buffer[] = [];
 
@@ -33,6 +35,7 @@ export class VoicePipeline {
     this.asr = options.asr;
     this.llm = options.llm;
     this.tts = options.tts;
+    this.llmSmart = options.llmSmart;
     this.logger = options.logger;
   }
 
@@ -106,6 +109,7 @@ export class VoicePipeline {
       const segmenter = new TextSegmenter();
       const rateController = new AudioRateController();
       let fullResponse = '';
+      let segmentIndex = 0;
 
       for await (const chunk of this.llm.chat(messages, {
         signal: abortController.signal,
@@ -121,8 +125,17 @@ export class VoicePipeline {
         // 4. Segment text for TTS
         const segments = segmenter.push(cleanText);
 
-        for (const segment of segments) {
+        // Fire TTS for all segments in parallel (prefetch), send audio sequentially
+        const ttsPromises = segments.map(seg => this.tts.synthesize(seg).catch(err => {
+          this.logger.error({ err, segment: seg }, 'TTS prefetch error');
+          return null;
+        }));
+
+        for (let i = 0; i < segments.length; i++) {
           if (abortController.signal.aborted) break;
+          const segment = segments[i]!;
+
+          this.logger.info({ segmentIndex, text: segment }, 'TTS segment ready');
 
           // Notify client of sentence
           await transport.sendText(JSON.stringify({
@@ -132,14 +145,20 @@ export class VoicePipeline {
             session_id: session.id,
           }));
 
-          // 5. TTS: text → audio
+          // 5. TTS: text → audio (may already be resolved from prefetch)
           try {
-            const ttsResult = await this.tts.synthesize(segment, {
-              sampleRate: session.audioParams.sample_rate,
-            });
+            const ttsResult = await ttsPromises[i];
+            if (!ttsResult) { segmentIndex++; continue; }
+
+            // Reset rate controller for each segment (re-prime the audio buffer)
+            rateController.reset();
 
             // Send audio packets with rate control
-            const packetSize = 960 * 2; // 960 samples * 2 bytes per sample (16-bit)
+            // TTS returns 24kHz PCM; use 1440 samples (60ms at 24kHz) per packet
+            const ttsRate = ttsResult.sampleRate || 24000;
+            const samplesPerPacket = Math.round(ttsRate * 0.06); // 60ms worth
+            const packetSize = samplesPerPacket * 2; // 16-bit = 2 bytes/sample
+            let packetsSent = 0;
             for (let offset = 0; offset < ttsResult.audio.length; offset += packetSize) {
               if (abortController.signal.aborted) break;
               const delay = rateController.getDelay();
@@ -148,9 +167,12 @@ export class VoicePipeline {
               }
               const packet = ttsResult.audio.subarray(offset, offset + packetSize);
               await transport.sendBinary(packet);
+              packetsSent++;
             }
+
+            this.logger.info({ segmentIndex, audioBytes: ttsResult.audio.length, packetsSent, sampleRate: ttsRate }, 'TTS audio sent');
           } catch (err) {
-            this.logger.error({ err, segment }, 'TTS error for segment');
+            this.logger.error({ err, segment, segmentIndex }, 'TTS error for segment');
           }
 
           await transport.sendText(JSON.stringify({
@@ -158,12 +180,15 @@ export class VoicePipeline {
             state: 'sentence_end',
             session_id: session.id,
           }));
+          segmentIndex++;
         }
       }
 
       // Flush remaining text
       const remaining = segmenter.flush();
       if (remaining && !abortController.signal.aborted) {
+        this.logger.info({ segmentIndex, text: remaining }, 'TTS flush segment');
+
         await transport.sendText(JSON.stringify({
           type: 'tts',
           state: 'sentence_start',
@@ -173,9 +198,26 @@ export class VoicePipeline {
 
         try {
           const ttsResult = await this.tts.synthesize(remaining);
-          await transport.sendBinary(ttsResult.audio);
+
+          rateController.reset();
+          const flushRate = ttsResult.sampleRate || 24000;
+          const flushSamples = Math.round(flushRate * 0.06);
+          const flushPacketSize = flushSamples * 2;
+          let packetsSent = 0;
+          for (let offset = 0; offset < ttsResult.audio.length; offset += flushPacketSize) {
+            if (abortController.signal.aborted) break;
+            const delay = rateController.getDelay();
+            if (delay > 0) {
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+            const packet = ttsResult.audio.subarray(offset, offset + flushPacketSize);
+            await transport.sendBinary(packet);
+            packetsSent++;
+          }
+
+          this.logger.info({ segmentIndex, audioBytes: ttsResult.audio.length, packetsSent, sampleRate: flushRate }, 'TTS flush audio sent');
         } catch (err) {
-          this.logger.error({ err }, 'TTS error for final segment');
+          this.logger.error({ err, segmentIndex }, 'TTS error for final segment');
         }
 
         await transport.sendText(JSON.stringify({
@@ -183,6 +225,53 @@ export class VoicePipeline {
           state: 'sentence_end',
           session_id: session.id,
         }));
+      }
+
+      // 6. Smart LLM quality check (if configured)
+      if (this.llmSmart && fullResponse && !abortController.signal.aborted) {
+        try {
+          const correction = await this.runSmartCheck(
+            asrResult.text, fullResponse, abortController.signal
+          );
+          if (correction && !abortController.signal.aborted) {
+            this.logger.info({ correction }, 'Smart LLM correction');
+
+            // TTS + send the correction as additional segment
+            await transport.sendText(JSON.stringify({
+              type: 'tts',
+              state: 'sentence_start',
+              text: correction,
+              session_id: session.id,
+            }));
+
+            try {
+              const ttsResult = await this.tts.synthesize(correction);
+              rateController.reset();
+              const corrRate = ttsResult.sampleRate || 24000;
+              const corrSamples = Math.round(corrRate * 0.06);
+              const corrPacketSize = corrSamples * 2;
+              for (let offset = 0; offset < ttsResult.audio.length; offset += corrPacketSize) {
+                if (abortController.signal.aborted) break;
+                const delay = rateController.getDelay();
+                if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+                await transport.sendBinary(ttsResult.audio.subarray(offset, offset + corrPacketSize));
+              }
+            } catch (err) {
+              this.logger.error({ err }, 'TTS error for smart correction');
+            }
+
+            await transport.sendText(JSON.stringify({
+              type: 'tts',
+              state: 'sentence_end',
+              session_id: session.id,
+            }));
+
+            // Update dialogue with corrected response
+            fullResponse += ' ' + correction;
+          }
+        } catch (err) {
+          this.logger.warn({ err }, 'Smart LLM check failed (non-fatal)');
+        }
       }
 
       // Add full response to dialogue
@@ -207,6 +296,40 @@ export class VoicePipeline {
     } finally {
       session.abortController = null;
     }
+  }
+
+  /**
+   * Run the smart LLM quality check on the fast model's response.
+   * Returns a correction string to speak, or null if the response was fine.
+   */
+  private async runSmartCheck(
+    userText: string,
+    fastResponse: string,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    if (!this.llmSmart) return null;
+
+    const checkPrompt = `You are reviewing a voice assistant's response for accuracy and quality.
+The user asked: "${userText}"
+The assistant replied: "${fastResponse}"
+
+If the response is accurate and appropriate, reply with exactly "OK" and nothing else.
+If it needs correction, reply with ONLY a brief corrective sentence starting with "Actually," or "Well," that the user will hear spoken aloud right after the original response. Keep it under 2 sentences. Do not repeat what was already said correctly.`;
+
+    const messages: ChatMessage[] = [
+      { role: 'user', content: checkPrompt },
+    ];
+
+    let result = '';
+    for await (const chunk of this.llmSmart.chat(messages, { signal })) {
+      if (signal.aborted) return null;
+      result += chunk.text;
+    }
+
+    result = result.trim();
+    if (!result || result === 'OK' || result.toLowerCase() === 'ok') return null;
+
+    return result;
   }
 
   /** Clear buffered audio (e.g., on abort) */

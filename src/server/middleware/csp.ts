@@ -27,6 +27,7 @@ export async function cspHook(
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('X-Frame-Options', 'DENY');
   reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-  reply.header('Permissions-Policy', 'microphone=(self), camera=()');
+  reply.header('Permissions-Policy', 'microphone=(*), camera=()');
+  reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
   return payload;
 }

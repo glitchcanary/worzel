@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import Fastify from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import type pino from 'pino';
@@ -8,6 +10,7 @@ import type { AppConfig } from '../config/schema.js';
 import { createOtaHandler } from './middleware/auth.js';
 import { buildCorsOptions } from './middleware/cors.js';
 import { cspHook } from './middleware/csp.js';
+import type { FillerCache } from '../pipeline/filler-cache.js';
 
 /**
  * Create and configure the Fastify HTTP server.
@@ -15,7 +18,18 @@ import { cspHook } from './middleware/csp.js';
  * and static file serving for the web client (Phase 3).
  */
 export async function createHttpServer(config: AppConfig, logger: pino.Logger) {
+  // TLS support: if cert and key paths are provided, enable HTTPS
+  const tlsOptions = config.server.tlsCert && config.server.tlsKey
+    ? {
+        https: {
+          cert: readFileSync(config.server.tlsCert),
+          key: readFileSync(config.server.tlsKey),
+        },
+      }
+    : {};
+
   const app = Fastify({
+    ...tlsOptions,
     logger: false, // We use our own logger
     trustProxy: false, // Only trust proxy if explicitly enabled
     bodyLimit: 1_048_576, // 1MB max body
@@ -39,6 +53,32 @@ export async function createHttpServer(config: AppConfig, logger: pino.Logger) {
   // regardless of bind address (0.0.0.0, 127.0.0.1, etc.)
   app.post('/api/ota', createOtaHandler(config.auth, config.server));
 
+  // Settings endpoint — exposes safe config (no secrets, no URLs, no keys)
+  app.get('/.well-known/x-wzl-settings', async () => ({
+    llm: {
+      provider: config.llm.provider,
+      model: config.llm.model,
+      systemPrompt: config.llm.systemPrompt,
+      temperature: config.llm.temperature,
+      maxTokens: config.llm.maxTokens,
+    },
+    tts: {
+      provider: config.tts.provider,
+      voice: config.tts.voice,
+      model: config.tts.model,
+      sampleRate: config.tts.sampleRate,
+    },
+    asr: {
+      provider: config.asr.provider,
+      model: config.asr.model,
+      language: config.asr.language,
+    },
+    llmSmart: config.llmSmart.model ? {
+      provider: config.llmSmart.provider,
+      model: config.llmSmart.model,
+    } : null,
+  }));
+
   // WHIP signaling endpoint stub (WebRTC Phase 1)
   app.post('/api/whip', async (_request, reply) => {
     logger.info('WHIP endpoint called (WebRTC signaling — full implementation in Phase 1+)');
@@ -55,4 +95,28 @@ export async function createHttpServer(config: AppConfig, logger: pino.Logger) {
   });
 
   return app;
+}
+
+/**
+ * Register filler audio endpoints once the cache is ready.
+ */
+export function registerFillerRoutes(app: FastifyInstance, fillerCache: FillerCache): void {
+  // List all filler texts
+  app.get('/.well-known/x-wzl-fillers', async () => ({
+    fillers: fillerCache.getTexts(),
+    count: fillerCache.count,
+  }));
+
+  // Get audio for a specific filler by index
+  app.get<{ Params: { index: string } }>('/.well-known/x-wzl-fillers/:index', async (request, reply) => {
+    const index = parseInt(request.params.index, 10);
+    const filler = fillerCache.getFiller(index);
+    if (!filler) {
+      reply.status(404).send({ error: 'Filler not found' });
+      return;
+    }
+    reply.header('Content-Type', 'audio/pcm');
+    reply.header('X-Sample-Rate', String(filler.sampleRate));
+    reply.send(filler.audio);
+  });
 }

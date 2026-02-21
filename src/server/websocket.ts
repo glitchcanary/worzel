@@ -77,6 +77,7 @@ export function createWebSocketServer(
       asr: providers.asr,
       llm: providers.llm,
       tts: providers.tts,
+      llmSmart: providers.llmSmart,
       logger: logger.child({ sessionId: session.id }),
     });
 

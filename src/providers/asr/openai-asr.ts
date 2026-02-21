@@ -79,13 +79,19 @@ export class OpenAIASR implements ASRProvider {
     formData.append('language', options?.language ?? this.options.language);
     formData.append('response_format', 'json');
 
-    const response = await this.fetch(this.options.url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.options.apiKey}`,
-      },
-      body: formData,
-    });
+    let response: Response;
+    try {
+      response = await this.fetch(this.options.url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.options.apiKey}`,
+        },
+        body: formData,
+      });
+    } catch (err) {
+      const cause = (err as Error).cause;
+      throw new Error(`ASR fetch failed: ${(err as Error).message}${cause ? ' — ' + String(cause) : ''}`);
+    }
 
     if (!response.ok) {
       const error = await response.text();

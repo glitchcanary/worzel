@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** Valid host patterns for provider endpoints */
-const SAFE_HOST_PATTERN = /^(localhost|127\.0\.0\.1|::1|[\w.-]+\.(openai\.com|anthropic\.com|googleapis\.com|groq\.com|tts\.speech\.microsoft\.com))$/;
+const SAFE_HOST_PATTERN = /^(localhost|127\.0\.0\.1|::1|[\w.-]+\.(openai\.com|anthropic\.com|googleapis\.com|groq\.com|tts\.speech\.microsoft\.com|elevenlabs\.io))$/;
 
 const urlWithAllowlist = z.string().url().refine(
   (url) => {
@@ -15,7 +15,7 @@ const urlWithAllowlist = z.string().url().refine(
       return false;
     }
   },
-  { message: 'Provider URL not on allowlist. Only localhost, OpenAI, Anthropic, Google, Groq, and Microsoft Edge TTS endpoints are permitted.' }
+  { message: 'Provider URL not on allowlist. Only localhost, OpenAI, Anthropic, Google, Groq, ElevenLabs, and Microsoft Edge TTS endpoints are permitted.' }
 );
 
 export const ServerConfigSchema = z.object({
@@ -45,9 +45,10 @@ export const SessionConfigSchema = z.object({
 });
 
 export const ApiKeysSchema = z.object({
-  openai: z.string().optional(),     // covers OpenAI LLM, Whisper ASR, OpenAI TTS
-  anthropic: z.string().optional(),  // covers Anthropic Claude LLM
-  groq: z.string().optional(),       // covers Groq Whisper ASR
+  openai: z.string().optional(),       // covers OpenAI LLM, Whisper ASR, OpenAI TTS
+  anthropic: z.string().optional(),    // covers Anthropic Claude LLM
+  groq: z.string().optional(),         // covers Groq Whisper ASR
+  elevenlabs: z.string().optional(),   // covers ElevenLabs TTS
 });
 
 export const AsrConfigSchema = z.object({
@@ -61,17 +62,23 @@ export const LlmConfigSchema = z.object({
   provider: z.string().transform(s => s.toLowerCase()).pipe(z.enum(['ollama', 'openai', 'anthropic'])).default('ollama'),
   url: urlWithAllowlist.default('http://localhost:11434/v1/chat/completions'),
   model: z.string().default('qwen2.5:7b'),
-  systemPrompt: z.string().default('You are a helpful voice assistant. Keep responses concise and conversational.'),
+  systemPrompt: z.string().default('You are a voice assistant. Respond in 1-2 short sentences. Never use lists, bullet points, or markdown. Do not explain your reasoning, or refer to typos, text etc. Be direct.'),
   maxTokens: z.coerce.number().int().min(1).default(2048),
   temperature: z.coerce.number().min(0).max(2).default(0.7),
 });
 
 export const TtsConfigSchema = z.object({
-  provider: z.string().transform(s => s.toLowerCase()).pipe(z.enum(['edge', 'openai', 'piper-local', 'kokoro-local'])).default('edge'),
+  provider: z.string().transform(s => s.toLowerCase()).pipe(z.enum(['edge', 'openai', 'elevenlabs', 'piper-local', 'kokoro-local'])).default('edge'),
   url: urlWithAllowlist.optional(),
   model: z.string().default('tts-1'),
   voice: z.string().default('en-US-AriaNeural'),
   sampleRate: z.coerce.number().int().default(24000),
+});
+
+export const LlmSmartConfigSchema = z.object({
+  provider: z.string().transform(s => s.toLowerCase()).pipe(z.enum(['ollama', 'openai', 'anthropic'])).optional(),
+  url: urlWithAllowlist.optional(),
+  model: z.string().optional(),
 });
 
 export const AppConfigSchema = z.object({
@@ -83,6 +90,7 @@ export const AppConfigSchema = z.object({
   session: SessionConfigSchema.default({}),
   asr: AsrConfigSchema.default({}),
   llm: LlmConfigSchema.default({}),
+  llmSmart: LlmSmartConfigSchema.default({}),
   tts: TtsConfigSchema.default({}),
   logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 });
@@ -96,4 +104,5 @@ export type ApiKeys = z.infer<typeof ApiKeysSchema>;
 export type AsrConfig = z.infer<typeof AsrConfigSchema>;
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 export type TtsConfig = z.infer<typeof TtsConfigSchema>;
+export type LlmSmartConfig = z.infer<typeof LlmSmartConfigSchema>;
 export type AppConfig = z.infer<typeof AppConfigSchema>;

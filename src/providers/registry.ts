@@ -7,6 +7,7 @@ import { OpenAICompatLLM } from './llm/openai-compat.js';
 import { AnthropicLLM } from './llm/anthropic.js';
 import { EdgeTTS } from './tts/edge-tts.js';
 import { OpenAITTS } from './tts/openai-tts.js';
+import { ElevenLabsTTS } from './tts/elevenlabs-tts.js';
 
 /**
  * Provider registry: creates provider instances from config.
@@ -15,6 +16,7 @@ export interface Providers {
   asr: ASRProvider;
   llm: LLMProvider;
   tts: TTSProvider;
+  llmSmart?: LLMProvider;
 }
 
 export function createProviders(config: AppConfig): Providers {
@@ -22,6 +24,7 @@ export function createProviders(config: AppConfig): Providers {
     asr: createASR(config),
     llm: createLLM(config),
     tts: createTTS(config),
+    llmSmart: createLLMSmart(config),
   };
 }
 
@@ -90,8 +93,63 @@ function createTTS(config: AppConfig): TTSProvider {
         voice: config.tts.voice,
         sampleRate: config.tts.sampleRate,
       });
+    case 'elevenlabs':
+      return new ElevenLabsTTS({
+        apiKey: config.apiKeys.elevenlabs ?? '',
+        model: config.tts.model,
+        voice: config.tts.voice,
+        sampleRate: config.tts.sampleRate,
+      });
     case 'piper-local':
     case 'kokoro-local':
       throw new Error(`${config.tts.provider} TTS not yet implemented (Phase 5)`);
+  }
+}
+
+function createLLMSmart(config: AppConfig): LLMProvider | undefined {
+  const smart = config.llmSmart;
+  if (!smart.provider || !smart.model) return undefined;
+
+  // Resolve API key based on the smart provider type
+  const providerKeyMap: Record<string, keyof AppConfig['apiKeys']> = {
+    openai: 'openai',
+    anthropic: 'anthropic',
+    ollama: 'openai', // ollama doesn't need a key
+  };
+  const keyName = providerKeyMap[smart.provider];
+  const apiKey = keyName ? (config.apiKeys[keyName] ?? '') : '';
+
+  // Use the main LLM config for defaults not specified in llmSmart
+  const url = smart.url ?? config.llm.url;
+
+  switch (smart.provider) {
+    case 'ollama':
+      return new OllamaLLM({
+        url,
+        model: smart.model,
+        systemPrompt: config.llm.systemPrompt,
+        maxTokens: config.llm.maxTokens,
+        temperature: config.llm.temperature,
+      });
+    case 'openai':
+      return new OpenAICompatLLM({
+        url,
+        apiKey,
+        model: smart.model,
+        systemPrompt: config.llm.systemPrompt,
+        maxTokens: config.llm.maxTokens,
+        temperature: config.llm.temperature,
+      });
+    case 'anthropic':
+      return new AnthropicLLM({
+        apiKey,
+        url,
+        model: smart.model,
+        systemPrompt: config.llm.systemPrompt,
+        maxTokens: config.llm.maxTokens,
+        temperature: config.llm.temperature,
+      });
+    default:
+      return undefined;
   }
 }

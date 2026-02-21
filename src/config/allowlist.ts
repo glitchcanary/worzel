@@ -20,6 +20,8 @@ export const ALLOWED_PROVIDER_DOMAINS: readonly string[] = [
   'speech.platform.bing.com',
   'tts.speech.microsoft.com',
   'eastus.tts.speech.microsoft.com',
+  // ElevenLabs TTS
+  'api.elevenlabs.io',
   // OpenWeatherMap (for weather tool)
   'api.openweathermap.org',
 ] as const;

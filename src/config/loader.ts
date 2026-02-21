@@ -34,6 +34,10 @@ const ENV_MAP: Record<string, string> = {
   WORZEL_TTS_MODEL: 'tts.model',
   WORZEL_TTS_VOICE: 'tts.voice',
   WORZEL_TTS_SAMPLE_RATE: 'tts.sampleRate',
+  WORZEL_ELEVENLABS_API_KEY: 'apiKeys.elevenlabs',
+  WORZEL_LLM_SMART_PROVIDER: 'llmSmart.provider',
+  WORZEL_LLM_SMART_MODEL: 'llmSmart.model',
+  WORZEL_LLM_SMART_URL: 'llmSmart.url',
   WORZEL_LOG_LEVEL: 'logLevel',
 };
 
@@ -101,6 +105,7 @@ export function resolveApiKey(config: AppConfig, service: 'asr' | 'llm' | 'tts')
     'anthropic': 'anthropic',
     // TTS providers
     'edge': 'openai',    // edge doesn't need a key
+    'elevenlabs': 'elevenlabs',
   };
 
   const provider = config[service].provider;
