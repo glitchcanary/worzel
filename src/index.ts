@@ -36,6 +36,12 @@ async function main(): Promise<void> {
   // Create HTTP server
   const app = await createHttpServer(config, logger);
 
+  // Pre-cache filler audio in background (non-blocking)
+  const fillerCache = new FillerCache();
+  registerFillerRoutes(app, fillerCache);
+  // Wire filler cache into settings endpoint
+  (app as unknown as { setFillerCache: (fc: typeof fillerCache) => void }).setFillerCache(fillerCache);
+
   // Start HTTP server
   let address: string;
   try {
@@ -57,8 +63,8 @@ async function main(): Promise<void> {
   // Get the underlying Node.js HTTP server for WebSocket upgrade
   const httpServer = app.server;
 
-  // Create WebSocket server (attaches to HTTP server)
-  const wss = createWebSocketServer(httpServer, config, sessionManager, providers, logger);
+  // Create WebSocket server (attaches to HTTP server, with filler cache for latency masking)
+  const wss = createWebSocketServer(httpServer, config, sessionManager, providers, logger, fillerCache);
 
   logger.info({ path: '/ws' }, 'WebSocket server ready');
   logger.info({ path: '/api/ota' }, 'OTA auth endpoint ready');
@@ -71,9 +77,7 @@ async function main(): Promise<void> {
     ttsProvider: config.tts.provider,
   }, 'Worzel server started');
 
-  // Pre-cache filler audio in background (non-blocking)
-  const fillerCache = new FillerCache();
-  registerFillerRoutes(app, fillerCache);
+  // Init filler cache in background (non-blocking)
   fillerCache.init(providers.tts, logger).catch(err => {
     logger.warn({ err }, 'Filler cache init failed (non-fatal)');
   });

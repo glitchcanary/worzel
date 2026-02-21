@@ -10,6 +10,7 @@ import { RateLimiter } from './middleware/rate-limit.js';
 import { validateMessage } from '../protocol/validator.js';
 import { routeMessage } from '../protocol/router.js';
 import { VoicePipeline } from '../pipeline/voice-pipeline.js';
+import type { FillerCache } from '../pipeline/filler-cache.js';
 import type { IncomingMessage } from 'node:http';
 
 /**
@@ -23,6 +24,7 @@ export function createWebSocketServer(
   sessionManager: SessionManager,
   providers: Providers,
   logger: pino.Logger,
+  fillerCache?: FillerCache,
 ): WebSocketServer {
   const rateLimiter = new RateLimiter(config.rateLimit);
   rateLimiter.start();
@@ -78,6 +80,7 @@ export function createWebSocketServer(
       llm: providers.llm,
       tts: providers.tts,
       llmSmart: providers.llmSmart,
+      fillerCache,
       logger: logger.child({ sessionId: session.id }),
     });
 

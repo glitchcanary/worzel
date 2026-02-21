@@ -54,6 +54,8 @@ export async function createHttpServer(config: AppConfig, logger: pino.Logger) {
   app.post('/api/ota', createOtaHandler(config.auth, config.server));
 
   // Settings endpoint — exposes safe config (no secrets, no URLs, no keys)
+  // fillerCache reference is set later via setFillerCache()
+  let _fillerCache: FillerCache | undefined;
   app.get('/.well-known/x-wzl-settings', async () => ({
     llm: {
       provider: config.llm.provider,
@@ -77,7 +79,15 @@ export async function createHttpServer(config: AppConfig, logger: pino.Logger) {
       provider: config.llmSmart.provider,
       model: config.llmSmart.model,
     } : null,
+    fillers: _fillerCache ? {
+      ready: _fillerCache.isReady,
+      count: _fillerCache.count,
+    } : null,
   }));
+
+  // Allow setting fillerCache after server creation
+  (app as unknown as { setFillerCache: (fc: FillerCache) => void }).setFillerCache =
+    (fc: FillerCache) => { _fillerCache = fc; };
 
   // WHIP signaling endpoint stub (WebRTC Phase 1)
   app.post('/api/whip', async (_request, reply) => {

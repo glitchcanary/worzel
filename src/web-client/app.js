@@ -83,6 +83,7 @@ class WsClient {
       case 'hello': this.sessionId = msg.session_id; this.setState('connected'); this.startPing(); break;
       case 'stt': this.emit('stt', msg.text); break;
       case 'tts': this.emit('tts', { state: msg.state, text: msg.text }); break;
+      case 'pipeline_telemetry': this.emit('telemetry', msg); break;
       case 'pong': break;
       case 'error': this.emit('error', msg.message); break;
       case 'goodbye': this.disconnect(); break;
@@ -457,12 +458,19 @@ class WorzelSettings extends HTMLElement {
   constructor() {
     super();
     this._open = false;
+    this._activeTab = 'config';
+    this._telemetryRuns = []; // last N pipeline runs
     this.attachShadow({ mode: 'open' }).innerHTML = `
       <style>
         :host { display:block; }
         .panel { max-height:0; overflow:hidden; transition:max-height 0.3s ease; }
-        .panel.open { max-height:400px; overflow-y:auto; }
-        .content { padding:12px 16px; font-size:0.82rem; font-family:var(--worzel-font,system-ui,sans-serif); color:var(--worzel-text,#1f2937); }
+        .panel.open { max-height:500px; overflow-y:auto; }
+        .tabs { display:flex; border-bottom:1px solid var(--worzel-border,#e5e7eb); }
+        .tab { padding:6px 16px; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--worzel-text-secondary,#6b7280); cursor:pointer; border-bottom:2px solid transparent; background:none; border-top:none; border-left:none; border-right:none; font-family:var(--worzel-font,system-ui,sans-serif); }
+        .tab:hover { color:var(--worzel-text,#1f2937); }
+        .tab.active { color:var(--worzel-primary,#3b82f6); border-bottom-color:var(--worzel-primary,#3b82f6); }
+        .tab-content { display:none; padding:12px 16px; font-size:0.82rem; font-family:var(--worzel-font,system-ui,sans-serif); color:var(--worzel-text,#1f2937); }
+        .tab-content.active { display:block; }
         .section { margin-bottom:10px; }
         .section-title { font-weight:600; font-size:0.78rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--worzel-text-secondary,#6b7280); margin-bottom:4px; }
         .row { display:flex; justify-content:space-between; padding:2px 0; }
@@ -474,10 +482,33 @@ class WorzelSettings extends HTMLElement {
         .filler-btn { padding:3px 8px; border:1px solid var(--worzel-border,#d1d5db); border-radius:4px; background:var(--worzel-bg,#fff); font-size:0.75rem; cursor:pointer; color:var(--worzel-text,#1f2937); }
         .filler-btn:hover { background:var(--worzel-hover-bg,#f0f4ff); }
         .filler-btn.playing { background:var(--worzel-primary,#3b82f6); color:white; border-color:var(--worzel-primary,#3b82f6); }
+        .run { margin-bottom:10px; padding:8px; border:1px solid var(--worzel-border,#e5e7eb); border-radius:6px; }
+        .run-header { font-size:0.75rem; color:var(--worzel-text-secondary,#6b7280); margin-bottom:4px; }
+        .seg { display:inline-block; padding:2px 6px; margin:2px; border-radius:3px; font-size:0.75rem; font-family:'SF Mono',Menlo,monospace; }
+        .seg.fast { background:#dbeafe; color:#1e40af; }
+        .seg.smart { background:#dcfce7; color:#166534; }
+        .seg.filler { background:#fef3c7; color:#92400e; font-style:italic; }
+        .seg.correction { background:#fce7f3; color:#9d174d; }
+        .timing { font-size:0.72rem; color:var(--worzel-text-secondary,#9ca3af); margin-top:4px; }
+        .empty-pipeline { color:var(--worzel-text-secondary,#9ca3af); font-style:italic; padding:16px; text-align:center; }
       </style>
       <div class="panel">
-        <div class="content"><span class="loading">Not loaded</span></div>
+        <div class="tabs">
+          <button class="tab active" data-tab="config">Config</button>
+          <button class="tab" data-tab="pipeline">Pipeline</button>
+        </div>
+        <div class="tab-content active" data-tab="config"><span class="loading">Not loaded</span></div>
+        <div class="tab-content" data-tab="pipeline"><div class="empty-pipeline">No pipeline data yet</div></div>
       </div>`;
+    // Tab switching
+    this.shadowRoot.querySelector('.tabs').addEventListener('click', (e) => {
+      const tab = e.target.closest('.tab');
+      if (!tab) return;
+      const tabName = tab.dataset.tab;
+      this._activeTab = tabName;
+      this.shadowRoot.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+      this.shadowRoot.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+    });
   }
   toggle() {
     this._open = !this._open;
@@ -492,7 +523,7 @@ class WorzelSettings extends HTMLElement {
   async load(serverUrl) {
     if (serverUrl) this._serverUrl = serverUrl;
     const url = (this._serverUrl || window.location.origin).replace(/\/$/, '');
-    const content = this.shadowRoot.querySelector('.content');
+    const content = this.shadowRoot.querySelector('.tab-content[data-tab="config"]');
     content.innerHTML = '<span class="loading">Loading...</span>';
     try {
       const resp = await fetch(url + '/.well-known/x-wzl-settings');
@@ -513,9 +544,48 @@ class WorzelSettings extends HTMLElement {
         .map(([k, v]) => `<div class="row"><span class="key">${k}</span><span class="val" title="${String(v)}">${String(v)}</span></div>`).join('');
       return `<div class="section"><div class="section-title">${title}</div>${rows}</div>`;
     };
-    return section('LLM', data.llm) + section('ASR', data.asr) + section('TTS', data.tts) + section('Smart LLM', data.llmSmart)
-      + '<div class="section"><div class="section-title">Fillers</div><div class="filler-grid" id="filler-grid"><span class="loading">Loading...</span></div></div>';
+    let html = section('LLM', data.llm) + section('ASR', data.asr) + section('TTS', data.tts) + section('Smart LLM', data.llmSmart);
+    if (data.fillers) {
+      html += `<div class="section"><div class="section-title">Fillers</div><div class="row"><span class="key">status</span><span class="val">${data.fillers.ready ? 'ready' : 'caching...'}</span></div><div class="row"><span class="key">count</span><span class="val">${data.fillers.count}</span></div></div>`;
+    }
+    html += '<div class="section"><div class="section-title">Filler Audio</div><div class="filler-grid" id="filler-grid"><span class="loading">Loading...</span></div></div>';
+    return html;
   }
+  /** Add a telemetry event to the current pipeline run. */
+  addTelemetry(event) {
+    if (event.event === 'asr_complete') {
+      // Start a new run
+      this._telemetryRuns.unshift({ asr: event, segments: [], filler: null, correction: null, complete: null, time: new Date().toLocaleTimeString() });
+      if (this._telemetryRuns.length > 10) this._telemetryRuns.pop();
+    } else if (this._telemetryRuns.length > 0) {
+      const run = this._telemetryRuns[0];
+      if (event.event === 'filler_played') run.filler = event;
+      else if (event.event === 'llm_segment') run.segments.push(event);
+      else if (event.event === 'smart_correction') run.correction = event;
+      else if (event.event === 'pipeline_complete') run.complete = event;
+    }
+    this._renderPipeline();
+  }
+  _renderPipeline() {
+    const container = this.shadowRoot.querySelector('.tab-content[data-tab="pipeline"]');
+    if (!container) return;
+    if (this._telemetryRuns.length === 0) {
+      container.innerHTML = '<div class="empty-pipeline">No pipeline data yet</div>';
+      return;
+    }
+    container.innerHTML = this._telemetryRuns.map((run, i) => {
+      let segs = '';
+      if (run.filler) segs += `<span class="seg filler" title="Filler">${this._esc(run.filler.text)}</span> `;
+      for (const s of run.segments) {
+        segs += `<span class="seg ${s.source}">${this._esc(s.text)}</span> `;
+      }
+      if (run.correction) segs += `<span class="seg correction" title="Smart correction">${this._esc(run.correction.correction)}</span>`;
+      const timing = run.complete ? `${run.complete.total_duration_ms}ms total, ${run.complete.segment_count} segments` : 'in progress...';
+      const asr = run.asr ? `ASR: "${this._esc(run.asr.text)}" (${run.asr.duration_ms}ms)` : '';
+      return `<div class="run"><div class="run-header">${run.time} ${asr}</div><div>${segs || '<span class="loading">Streaming...</span>'}</div><div class="timing">${timing}</div></div>`;
+    }).join('');
+  }
+  _esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
   async _loadFillers() {
     const url = (this._serverUrl || window.location.origin).replace(/\/$/, '');
     const grid = this.shadowRoot.querySelector('#filler-grid');
@@ -605,16 +675,17 @@ class WorzelApp extends HTMLElement {
 
     this.shadowRoot.querySelector('worzel-connect').addEventListener('worzel-connect', e => this.doConnect(e.detail.serverUrl));
     this.shadowRoot.querySelector('worzel-connect').addEventListener('worzel-disconnect', () => this.client?.disconnect());
-    this.shadowRoot.querySelector('worzel-audio').addEventListener('worzel-recording-start', () => {
+    const audioEl = this.shadowRoot.querySelector('worzel-audio');
+    audioEl.addEventListener('worzel-recording-start', () => {
       // Stop any in-progress TTS playback and abort server pipeline
       this.player?.stop();
       this.client?.abort();
-      audio.setPipelineState('idle');
+      audioEl.setPipelineState('idle');
       this.client?.startListening();
     });
-    this.shadowRoot.querySelector('worzel-audio').addEventListener('worzel-recording-stop', () => { this.client?.stopListening(); audio.setPipelineState('transcribing'); });
-    this.shadowRoot.querySelector('worzel-audio').addEventListener('worzel-audio-data', e => this.client?.sendAudio(e.detail.audio));
-    this.shadowRoot.querySelector('worzel-audio').addEventListener('worzel-auto-connect', () => {
+    audioEl.addEventListener('worzel-recording-stop', () => { this.client?.stopListening(); audioEl.setPipelineState('transcribing'); });
+    audioEl.addEventListener('worzel-audio-data', e => this.client?.sendAudio(e.detail.audio));
+    audioEl.addEventListener('worzel-auto-connect', () => {
       if (!this.client) {
         const url = this.shadowRoot.querySelector('worzel-connect').shadowRoot.querySelector('input').value;
         this.doConnect(url);
@@ -647,15 +718,34 @@ class WorzelApp extends HTMLElement {
       }
       if (s === 'disconnected') { this.player?.stop(); audio.setPipelineState('idle'); }
     });
-    this.client.on('stt', text => { console.log('[worzel] STT:', text); chat.addUserMessage(text); audio.setPipelineState('thinking'); });
+    this.client.on('stt', text => {
+      console.log('[worzel] STT:', text);
+      chat.addUserMessage(text);
+      audio.setPipelineState('thinking');
+    });
     this.client.on('tts', ev => {
-      if (ev.state === 'start') { console.log('[worzel] TTS start'); chat.startAssistantMessage(); this.player?.stop(); this.player = new AudioPlayer(24000); this._audioPackets = 0; audio.setPipelineState('speaking'); }
+      if (ev.state === 'start') {
+        console.log('[worzel] TTS start');
+        chat.startAssistantMessage();
+        // Reuse the existing player so filler audio keeps playing.
+        // The filler and LLM audio are gaplessly scheduled on the same timeline.
+        // A fresh player is only created if none exists (e.g. first utterance).
+        if (!this.player) {
+          this.player = new AudioPlayer(24000);
+        }
+        this._audioPackets = 0;
+        audio.setPipelineState('speaking');
+      }
       else if (ev.state === 'sentence_start' && ev.text) { console.log('[worzel] TTS segment:', ev.text); chat.appendAssistantText(ev.text + ' '); }
       else if (ev.state === 'stop') { console.log(`[worzel] TTS stop (${this._audioPackets || 0} audio packets received)`); chat.endAssistantMessage(); audio.setPipelineState('idle'); }
     });
     this.client.on('audio', data => {
       this._audioPackets = (this._audioPackets || 0) + 1;
       this.player?.enqueue(data);
+    });
+    this.client.on('telemetry', ev => {
+      const settings = this.shadowRoot.querySelector('worzel-settings');
+      if (settings) settings.addTelemetry(ev);
     });
     this.client.on('error', msg => console.error('[worzel] Error:', msg));
     this.client.connect();
