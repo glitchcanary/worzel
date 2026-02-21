@@ -41,8 +41,11 @@ export function createOtaHandler(authConfig: AuthConfig, serverConfig: ServerCon
 
     // Derive WebSocket URL from the request's Host header so it works
     // regardless of bind address (0.0.0.0, 127.0.0.1, LAN IP, etc.)
+    // Respect X-Forwarded-Proto from reverse proxies (e.g. Tailscale Serve)
     const host = request.headers.host ?? `localhost:${serverConfig.port}`;
-    const wsProtocol = serverConfig.tlsCert ? 'wss' : 'ws';
+    const forwardedProto = request.headers['x-forwarded-proto'];
+    const isTls = serverConfig.tlsCert || forwardedProto === 'https';
+    const wsProtocol = isTls ? 'wss' : 'ws';
     const wsUrl = `${wsProtocol}://${host}/ws`;
 
     const token = generateToken(authConfig.secret, deviceId, authConfig.tokenTtlSeconds);
