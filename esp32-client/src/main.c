@@ -29,6 +29,7 @@
 #include "driver/i2s_std.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
+#include "esp_check.h"
 #include "cJSON.h"
 
 #include <opus.h>  /* esphome/micro-opus (Apache 2.0 + libopus BSD) */
