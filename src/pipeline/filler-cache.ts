@@ -1,5 +1,6 @@
 import type pino from 'pino';
 import type { TTSProvider } from '../providers/interface.js';
+import { encodeToOpusFrames } from '../utils/opus-encode.js';
 
 /** Short non-verbal filler phrases for latency masking */
 export const FILLER_TEXTS: readonly string[] = [
@@ -13,6 +14,7 @@ export const FILLER_TEXTS: readonly string[] = [
 export interface CachedFiller {
   text: string;
   audio: Buffer;
+  opusFrames: Buffer[];
   sampleRate: number;
 }
 
@@ -30,7 +32,9 @@ export class FillerCache {
     const results = await Promise.allSettled(
       FILLER_TEXTS.map(async (text): Promise<CachedFiller> => {
         const result = await tts.synthesize(text);
-        return { text, audio: result.audio, sampleRate: result.sampleRate };
+        const rate = result.sampleRate as 8000 | 12000 | 16000 | 24000 | 48000;
+        const opusFrames = encodeToOpusFrames(result.audio, rate);
+        return { text, audio: result.audio, opusFrames, sampleRate: result.sampleRate };
       })
     );
 

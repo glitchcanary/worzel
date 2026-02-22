@@ -97,7 +97,85 @@ class WsClient {
 }
 
 // ========================================================================
-// AudioPlayer — queued PCM playback via Web Audio API
+// OpusBrowserDecoder — decodes Opus packets via WebCodecs AudioDecoder
+// ========================================================================
+class OpusBrowserDecoder {
+  constructor(sampleRate = 24000) {
+    this.sampleRate = sampleRate;
+    this._decoder = null;
+    this._onDecoded = null; // callback: (Float32Array) => void
+    this._timestamp = 0;    // microseconds, must increase monotonically
+    // 60ms per frame in microseconds
+    this._frameDurationUs = 60000;
+    this.ready = false;
+  }
+
+  /** Synchronous init — AudioDecoder constructor and configure() are both sync. */
+  initSync() {
+    if (this.ready) return;
+    if (typeof AudioDecoder === 'undefined') {
+      console.warn('[worzel] AudioDecoder not available — Opus decode disabled');
+      return;
+    }
+
+    this._decodedSampleRate = null;
+    this._decoder = new AudioDecoder({
+      output: (audioData) => {
+        // Log actual output rate once (Opus may decode to 48kHz internally)
+        if (!this._decodedSampleRate) {
+          this._decodedSampleRate = audioData.sampleRate;
+          console.log(`[worzel] Opus decoder output: ${audioData.sampleRate} Hz, ${audioData.numberOfFrames} frames`);
+        }
+        const float32 = new Float32Array(audioData.numberOfFrames);
+        audioData.copyTo(float32, { planeIndex: 0 });
+        audioData.close();
+        if (this._onDecoded) this._onDecoded(float32, this._decodedSampleRate);
+      },
+      error: (e) => {
+        console.error('[worzel] Opus decoder error:', e.message);
+      },
+    });
+
+    this._decoder.configure({
+      codec: 'opus',
+      sampleRate: this.sampleRate,
+      numberOfChannels: 1,
+    });
+
+    this.ready = true;
+    console.log(`[worzel] Opus decoder ready (${this.sampleRate} Hz)`);
+  }
+
+  /** Feed an Opus packet to the decoder. Output arrives via _onDecoded callback. */
+  decode(opusArrayBuffer) {
+    if (!this.ready || !this._decoder) return;
+
+    const chunk = new EncodedAudioChunk({
+      type: 'key',
+      timestamp: this._timestamp,
+      data: opusArrayBuffer,
+    });
+    this._timestamp += this._frameDurationUs;
+    this._decoder.decode(chunk);
+  }
+
+  /** Reset timestamp counter (e.g. on new utterance). */
+  resetTimestamp() {
+    this._timestamp = 0;
+  }
+
+  destroy() {
+    if (this._decoder && this._decoder.state !== 'closed') {
+      this._decoder.close();
+    }
+    this._decoder = null;
+    this._onDecoded = null;
+    this.ready = false;
+  }
+}
+
+// ========================================================================
+// AudioPlayer — queued audio playback via Web Audio API
 // ========================================================================
 class AudioPlayer {
   constructor(sampleRate = 24000) {
@@ -105,42 +183,75 @@ class AudioPlayer {
     this.ctx = null;
     this.nextTime = 0;
     this._sources = []; // track active sources for stop()
+    // Init Opus decoder eagerly (AudioDecoder + configure are synchronous)
+    this._decoder = new OpusBrowserDecoder(sampleRate);
+    this._decoder.initSync();
+    // Wire decoded output directly to playback scheduling.
+    // Pass the actual decoded sample rate — Opus may decode to 48kHz.
+    this._decoder._onDecoded = (float32, decodedRate) => {
+      if (decodedRate && decodedRate !== this.sampleRate) {
+        // AudioDecoder output rate differs from our configured rate.
+        // Switch to the actual rate for correct playback speed.
+        if (!this._rateWarned) {
+          console.log(`[worzel] AudioPlayer: switching to decoded rate ${decodedRate} Hz (was ${this.sampleRate})`);
+          this._rateWarned = true;
+        }
+        this.sampleRate = decodedRate;
+        // Close existing context so _playFloat32 creates one at the right rate
+        if (this.ctx) { this.ctx.close(); this.ctx = null; this.nextTime = 0; }
+      }
+      this._playFloat32(float32);
+    };
   }
-  /** Queue a chunk of int16 PCM for gapless playback */
+
+  /** Feed an Opus packet to the decoder. Playback is scheduled from the decode callback. */
+  enqueueOpus(opusArrayBuffer) {
+    if (!opusArrayBuffer || opusArrayBuffer.byteLength === 0) return;
+    if (this._decoder?.ready) {
+      this._decoder.decode(opusArrayBuffer);
+    }
+  }
+
+  /** Queue a chunk of int16 PCM for gapless playback (legacy/fallback). */
   enqueue(pcmArrayBuffer) {
     if (!pcmArrayBuffer || pcmArrayBuffer.byteLength === 0) return;
+    const int16 = new Int16Array(pcmArrayBuffer);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+    this._playFloat32(float32);
+  }
+
+  /** Schedule a float32 PCM chunk for gapless playback. */
+  _playFloat32(float32) {
+    if (!float32 || float32.length === 0) return;
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: this.sampleRate });
       this.nextTime = 0;
     }
-    // Resume if suspended (browser autoplay policy)
     if (this.ctx.state === 'suspended') this.ctx.resume();
-    // Convert int16 PCM to float32
-    const int16 = new Int16Array(pcmArrayBuffer);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
-    // Create AudioBuffer and schedule gaplessly
     const buf = this.ctx.createBuffer(1, float32.length, this.sampleRate);
     buf.getChannelData(0).set(float32);
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.ctx.destination);
-    // Schedule gapless playback
     const now = this.ctx.currentTime;
     if (this.nextTime <= now) {
-      this.nextTime = now; // start immediately if nothing queued
+      this.nextTime = now;
     }
     src.start(this.nextTime);
     this.nextTime += buf.duration;
     this._sources.push(src);
     src.onended = () => { this._sources = this._sources.filter(s => s !== src); };
   }
-  /** Stop playback and release context */
+
+  /** Stop playback and release AudioContext (decoder survives for reuse). */
   stop() {
     for (const src of this._sources) { try { src.stop(); } catch {} }
     this._sources = [];
     this.nextTime = 0;
     if (this.ctx) { this.ctx.close(); this.ctx = null; }
+    // Reset decoder timestamp but keep it alive — player will be reused on next tts:start
+    if (this._decoder) this._decoder.resetTimestamp();
   }
 }
 
@@ -741,7 +852,7 @@ class WorzelApp extends HTMLElement {
     });
     this.client.on('audio', data => {
       this._audioPackets = (this._audioPackets || 0) + 1;
-      this.player?.enqueue(data);
+      this.player?.enqueueOpus(data);
     });
     this.client.on('telemetry', ev => {
       const settings = this.shadowRoot.querySelector('worzel-settings');

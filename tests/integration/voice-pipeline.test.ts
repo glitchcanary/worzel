@@ -84,6 +84,7 @@ class MockFillerCache {
       this._filler = {
         text: 'Hmm.',
         audio: Buffer.alloc(960), // small audio
+        opusFrames: [Buffer.alloc(40)], // mock Opus packet
         sampleRate: 16000,
       };
     }

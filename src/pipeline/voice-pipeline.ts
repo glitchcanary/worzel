@@ -8,6 +8,7 @@ import { AudioRateController } from './audio-rate-controller.js';
 import { SegmentTracker } from './segment-tracker.js';
 import { stripThinkTags } from '../utils/sanitize.js';
 import { decodeOpusFrames } from '../utils/opus-decode.js';
+import { OpusEncoder } from '../utils/opus-encode.js';
 
 export interface VoicePipelineOptions {
   asr: ASRProvider;
@@ -67,6 +68,9 @@ export class VoicePipeline {
     const pipelineStart = Date.now();
     const abortController = new AbortController();
     session.abortController = abortController;
+
+    // Opus encoder for TTS output (24kHz mono, reused across all segments)
+    const opusEncoder = new OpusEncoder({ sampleRate: 24000, channels: 1 });
 
     try {
       // 1. Decode audio to PCM
@@ -220,23 +224,12 @@ export class VoicePipeline {
             tracker.advance(trackIdx, 'audio_sent');
             rateController.reset();
 
-            const ttsRate = ttsResult.sampleRate || 24000;
-            const samplesPerPacket = Math.round(ttsRate * 0.06);
-            const packetSize = samplesPerPacket * 2;
-            let packetsSent = 0;
-            for (let offset = 0; offset < ttsResult.audio.length; offset += packetSize) {
-              if (abortController.signal.aborted) break;
-              const delay = rateController.getDelay();
-              if (delay > 0) {
-                await new Promise(resolve => setTimeout(resolve, delay));
-              }
-              const packet = ttsResult.audio.subarray(offset, offset + packetSize);
-              await transport.sendBinary(packet);
-              packetsSent++;
-            }
+            const packetsSent = await this.sendOpusAudio(
+              ttsResult.audio, opusEncoder, transport, rateController, abortController.signal,
+            );
 
             tracker.advance(trackIdx, 'committed');
-            this.logger.info({ segmentIndex, audioBytes: ttsResult.audio.length, packetsSent, sampleRate: ttsRate, source }, 'TTS audio sent');
+            this.logger.info({ segmentIndex, audioBytes: ttsResult.audio.length, packetsSent, source }, 'TTS audio sent');
           } catch (err) {
             this.logger.error({ err, segment: effectiveText, segmentIndex }, 'TTS error for segment');
             tracker.advance(trackIdx, 'committed');
@@ -286,23 +279,12 @@ export class VoicePipeline {
           tracker.advance(trackIdx, 'audio_sent');
 
           rateController.reset();
-          const flushRate = ttsResult.sampleRate || 24000;
-          const flushSamples = Math.round(flushRate * 0.06);
-          const flushPacketSize = flushSamples * 2;
-          let packetsSent = 0;
-          for (let offset = 0; offset < ttsResult.audio.length; offset += flushPacketSize) {
-            if (abortController.signal.aborted) break;
-            const delay = rateController.getDelay();
-            if (delay > 0) {
-              await new Promise(resolve => setTimeout(resolve, delay));
-            }
-            const packet = ttsResult.audio.subarray(offset, offset + flushPacketSize);
-            await transport.sendBinary(packet);
-            packetsSent++;
-          }
+          const packetsSent = await this.sendOpusAudio(
+            ttsResult.audio, opusEncoder, transport, rateController, abortController.signal,
+          );
 
           tracker.advance(trackIdx, 'committed');
-          this.logger.info({ segmentIndex, audioBytes: ttsResult.audio.length, packetsSent, sampleRate: flushRate, source }, 'TTS flush audio sent');
+          this.logger.info({ segmentIndex, audioBytes: ttsResult.audio.length, packetsSent, source }, 'TTS flush audio sent');
         } catch (err) {
           this.logger.error({ err, segmentIndex }, 'TTS error for final segment');
           tracker.advance(trackIdx, 'committed');
@@ -344,15 +326,9 @@ export class VoicePipeline {
               try {
                 const ttsResult = await this.tts.synthesize(correction);
                 rateController.reset();
-                const corrRate = ttsResult.sampleRate || 24000;
-                const corrSamples = Math.round(corrRate * 0.06);
-                const corrPacketSize = corrSamples * 2;
-                for (let offset = 0; offset < ttsResult.audio.length; offset += corrPacketSize) {
-                  if (abortController.signal.aborted) break;
-                  const delay = rateController.getDelay();
-                  if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
-                  await transport.sendBinary(ttsResult.audio.subarray(offset, offset + corrPacketSize));
-                }
+                await this.sendOpusAudio(
+                  ttsResult.audio, opusEncoder, transport, rateController, abortController.signal,
+                );
               } catch (err) {
                 this.logger.error({ err }, 'TTS error for smart correction');
               }
@@ -403,7 +379,32 @@ export class VoicePipeline {
       }
     } finally {
       session.abortController = null;
+      opusEncoder.delete();
     }
+  }
+
+  /**
+   * Encode PCM audio to Opus and send frames via transport with rate control.
+   */
+  private async sendOpusAudio(
+    pcmAudio: Buffer,
+    encoder: OpusEncoder,
+    transport: Transport,
+    rateController: AudioRateController,
+    signal: AbortSignal,
+  ): Promise<number> {
+    const opusFrames = encoder.encodeAll(pcmAudio);
+    let packetsSent = 0;
+    for (const opusPacket of opusFrames) {
+      if (signal.aborted) break;
+      const delay = rateController.getDelay();
+      if (delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      await transport.sendBinary(opusPacket);
+      packetsSent++;
+    }
+    return packetsSent;
   }
 
   /**
@@ -438,19 +439,16 @@ export class VoicePipeline {
       session_id: session.id,
     }));
 
-    // Send filler audio packets with rate control
+    // Send pre-encoded Opus frames with rate control
     const rateController = new AudioRateController();
-    const ttsRate = filler.sampleRate || 24000;
-    const samplesPerPacket = Math.round(ttsRate * 0.06);
-    const packetSize = samplesPerPacket * 2;
-    for (let offset = 0; offset < filler.audio.length; offset += packetSize) {
+    const opusFrames = filler.opusFrames;
+    for (const opusPacket of opusFrames) {
       if (signal.aborted) break;
       const delay = rateController.getDelay();
       if (delay > 0) {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
-      const packet = filler.audio.subarray(offset, offset + packetSize);
-      await transport.sendBinary(packet);
+      await transport.sendBinary(opusPacket);
     }
 
     await transport.sendText(JSON.stringify({

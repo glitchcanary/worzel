@@ -44,7 +44,8 @@ export function createOtaHandler(authConfig: AuthConfig, serverConfig: ServerCon
     // Respect X-Forwarded-Proto from reverse proxies (e.g. Tailscale Serve)
     const host = request.headers.host ?? `localhost:${serverConfig.port}`;
     const forwardedProto = request.headers['x-forwarded-proto'];
-    const isTls = serverConfig.tlsCert || forwardedProto === 'https';
+    const isTailscale = host.endsWith('.ts.net') || host.endsWith('.ts.net:443');
+    const isTls = serverConfig.tlsCert || forwardedProto === 'https' || isTailscale;
     const wsProtocol = isTls ? 'wss' : 'ws';
     const wsUrl = `${wsProtocol}://${host}/ws`;
 

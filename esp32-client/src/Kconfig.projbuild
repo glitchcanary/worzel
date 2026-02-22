@@ -1,0 +1,27 @@
+menu "Worzel Client Configuration"
+
+    config WORZEL_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID of the WiFi network to connect to.
+
+    config WORZEL_WIFI_PASS
+        string "WiFi Password"
+        default "mypassword"
+        help
+            Password for the WiFi network.
+
+    config WORZEL_SERVER_HOST
+        string "Worzel Server Host"
+        default "192.168.1.100"
+        help
+            IP address or hostname of the Worzel server.
+
+    config WORZEL_SERVER_PORT
+        string "Worzel Server Port"
+        default "3000"
+        help
+            Port number of the Worzel server.
+
+endmenu
