@@ -147,6 +147,7 @@ static esp_err_t es8311_init_codec(void) {
     return ESP_OK;
 }
 
+static void es8311_set_volume(uint8_t vol) __attribute__((unused));
 static void es8311_set_volume(uint8_t vol) {
     es8311_write_reg(0x32, vol);  // 0x00=-95.5dB, 0xBF=0dB, 0xFF=+32dB
 }
@@ -478,7 +479,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
 
 static void connect_websocket(void) {
     // Build WS URL with auth token
-    char full_url[512];
+    char full_url[768];
     snprintf(full_url, sizeof(full_url), "%s?token=%s", ws_url, auth_token);
 
     esp_websocket_client_config_t ws_cfg = {
