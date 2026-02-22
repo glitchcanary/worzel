@@ -1,23 +1,11 @@
 # Worzel ESP32 Client — ESP-IDF defaults
-# These are merged into sdkconfig on first build.
+# Override via menuconfig or sdkconfig.local
 
-# WiFi (override via menuconfig or sdkconfig.local)
+# WiFi (override before building)
 CONFIG_WORZEL_WIFI_SSID="myssid"
 CONFIG_WORZEL_WIFI_PASS="mypassword"
 CONFIG_WORZEL_SERVER_HOST="192.168.1.100"
 CONFIG_WORZEL_SERVER_PORT="3000"
 
-# WebSocket
-CONFIG_WEBSOCKET_CLIENT_TASK_STACK_SIZE=8192
-CONFIG_ESP_WEBSOCKET_CLIENT_ENABLE=y
-
 # Increase main task stack for cJSON allocations
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
-
-# Enable PSRAM if available (S3 AMOLED has it)
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
-
-# I2S
-CONFIG_SOC_I2S_SUPPORTED=y
