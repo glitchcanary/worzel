@@ -232,6 +232,11 @@ static esp_err_t setup_i2s(void) {
         },
     };
 
+    /* Override default LEFT-only slot mask. Mono mode defaults to I2S_STD_SLOT_LEFT
+       but the ES8311 DAC may read from either slot. Writing to BOTH ensures the
+       codec gets data regardless of which slot it expects. */
+    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
+
     // Create both TX+RX channels on the same I2S port (full-duplex)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 4;
@@ -686,19 +691,20 @@ void app_main(void) {
     // Startup beep — verifies speaker hardware path (I2S → ES8311 DAC → amp)
     {
         const int tone_hz = 1000;
-        const int duration_ms = 200;
-        const int samples = I2S_SAMPLE_RATE * duration_ms / 1000;
+        const int duration_ms = 500;
+        const int samples = I2S_SAMPLE_RATE * duration_ms / 1000;  /* 8000 samples */
         int16_t *tone_buf = malloc(samples * sizeof(int16_t));
         if (tone_buf) {
             for (int i = 0; i < samples; i++) {
-                /* 1kHz sine at ~25% volume (8000/32767) */
+                /* 1kHz sine at ~75% volume (24000/32767) */
                 float t = (float)i / I2S_SAMPLE_RATE;
-                tone_buf[i] = (int16_t)(8000.0f * sinf(2.0f * 3.14159f * tone_hz * t));
+                tone_buf[i] = (int16_t)(24000.0f * sinf(2.0f * 3.14159f * tone_hz * t));
             }
             size_t written = 0;
             i2s_channel_write(i2s_tx_chan, tone_buf, samples * sizeof(int16_t),
-                              &written, pdMS_TO_TICKS(500));
-            ESP_LOGI(TAG, "Startup beep: %d samples written", (int)(written / sizeof(int16_t)));
+                              &written, pdMS_TO_TICKS(1000));
+            ESP_LOGI(TAG, "Startup beep: %d/%d samples written",
+                     (int)(written / sizeof(int16_t)), samples);
             free(tone_buf);
         }
     }
