@@ -96,20 +96,21 @@ static esp_err_t es8311_init_codec(void) {
         return ret;
     }
 
-    // Clock config — MCLK from I2S, 16kHz sample rate
-    // REG01: MCLK from MCLK pin, enable all clocks
+    // Clock config — MCLK from I2S master, 16kHz sample rate.
+    // Values from Espressif ESP-ADF coefficient table for MCLK=4.096MHz, fs=16kHz.
+    // REG01: MCLK from MCLK pin, enable MCLK+ADC+DAC clocks
     es8311_write_reg(0x01, 0x3F);
-    // REG02: pre_div=1, pre_multi=x2  (for MCLK=4.096MHz = 16000*256)
-    es8311_write_reg(0x02, 0x08);
-    // REG03: single speed, ADC OSR=16
+    // REG02: pre_div=1 (bits 7:5=0), pre_multi=0 (bits 4:3=0)
+    es8311_write_reg(0x02, 0x00);
+    // REG03: ADC OSR=16
     es8311_write_reg(0x03, 0x10);
-    // REG04: DAC OSR=16
-    es8311_write_reg(0x04, 0x10);
+    // REG04: DAC OSR=32 (coefficient table specifies 0x20 for 16kHz)
+    es8311_write_reg(0x04, 0x20);
     // REG05: ADC div=1, DAC div=1
     es8311_write_reg(0x05, 0x00);
     // REG06: BCLK divider=4
     es8311_write_reg(0x06, 0x04);
-    // REG07-08: LRCK divider=255 (MCLK/256 = sample rate)
+    // REG07-08: LRCK divider=255 (MCLK/256 = 16kHz)
     es8311_write_reg(0x07, 0x00);
     es8311_write_reg(0x08, 0xFF);
 
@@ -119,8 +120,8 @@ static esp_err_t es8311_init_codec(void) {
 
     // Power up analog
     es8311_write_reg(0x0D, 0x01);
-    // Enable PGA + ADC modulator
-    es8311_write_reg(0x0E, 0x02);
+    // ADC analog enable: enable ADC modulator + PGA (bit 5 = DMIC off for analog mic)
+    es8311_write_reg(0x0E, 0x20);
     // Power up DAC
     es8311_write_reg(0x12, 0x00);
     // Enable HP output driver
