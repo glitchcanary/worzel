@@ -9,11 +9,19 @@ CONFIG_WORZEL_SERVER_HOST="myserver.example.com"
 CONFIG_WORZEL_SERVER_PORT="443"
 CONFIG_WORZEL_USE_TLS=y
 
+# PSRAM (ESP32-S3 AMOLED has 8MB Octal PSRAM)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
 # Console output via USB-Serial/JTAG (ESP32-S3 has no external UART-to-USB chip)
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # Increase main task stack for cJSON allocations
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# WebSocket task stack — default 3072 is too small with TLS
+CONFIG_WEBSOCKET_CLIENT_TASK_STACK_SIZE=6144
 
 # Flash size — set per board in platformio.ini (board_upload.flash_size).
 # Default to 4MB for boards without explicit override (C3, C6).
