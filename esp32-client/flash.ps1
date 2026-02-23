@@ -71,6 +71,24 @@ if (-not $hasServer) {
     }
 }
 
+# Check static IP (only prompt if not already configured)
+if (-not $localConfig.ContainsKey("CONFIG_WORZEL_STATIC_IP")) {
+    Write-Host ""
+    $staticIp = Read-Host "  Static IP? (Enter for DHCP, or e.g. 192.168.2.201)"
+    if ($staticIp) {
+        $localConfig["CONFIG_WORZEL_STATIC_IP"] = "`"$staticIp`""
+        $gw = Read-Host "  Gateway (Enter for .1)"
+        if (-not $gw) {
+            # Derive .1 gateway from the IP
+            $gw = ($staticIp -replace '\.\d+$', '.1')
+        }
+        $localConfig["CONFIG_WORZEL_STATIC_GW"] = "`"$gw`""
+    } else {
+        $localConfig["CONFIG_WORZEL_STATIC_IP"] = '""'
+        $localConfig["CONFIG_WORZEL_STATIC_GW"] = '""'
+    }
+}
+
 # Write sdkconfig.local
 $lines = @("# Local config (gitignored, never committed)")
 foreach ($key in $localConfig.Keys | Sort-Object) {

@@ -280,7 +280,23 @@ static void setup_wifi(void) {
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t *netif = esp_netif_create_default_wifi_sta();
+
+    /* Static IP — bypasses flaky DHCP on weak WiFi links */
+    if (strlen(CONFIG_WORZEL_STATIC_IP) > 0) {
+        esp_netif_dhcpc_stop(netif);
+        esp_netif_ip_info_t ip_info = {0};
+        esp_netif_str_to_ip4(CONFIG_WORZEL_STATIC_IP, &ip_info.ip);
+        esp_netif_str_to_ip4(CONFIG_WORZEL_STATIC_GW, &ip_info.gw);
+        esp_netif_str_to_ip4("255.255.255.0", &ip_info.netmask);
+        ESP_ERROR_CHECK(esp_netif_set_ip_info(netif, &ip_info));
+
+        esp_netif_dns_info_t dns;
+        esp_netif_str_to_ip4(CONFIG_WORZEL_STATIC_GW, &dns.ip.u_addr.ip4);
+        dns.ip.type = ESP_IPADDR_TYPE_V4;
+        ESP_ERROR_CHECK(esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns));
+        ESP_LOGI(TAG, "Static IP: %s gw %s", CONFIG_WORZEL_STATIC_IP, CONFIG_WORZEL_STATIC_GW);
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));

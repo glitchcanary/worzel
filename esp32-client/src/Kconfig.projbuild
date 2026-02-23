@@ -33,4 +33,19 @@ menu "Worzel Client Configuration"
             Enable TLS for server connections. Required for Tailscale (.ts.net)
             or any HTTPS server. Uses ESP-IDF certificate bundle for CA verification.
 
+    config WORZEL_STATIC_IP
+        string "Static IP address (leave empty for DHCP)"
+        default ""
+        help
+            Set a static IP address to bypass DHCP. Leave empty to use DHCP.
+            Example: 192.168.2.201
+
+    config WORZEL_STATIC_GW
+        string "Static gateway"
+        default ""
+        depends on WORZEL_STATIC_IP != ""
+        help
+            Gateway for the static IP. Usually the router address.
+            Example: 192.168.2.1
+
 endmenu
