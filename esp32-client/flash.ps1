@@ -28,7 +28,7 @@ $hasWifi = $localConfig.ContainsKey("CONFIG_WORZEL_WIFI_SSID") -and
 
 # Check server URL
 $hasServer = $localConfig.ContainsKey("CONFIG_WORZEL_SERVER_HOST") -and
-             $localConfig["CONFIG_WORZEL_SERVER_HOST"] -ne '"raz17.tailaf2e8d.ts.net"'
+             $localConfig["CONFIG_WORZEL_SERVER_HOST"] -ne '"myserver.example.com"'
 
 # Also accept the Tailscale default as valid — only prompt if no server config at all
 $hasServer = $localConfig.ContainsKey("CONFIG_WORZEL_SERVER_HOST")
@@ -47,29 +47,26 @@ if (-not $hasWifi) {
 
 if (-not $hasServer) {
     Write-Host ""
-    Write-Host "Server not configured. The default is Tailscale Funnel (public HTTPS)." -ForegroundColor Yellow
-    Write-Host "  Default: raz17.tailaf2e8d.ts.net:443 (TLS)" -ForegroundColor Gray
-    $serverInput = Read-Host "  Server URL [host:port] (Enter for default)"
-    if ($serverInput) {
-        # Parse host:port
-        if ($serverInput -match '^(.+):(\d+)$') {
-            $localConfig["CONFIG_WORZEL_SERVER_HOST"] = "`"$($Matches[1])`""
-            $localConfig["CONFIG_WORZEL_SERVER_PORT"] = "`"$($Matches[2])`""
-        } else {
-            $localConfig["CONFIG_WORZEL_SERVER_HOST"] = "`"$serverInput`""
-            $localConfig["CONFIG_WORZEL_SERVER_PORT"] = "`"443`""
-        }
-        # Ask about TLS
-        $tls = Read-Host "  Use TLS? (Y/n)"
-        if ($tls -eq "n" -or $tls -eq "N") {
-            $localConfig["CONFIG_WORZEL_USE_TLS"] = "n"
-        } else {
-            $localConfig["CONFIG_WORZEL_USE_TLS"] = "y"
-        }
+    Write-Host "Server not configured." -ForegroundColor Yellow
+    Write-Host "  Example: yourhost.ts.net:443 (Tailscale Funnel) or 192.168.1.100:3000" -ForegroundColor Gray
+    $serverInput = Read-Host "  Server URL [host:port]"
+    if (-not $serverInput) {
+        Write-Host "Server URL is required." -ForegroundColor Red
+        exit 1
+    }
+    # Parse host:port
+    if ($serverInput -match '^(.+):(\d+)$') {
+        $localConfig["CONFIG_WORZEL_SERVER_HOST"] = "`"$($Matches[1])`""
+        $localConfig["CONFIG_WORZEL_SERVER_PORT"] = "`"$($Matches[2])`""
     } else {
-        # Use defaults from sdkconfig.defaults (Tailscale Funnel)
-        $localConfig["CONFIG_WORZEL_SERVER_HOST"] = "`"raz17.tailaf2e8d.ts.net`""
+        $localConfig["CONFIG_WORZEL_SERVER_HOST"] = "`"$serverInput`""
         $localConfig["CONFIG_WORZEL_SERVER_PORT"] = "`"443`""
+    }
+    # Ask about TLS
+    $tls = Read-Host "  Use TLS? (Y/n)"
+    if ($tls -eq "n" -or $tls -eq "N") {
+        $localConfig["CONFIG_WORZEL_USE_TLS"] = "n"
+    } else {
         $localConfig["CONFIG_WORZEL_USE_TLS"] = "y"
     }
 }

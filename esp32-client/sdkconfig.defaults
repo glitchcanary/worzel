@@ -4,8 +4,8 @@
 # WiFi (override before building)
 CONFIG_WORZEL_WIFI_SSID="myssid"
 CONFIG_WORZEL_WIFI_PASS="mypassword"
-# Server — Tailscale Funnel (public HTTPS, works from any internet-connected WiFi)
-CONFIG_WORZEL_SERVER_HOST="raz17.tailaf2e8d.ts.net"
+# Server (override before building — set your Tailscale Funnel hostname or local IP)
+CONFIG_WORZEL_SERVER_HOST="myserver.example.com"
 CONFIG_WORZEL_SERVER_PORT="443"
 CONFIG_WORZEL_USE_TLS=y
 
