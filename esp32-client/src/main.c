@@ -607,12 +607,25 @@ static void audio_task(void *arg) {
     ESP_LOGI(TAG, "Audio task started (frame=%d samples, %d bytes)",
              FRAME_SAMPLES, FRAME_BYTES);
 
+    int frame_count = 0;
     while (true) {
         if (recording && ws_connected && i2s_rx_chan && opus_enc) {
             size_t bytes_read = 0;
             esp_err_t ret = i2s_channel_read(i2s_rx_chan, pcm_buf, FRAME_BYTES,
                                               &bytes_read, pdMS_TO_TICKS(100));
             if (ret == ESP_OK && bytes_read >= FRAME_BYTES) {
+                // Log PCM stats every 5th frame to diagnose mic signal level
+                if (frame_count % 5 == 0) {
+                    int16_t mn = 0, mx = 0;
+                    for (int i = 0; i < FRAME_SAMPLES; i++) {
+                        if (pcm_buf[i] < mn) mn = pcm_buf[i];
+                        if (pcm_buf[i] > mx) mx = pcm_buf[i];
+                    }
+                    ESP_LOGI(TAG, "PCM frame %d: min=%d max=%d (bytes_read=%zu)",
+                             frame_count, mn, mx, bytes_read);
+                }
+                frame_count++;
+
                 int encoded = opus_encode(opus_enc, pcm_buf, FRAME_SAMPLES,
                                           opus_buf, MAX_OPUS_PACKET);
                 if (encoded > 0) {
