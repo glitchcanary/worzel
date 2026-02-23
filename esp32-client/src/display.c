@@ -44,7 +44,7 @@ static const sh8601_lcd_init_cmd_t init_cmds[] = {
     {0x53, (uint8_t[]){0x20}, 1, 10},                       /* Write CTRL display */
     {0x2A, (uint8_t[]){0x00, 0x00, 0x01, 0x6F}, 4, 0},     /* Column 0-367 */
     {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xBF}, 4, 0},     /* Row 0-447 */
-    {0x51, (uint8_t[]){0xA0}, 1, 10},                       /* Brightness ~63% */
+    {0x51, (uint8_t[]){0xD0}, 1, 10},                       /* Brightness ~81% */
     {0x29, (uint8_t[]){0x00}, 0, 10},                       /* Display ON */
 };
 

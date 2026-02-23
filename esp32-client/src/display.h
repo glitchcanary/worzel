@@ -9,14 +9,14 @@
 #include "esp_err.h"
 #include "driver/i2c_master.h"
 
-/* Colors (RGB565) — muted tones for AMOLED */
+/* Colors (RGB565) */
 #define COLOR_BLACK   0x0000
-#define COLOR_WHITE   0xC618   /* soft white, not full blast */
-#define COLOR_GREEN   0x2DC4   /* sage green */
-#define COLOR_RED     0xC082   /* muted red */
-#define COLOR_YELLOW  0xBDA0   /* warm amber */
-#define COLOR_CYAN    0x3D7E   /* soft teal */
-#define COLOR_GREY    0x528A   /* mid grey */
+#define COLOR_WHITE   0xFFFF
+#define COLOR_GREEN   0x47E0   /* medium green */
+#define COLOR_RED     0xF800
+#define COLOR_YELLOW  0xFE60   /* warm yellow */
+#define COLOR_CYAN    0x5FFF   /* light cyan */
+#define COLOR_GREY    0x9CD3   /* light grey */
 
 /**
  * Initialize the display hardware (QSPI bus, IO expander reset, SH8601 panel).
