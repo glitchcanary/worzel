@@ -308,6 +308,24 @@ static void setup_wifi(void) {
 
 // ======== HTTP Authentication (OTA endpoint) ========
 
+/* HTTP response accumulator for esp_http_client event handler */
+static char http_response_buf[512];
+static int http_response_pos = 0;
+
+static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
+    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+        int copy = evt->data_len;
+        if (http_response_pos + copy >= (int)sizeof(http_response_buf))
+            copy = sizeof(http_response_buf) - http_response_pos - 1;
+        if (copy > 0) {
+            memcpy(http_response_buf + http_response_pos, evt->data, copy);
+            http_response_pos += copy;
+            http_response_buf[http_response_pos] = '\0';
+        }
+    }
+    return ESP_OK;
+}
+
 static bool authenticate(void) {
     char url[256];
 #ifdef CONFIG_WORZEL_USE_TLS
@@ -324,14 +342,15 @@ static bool authenticate(void) {
     cJSON_AddStringToObject(body, "app_version", "0.1.0");
     char *body_str = cJSON_PrintUnformatted(body);
 
-    // HTTP response buffer
-    char response_buf[512] = {0};
-    int response_len = 0;
+    // Reset response buffer
+    http_response_pos = 0;
+    http_response_buf[0] = '\0';
 
     esp_http_client_config_t http_cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 10000,
+        .event_handler = http_event_handler,
 #ifdef CONFIG_WORZEL_USE_TLS
         .crt_bundle_attach = esp_crt_bundle_attach,
 #endif
@@ -346,23 +365,29 @@ static bool authenticate(void) {
 
     if (err == ESP_OK) {
         int status = esp_http_client_get_status_code(client);
-        response_len = esp_http_client_get_content_length(client);
-        if (response_len > 0 && response_len < (int)sizeof(response_buf)) {
-            esp_http_client_read(client, response_buf, response_len);
-        }
+        ESP_LOGI(TAG, "OTA response: HTTP %d, body: %s", status, http_response_buf);
 
         if (status == 200) {
-            cJSON *resp = cJSON_Parse(response_buf);
+            cJSON *resp = cJSON_Parse(http_response_buf);
             if (resp) {
                 cJSON *token = cJSON_GetObjectItem(resp, "token");
                 cJSON *server_url = cJSON_GetObjectItem(resp, "server_url");
                 if (token && server_url) {
                     strncpy(auth_token, token->valuestring, sizeof(auth_token) - 1);
-                    strncpy(ws_url, server_url->valuestring, sizeof(ws_url) - 1);
+                    /* Server may return ws://localhost — override with our configured host */
+                    snprintf(ws_url, sizeof(ws_url), "%s://%s:%s/ws",
+#ifdef CONFIG_WORZEL_USE_TLS
+                             "wss",
+#else
+                             "ws",
+#endif
+                             SERVER_HOST, SERVER_PORT);
                     ESP_LOGI(TAG, "Authenticated. WS URL: %s", ws_url);
                     ok = true;
                 }
                 cJSON_Delete(resp);
+            } else {
+                ESP_LOGE(TAG, "Failed to parse OTA response JSON");
             }
         } else {
             ESP_LOGE(TAG, "OTA auth failed: HTTP %d", status);
