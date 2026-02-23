@@ -56,7 +56,7 @@ static const char *TAG = "worzel";
 #define I2S_SAMPLE_RATE    16000
 #define FRAME_SAMPLES      (I2S_SAMPLE_RATE * FRAME_DURATION_MS / 1000)  /* 960 @ 16kHz */
 #define FRAME_BYTES        (FRAME_SAMPLES * sizeof(int16_t))             /* 1920 bytes */
-#define OPUS_BITRATE       16000   /* 16 kbps */
+#define OPUS_BITRATE       32000   /* 32 kbps — 16kbps CELT loses speech formants */
 #define MAX_OPUS_PACKET    512     /* generous upper bound for encoded Opus frame */
 
 // ======== State ========
