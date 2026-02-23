@@ -28,30 +28,38 @@ Each stage is pluggable. Current implementations:
 | LLM | Ollama (local), OpenAI, Anthropic Claude |
 | TTS | OpenAI, Microsoft Edge TTS, ElevenLabs |
 
+## Quick Start
+
+```bash
+npm install
+npm run build
+node --env-file=../.env dist/index.js
+```
+
+Create a `../.env` file (one directory up, outside git) with your API keys. Copy from `../.env.example`. At minimum you need `WORZEL_AUTH_SECRET` (32+ characters). The default LLM is Ollama with `qwen2.5:7b` (local, no API key).
+
+The `.env` file lives **outside** the `worzel/` git directory to avoid committing secrets. The `--env-file=../.env` flag loads it at startup.
+
+Open `http://localhost:3000` for the web client. Use `WORZEL_HOST=0.0.0.0` in `.env` to listen on all interfaces.
+
 ## Clients
 
-- **Web browser** -- built-in web client using Web Components and WebCodecs Opus encoding
-- **ESP32** -- proof-of-concept Arduino sketch for hardware devices
+- **Web browser** -- built-in web client using Web Components and WebCodecs Opus encoding. Chrome/Edge 94+, Firefox 133+, Safari 26+.
+- **ESP32 hardware** -- ESP-IDF firmware for Waveshare boards with ES8311 codec. See [`esp32-client/README.md`](esp32-client/README.md).
 
 Both send Opus-encoded audio at 16kHz over WebSocket.
 
-## Running
+## Development
 
+```bash
+npm run dev          # Watch mode with auto-reload (tsx)
+npm test             # Run tests (vitest, 139+ passing)
+npm run lint         # Type check (tsc --noEmit)
 ```
-npm install
-npm run build
-node --env-file=.env dist/index.js
-```
 
-Create a `.env` file with your API keys. At minimum you need `WORZEL_AUTH_SECRET` (32+ characters). The default LLM is Ollama with `qwen2.5:7b` (local, no API key).
+## Architecture
 
-Open `http://localhost:3000` for the web client.
-
-## Tests
-
-```
-npm test
-```
+See [`CLAUDE.md`](../CLAUDE.md) in the project root for detailed notes on architecture, security model, provider config, Opus codec pipeline, and implementation status.
 
 ## License
 
