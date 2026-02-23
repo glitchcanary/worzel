@@ -8,3 +8,6 @@ sdkconfig
 sdkconfig.old
 sdkconfig.local
 sdkconfig.esp32*
+managed_components/
+opus-staged/
+esp32-client/CMakeLists.txt
