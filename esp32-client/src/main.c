@@ -281,7 +281,7 @@ static void setup_wifi(void) {
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t *netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -302,8 +302,38 @@ static void setup_wifi(void) {
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));  /* Disable power save — helps with weak signals */
 
-    ESP_LOGI(TAG, "Waiting for WiFi...");
-    xEventGroupWaitBits(wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    /* Wait for DHCP with timeout + retry. The ESP32-S3 can send DHCP discover
+       before the radio is fully associated, then not retry properly. We
+       disconnect cleanly before each retry to release any stale DHCP state
+       and avoid leaking addresses from the pool. */
+    const int max_retries = 5;
+    const TickType_t dhcp_timeout = pdMS_TO_TICKS(9000);
+
+    for (int attempt = 1; attempt <= max_retries; attempt++) {
+        ESP_LOGI(TAG, "Waiting for IP (attempt %d/%d)...", attempt, max_retries);
+        EventBits_t bits = xEventGroupWaitBits(wifi_events, WIFI_CONNECTED_BIT,
+                                                pdFALSE, pdTRUE, dhcp_timeout);
+        if (bits & WIFI_CONNECTED_BIT) {
+            return;  /* Got IP */
+        }
+
+        ESP_LOGW(TAG, "DHCP timeout after 9s, retrying...");
+
+        /* Stop DHCP client cleanly before disconnecting so any in-flight
+           lease request is released, not left dangling in the pool */
+        esp_netif_dhcpc_stop(netif);
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(500));
+
+        /* Restart DHCP and reconnect */
+        esp_netif_dhcpc_start(netif);
+        esp_wifi_connect();
+    }
+
+    ESP_LOGE(TAG, "Failed to get IP after %d attempts. Rebooting.", max_retries);
+    display_status(5, "WiFi: DHCP failed", COLOR_RED);
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
 }
 
 // ======== HTTP Authentication (OTA endpoint) ========
