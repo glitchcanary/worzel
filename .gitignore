@@ -7,3 +7,4 @@ tmp/
 sdkconfig
 sdkconfig.old
 sdkconfig.local
+sdkconfig.esp32*
