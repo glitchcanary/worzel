@@ -6,3 +6,4 @@ dist/
 tmp/
 sdkconfig
 sdkconfig.old
+sdkconfig.local
