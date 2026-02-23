@@ -9,6 +9,52 @@ import { SegmentTracker } from './segment-tracker.js';
 import { stripThinkTags } from '../utils/sanitize.js';
 import { decodeOpusFrames } from '../utils/opus-decode.js';
 import { OpusEncoder } from '../utils/opus-encode.js';
+import { writeFileSync, mkdirSync } from 'node:fs';
+
+/** Debug audio dump: save raw Opus + decoded PCM WAV when WORZEL_DEBUG_AUDIO=1 */
+const DEBUG_AUDIO = process.env.WORZEL_DEBUG_AUDIO === '1';
+const DEBUG_AUDIO_DIR = 'debug-audio';
+
+function debugSaveAudio(frames: Buffer[], pcmData: Buffer, sampleRate: number, logger: pino.Logger): void {
+  try {
+    mkdirSync(DEBUG_AUDIO_DIR, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+
+    // Save raw Opus frames with 2-byte big-endian length prefix per frame (for replay/analysis)
+    const opusChunks: Buffer[] = [];
+    for (const f of frames) {
+      const len = Buffer.alloc(2);
+      len.writeUInt16BE(f.length, 0);
+      opusChunks.push(len, f);
+    }
+    const opusPath = `${DEBUG_AUDIO_DIR}/${ts}.opus-frames`;
+    writeFileSync(opusPath, Buffer.concat(opusChunks));
+
+    // Save decoded PCM as WAV (playable in any audio tool)
+    const wavHeader = Buffer.alloc(44);
+    const byteRate = sampleRate * 2; // 16-bit mono
+    wavHeader.write('RIFF', 0);
+    wavHeader.writeUInt32LE(36 + pcmData.length, 4);
+    wavHeader.write('WAVE', 8);
+    wavHeader.write('fmt ', 12);
+    wavHeader.writeUInt32LE(16, 16);
+    wavHeader.writeUInt16LE(1, 20);       // PCM
+    wavHeader.writeUInt16LE(1, 22);       // mono
+    wavHeader.writeUInt32LE(sampleRate, 24);
+    wavHeader.writeUInt32LE(byteRate, 28);
+    wavHeader.writeUInt16LE(2, 32);       // block align
+    wavHeader.writeUInt16LE(16, 34);      // bits per sample
+    wavHeader.write('data', 36);
+    wavHeader.writeUInt32LE(pcmData.length, 40);
+    const wavPath = `${DEBUG_AUDIO_DIR}/${ts}.wav`;
+    writeFileSync(wavPath, Buffer.concat([wavHeader, pcmData]));
+
+    logger.info({ opusPath, wavPath, frames: frames.length, pcmBytes: pcmData.length },
+      'Debug audio saved');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to save debug audio');
+  }
+}
 
 export interface VoicePipelineOptions {
   asr: ASRProvider;
@@ -86,6 +132,11 @@ export class VoicePipeline {
       }
 
       this.logger.info({ bytes: pcmData.length, format: session.audioParams.format }, 'Processing audio');
+
+      // Debug: save audio to disk for analysis (only when WORZEL_DEBUG_AUDIO=1)
+      if (DEBUG_AUDIO) {
+        debugSaveAudio(frames, pcmData, session.audioParams.sample_rate, this.logger);
+      }
 
       // 2. ASR: audio → text
       const asrStart = Date.now();

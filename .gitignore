@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 *.log
+debug-audio/
 .pio/
 tmp/
 sdkconfig
