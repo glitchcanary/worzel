@@ -169,7 +169,7 @@ static esp_err_t setup_opus(void) {
     opus_encoder_ctl(opus_enc, OPUS_SET_BITRATE(OPUS_BITRATE));
     opus_encoder_ctl(opus_enc, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     opus_encoder_ctl(opus_enc, OPUS_SET_DTX(1));
-    opus_encoder_ctl(opus_enc, OPUS_SET_COMPLEXITY(5));  /* moderate for ESP32 */
+    opus_encoder_ctl(opus_enc, OPUS_SET_COMPLEXITY(3));  /* low for ESP32 — reduces stack usage */
     ESP_LOGI(TAG, "Opus encoder ready (16kHz, 60ms, 16kbps, DTX)");
 
     // Decoder: 16kHz mono (server sends 24kHz Opus, but we decode at 16kHz;
@@ -729,7 +729,7 @@ void app_main(void) {
     connect_websocket();
 
     // Start audio capture task
-    xTaskCreatePinnedToCore(audio_task, "audio", 16384, NULL, 5, NULL,
+    xTaskCreatePinnedToCore(audio_task, "audio", 32768, NULL, 5, NULL,
                             1 /* core 1 if available, else 0 on single-core */);
 
     display_status(11, "Ready - hold button to talk", COLOR_WHITE);
