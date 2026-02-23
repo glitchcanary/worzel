@@ -10,5 +10,6 @@ CONFIG_WORZEL_SERVER_PORT="3000"
 # Increase main task stack for cJSON allocations
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
-# Flash — auto-detect often reports 2MB on S3 boards; override per actual hardware
-CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
+# Flash size — set per board in platformio.ini (board_upload.flash_size).
+# Default to 4MB for boards without explicit override (C3, C6).
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y

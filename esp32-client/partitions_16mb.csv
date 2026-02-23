@@ -1,0 +1,7 @@
+# Worzel ESP32 partition table — 16MB flash (Waveshare S3 AMOLED 1.8")
+# Name,      Type,  SubType,  Offset,    Size,     Flags
+nvs,         data,  nvs,      0x9000,    0x6000,
+phy_init,    data,  phy,      0xf000,    0x1000,
+factory,     app,   factory,  0x10000,   0x300000,
+nvs_keys,    data,  nvs_keys, ,          0x1000,
+spiffs,      data,  spiffs,   ,          0xCE0000,
