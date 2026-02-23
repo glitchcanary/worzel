@@ -16,6 +16,7 @@
  */
 
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -677,6 +678,26 @@ void app_main(void) {
 
     // Enable amplifier
     amp_enable(true);
+
+    // Startup beep — verifies speaker hardware path (I2S → ES8311 DAC → amp)
+    {
+        const int tone_hz = 1000;
+        const int duration_ms = 200;
+        const int samples = I2S_SAMPLE_RATE * duration_ms / 1000;
+        int16_t *tone_buf = malloc(samples * sizeof(int16_t));
+        if (tone_buf) {
+            for (int i = 0; i < samples; i++) {
+                /* 1kHz sine at ~25% volume (8000/32767) */
+                float t = (float)i / I2S_SAMPLE_RATE;
+                tone_buf[i] = (int16_t)(8000.0f * sinf(2.0f * 3.14159f * tone_hz * t));
+            }
+            size_t written = 0;
+            i2s_channel_write(i2s_tx_chan, tone_buf, samples * sizeof(int16_t),
+                              &written, pdMS_TO_TICKS(500));
+            ESP_LOGI(TAG, "Startup beep: %d samples written", (int)(written / sizeof(int16_t)));
+            free(tone_buf);
+        }
+    }
 
     // Connect WiFi
     display_status(5, "WiFi: connecting...", COLOR_YELLOW);
