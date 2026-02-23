@@ -603,6 +603,10 @@ static void audio_task(void *arg) {
                     ESP_LOGW(TAG, "Opus encode error: %d", encoded);
                 }
             }
+            /* Yield to let IDLE task run — prevents task watchdog trigger.
+               Opus float encode on ESP32 at 160MHz is slow; without this
+               yield the IDLE task on Core 1 starves. */
+            taskYIELD();
         } else {
             vTaskDelay(pdMS_TO_TICKS(50));
         }

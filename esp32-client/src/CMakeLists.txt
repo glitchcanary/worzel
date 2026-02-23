@@ -4,6 +4,12 @@ idf_component_register(
     REQUIRES driver esp_wifi esp_event esp_netif esp_http_client nvs_flash esp_websocket_client micro-opus esp_lcd esp_io_expander_tca9554
 )
 
+# Force fixed-point Opus build. Floating-point SILK (silk/float/burg_modified_FLP.c)
+# is too slow on ESP32 even at 240MHz — triggers task watchdog. Fixed-point SILK is
+# designed for embedded and is 2-5x faster.
+idf_component_get_property(micro_opus_lib micro-opus COMPONENT_LIB)
+target_compile_definitions(${micro_opus_lib} PUBLIC FIXED_POINT)
+
 # Suppress GCC 14 warnings-as-errors in micro-opus (libopus SILK codec).
 # These are false positives in heavily fuzz-tested code. See CLAUDE.md security notes.
 idf_build_set_property(COMPILE_OPTIONS
