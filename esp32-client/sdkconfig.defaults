@@ -23,8 +23,8 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # Increase main task stack for cJSON allocations
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
-# WebSocket task stack — default 3072 is too small with TLS
-CONFIG_WEBSOCKET_CLIENT_TASK_STACK_SIZE=12288
+# WebSocket task stack is set programmatically in main.c (task_stack = 12288)
+# because the Kconfig symbol varies between esp_websocket_client versions.
 
 # Flash size — set per board in platformio.ini (board_upload.flash_size).
 # Default to 4MB for boards without explicit override (C3, C6).

@@ -169,7 +169,7 @@ static esp_err_t setup_opus(void) {
     opus_encoder_ctl(opus_enc, OPUS_SET_BITRATE(OPUS_BITRATE));
     opus_encoder_ctl(opus_enc, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     opus_encoder_ctl(opus_enc, OPUS_SET_DTX(1));
-    opus_encoder_ctl(opus_enc, OPUS_SET_COMPLEXITY(3));  /* low for ESP32 — reduces stack usage */
+    opus_encoder_ctl(opus_enc, OPUS_SET_COMPLEXITY(1));  /* minimum — float SILK is slow on ESP32 */
     ESP_LOGI(TAG, "Opus encoder ready (16kHz, 60ms, 16kbps, DTX)");
 
     // Decoder: 16kHz mono (server sends 24kHz Opus, but we decode at 16kHz;
