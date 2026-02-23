@@ -10,6 +10,9 @@ param(
 if ($Clean) {
     Write-Host "Cleaning build cache..." -ForegroundColor Yellow
     Remove-Item .pio -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item sdkconfig.esp32s3-amoled* -Force -ErrorAction SilentlyContinue
+    Remove-Item sdkconfig.esp32c3-xmini* -Force -ErrorAction SilentlyContinue
+    Remove-Item sdkconfig.esp32c6-lcd* -Force -ErrorAction SilentlyContinue
 }
 
 # Read existing sdkconfig.local if present
