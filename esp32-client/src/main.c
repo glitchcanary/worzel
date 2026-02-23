@@ -160,8 +160,10 @@ static void es8311_set_volume(uint8_t vol) {
 static esp_err_t setup_opus(void) {
     int err;
 
-    // Encoder: 16kHz mono VOIP (mic → server)
-    opus_enc = opus_encoder_create(16000, 1, OPUS_APPLICATION_VOIP, &err);
+    // Encoder: 16kHz mono, CELT-only via RESTRICTED_LOWDELAY.
+    // VOIP mode uses SILK which is too slow in floating-point on ESP32-S3
+    // (triggers task watchdog). CELT is ~10x faster, fine for voice at 16kbps.
+    opus_enc = opus_encoder_create(16000, 1, OPUS_APPLICATION_RESTRICTED_LOWDELAY, &err);
     if (err != OPUS_OK || !opus_enc) {
         ESP_LOGE(TAG, "Opus encoder create failed: %d", err);
         return ESP_FAIL;
@@ -608,10 +610,10 @@ static void audio_task(void *arg) {
                     ESP_LOGW(TAG, "Opus encode error: %d", encoded);
                 }
             }
-            /* Yield to let IDLE task run — prevents task watchdog trigger.
-               Opus float encode on ESP32 at 160MHz is slow; without this
-               yield the IDLE task on Core 1 starves. */
-            taskYIELD();
+            /* Delay 1 tick to let IDLE task run — prevents task watchdog.
+               taskYIELD() only yields to equal/higher priority tasks;
+               IDLE is priority 0, so it never gets CPU time from yield. */
+            vTaskDelay(1);
         } else {
             vTaskDelay(pdMS_TO_TICKS(50));
         }
