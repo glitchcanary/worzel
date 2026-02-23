@@ -36,6 +36,7 @@
 #include <opus.h>  /* esphome/micro-opus (Apache 2.0 + libopus BSD) */
 
 #include "board.h"
+#include "display.h"
 
 static const char *TAG = "worzel";
 
@@ -422,12 +423,14 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "WebSocket connected");
         ws_connected = true;
+        display_status(9, "WebSocket: connected", COLOR_GREEN);
         send_hello();
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WebSocket disconnected");
         ws_connected = false;
+        display_status(9, "WebSocket: disconnected", COLOR_RED);
         break;
 
     case WEBSOCKET_EVENT_DATA:
@@ -446,12 +449,18 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                         } else if (strcmp(type->valuestring, "stt") == 0) {
                             cJSON *t = cJSON_GetObjectItem(msg, "text");
                             ESP_LOGI(TAG, "STT: %s", t ? t->valuestring : "");
+                            if (t && t->valuestring) {
+                                display_status(13, t->valuestring, COLOR_CYAN);
+                            }
                         } else if (strcmp(type->valuestring, "tts") == 0) {
                             cJSON *s = cJSON_GetObjectItem(msg, "state");
                             cJSON *t = cJSON_GetObjectItem(msg, "text");
                             ESP_LOGI(TAG, "TTS %s: %s",
                                      s ? s->valuestring : "?",
                                      t ? t->valuestring : "");
+                            if (t && t->valuestring) {
+                                display_status(15, t->valuestring, COLOR_GREEN);
+                            }
                         } else if (strcmp(type->valuestring, "error") == 0) {
                             cJSON *m = cJSON_GetObjectItem(msg, "message");
                             ESP_LOGE(TAG, "Server error: %s", m ? m->valuestring : "?");
@@ -597,30 +606,56 @@ void app_main(void) {
     ESP_ERROR_CHECK(setup_i2c());
     ESP_ERROR_CHECK(es8311_init_codec());
 
+    // Init display (uses same I2C bus for IO expander)
+    if (display_init(i2c_bus) != ESP_OK) {
+        ESP_LOGW(TAG, "Display init failed (continuing without display)");
+    }
+
     // Init I2S (after codec, so MCLK feeds into initialized codec)
     ESP_ERROR_CHECK(setup_i2s());
+    display_status(2, "Audio: OK", COLOR_GREEN);
 
     // Init Opus encoder/decoder
     ESP_ERROR_CHECK(setup_opus());
+    display_status(3, "Opus: OK", COLOR_GREEN);
 
     // Enable amplifier
     amp_enable(true);
 
     // Connect WiFi
+    display_status(5, "WiFi: connecting...", COLOR_YELLOW);
     setup_wifi();
 
-    // Authenticate with Worzel server
-    if (!authenticate()) {
-        ESP_LOGE(TAG, "Authentication failed. Halting.");
-        return;
+    // Show IP (re-read from netif)
+    {
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        esp_netif_ip_info_t ip_info;
+        if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+            char ip_str[48];
+            snprintf(ip_str, sizeof(ip_str), "IP: " IPSTR, IP2STR(&ip_info.ip));
+            display_status(5, "WiFi: connected", COLOR_GREEN);
+            display_status(6, ip_str, COLOR_CYAN);
+        }
     }
 
+    // Authenticate with Worzel server
+    display_status(8, "Auth: connecting...", COLOR_YELLOW);
+    if (!authenticate()) {
+        ESP_LOGE(TAG, "Authentication failed. Halting.");
+        display_status(8, "Auth: FAILED", COLOR_RED);
+        return;
+    }
+    display_status(8, "Auth: OK", COLOR_GREEN);
+
     // Connect WebSocket
+    display_status(9, "WebSocket: connecting...", COLOR_YELLOW);
     connect_websocket();
 
     // Start audio capture task
     xTaskCreatePinnedToCore(audio_task, "audio", 8192, NULL, 5, NULL,
                             1 /* core 1 if available, else 0 on single-core */);
+
+    display_status(11, "Ready - hold button to talk", COLOR_WHITE);
 
     // Button handling on main core
     button_task(NULL);  // Blocks forever

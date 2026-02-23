@@ -1,7 +1,7 @@
 idf_component_register(
-    SRCS "main.c"
+    SRCS "main.c" "display.c" "font8x8.c"
     INCLUDE_DIRS "."
-    REQUIRES driver esp_wifi esp_event esp_netif esp_http_client nvs_flash esp_websocket_client micro-opus esp_lcd
+    REQUIRES driver esp_wifi esp_event esp_netif esp_http_client nvs_flash esp_websocket_client micro-opus esp_lcd esp_io_expander_tca9554
 )
 
 # Suppress GCC 14 warnings-as-errors in micro-opus (libopus SILK codec).

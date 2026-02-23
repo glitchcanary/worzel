@@ -22,6 +22,19 @@
 #if defined(BOARD_WAVESHARE_S3_AMOLED_1_8)
 
 #define BOARD_NAME "waveshare-s3-amoled-1.8"
+#define BOARD_HAS_DISPLAY 1
+
+/* QSPI display (SH8601 AMOLED, 368x448) */
+#define PIN_LCD_QSPI_CLK  GPIO_NUM_11
+#define PIN_LCD_QSPI_D0   GPIO_NUM_4
+#define PIN_LCD_QSPI_D1   GPIO_NUM_5
+#define PIN_LCD_QSPI_D2   GPIO_NUM_6
+#define PIN_LCD_QSPI_D3   GPIO_NUM_7
+#define PIN_LCD_QSPI_CS   GPIO_NUM_12
+#define LCD_H_RES          368
+#define LCD_V_RES          448
+/* Reset via TCA9554 IO expander (I2C addr 0x20, same bus as ES8311) */
+#define LCD_IO_EXPANDER_ADDR  0x20
 
 /* I2S (ES8311 codec) */
 #define PIN_I2S_MCLK    GPIO_NUM_16
