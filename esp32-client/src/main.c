@@ -246,18 +246,21 @@ static esp_err_t setup_i2s(void) {
         },
     };
 
-    /* Override default LEFT-only slot mask. Mono mode defaults to I2S_STD_SLOT_LEFT
-       but the ES8311 DAC may read from either slot. Writing to BOTH ensures the
-       codec gets data regardless of which slot it expects. */
-    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
-
     // Create both TX+RX channels on the same I2S port (full-duplex)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 4;
     chan_cfg.dma_frame_num = FRAME_SAMPLES;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &i2s_tx_chan, &i2s_rx_chan), TAG, "I2S channel create failed");
 
+    // TX (speaker): write mono sample to BOTH L+R slots so the ES8311 DAC
+    // receives data regardless of which slot it reads from.
+    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(i2s_tx_chan, &std_cfg), TAG, "I2S TX init failed");
+
+    // RX (mic): read from LEFT slot only. SLOT_BOTH in mono mode reads both
+    // L+R slots into the DMA buffer, doubling the sample count and halving
+    // the effective playback rate — this was the root cause of garbled ASR.
+    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(i2s_rx_chan, &std_cfg), TAG, "I2S RX init failed");
 
     ESP_RETURN_ON_ERROR(i2s_channel_enable(i2s_tx_chan), TAG, "I2S TX enable failed");
