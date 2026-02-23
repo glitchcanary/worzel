@@ -547,17 +547,31 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
             }
         } else if (ev->op_code == 0x02) {
             // Binary message — Opus audio from server, decode and play
+            static int play_frame = 0;
             if (i2s_tx_chan && opus_dec && ev->data_len > 0) {
                 int16_t pcm_buf[FRAME_SAMPLES];
                 int decoded = opus_decode(opus_dec, (const unsigned char *)ev->data_ptr,
                                           ev->data_len, pcm_buf, FRAME_SAMPLES, 0);
                 if (decoded > 0) {
                     size_t written = 0;
-                    i2s_channel_write(i2s_tx_chan, pcm_buf, decoded * sizeof(int16_t),
-                                      &written, 100);
+                    esp_err_t wr_ret = i2s_channel_write(i2s_tx_chan, pcm_buf, decoded * sizeof(int16_t),
+                                      &written, pdMS_TO_TICKS(200));
+                    if (play_frame % 10 == 0) {
+                        int16_t mn = 0, mx = 0;
+                        for (int i = 0; i < decoded; i++) {
+                            if (pcm_buf[i] < mn) mn = pcm_buf[i];
+                            if (pcm_buf[i] > mx) mx = pcm_buf[i];
+                        }
+                        ESP_LOGI(TAG, "Play frame %d: opus=%d decoded=%d written=%zu ret=%d min=%d max=%d",
+                                 play_frame, ev->data_len, decoded, written, wr_ret, mn, mx);
+                    }
+                    play_frame++;
                 } else {
-                    ESP_LOGW(TAG, "Opus decode error: %d", decoded);
+                    ESP_LOGW(TAG, "Opus decode error: %d (opus_len=%d)", decoded, ev->data_len);
                 }
+            } else {
+                ESP_LOGW(TAG, "Playback skip: tx=%p dec=%p len=%d",
+                         i2s_tx_chan, opus_dec, ev->data_len);
             }
         }
         break;
