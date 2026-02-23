@@ -104,8 +104,8 @@ static esp_err_t es8311_init_codec(void) {
     es8311_write_reg(0x02, 0x00);
     // REG03: ADC OSR=16
     es8311_write_reg(0x03, 0x10);
-    // REG04: DAC OSR=32 (coefficient table specifies 0x20 for 16kHz)
-    es8311_write_reg(0x04, 0x20);
+    // REG04: DAC OSR=16 (matches official esp-adf driver for 16kHz)
+    es8311_write_reg(0x04, 0x10);
     // REG05: ADC div=1, DAC div=1
     es8311_write_reg(0x05, 0x00);
     // REG06: BCLK divider=4
@@ -118,22 +118,32 @@ static esp_err_t es8311_init_codec(void) {
     es8311_write_reg(0x09, 0x0C);  // SDP_IN (DAC): 16-bit I2S
     es8311_write_reg(0x0A, 0x0C);  // SDP_OUT (ADC): 16-bit I2S
 
-    // Power up analog
+    // System config (from esp-adf/esp-bsp official drivers)
+    es8311_write_reg(0x0B, 0x00);
+    es8311_write_reg(0x0C, 0x00);
+    es8311_write_reg(0x10, 0x1F);
+    es8311_write_reg(0x11, 0x7F);
+
+    // Power up analog (VMID/VREF ramp)
     es8311_write_reg(0x0D, 0x01);
-    // ADC analog enable: enable ADC modulator + PGA (bit 5 = DMIC off for analog mic)
-    es8311_write_reg(0x0E, 0x20);
+    // ADC analog power: PGA + ADC modulator enabled.
+    // Bits are ACTIVE-LOW: 0=enable, 1=power down.
+    // Bit 6 (PDN_PGA)=0, Bit 5 (PDN_MOD)=0, Bit 1=1 (per official drivers).
+    es8311_write_reg(0x0E, 0x02);
     // Power up DAC
     es8311_write_reg(0x12, 0x00);
     // Enable HP output driver
     es8311_write_reg(0x13, 0x10);
 
-    // Mic input: analog mic (MIC1P-MIC1N), PGA gain 24dB
-    es8311_write_reg(0x14, 0x18);
+    // Mic input: analog mic (MIC1P-MIC1N), PGA gain 30dB (matches official drivers)
+    es8311_write_reg(0x14, 0x1A);
 
     // ADC digital config
+    es8311_write_reg(0x15, 0x40);  // ADC ramp rate
     es8311_write_reg(0x16, 0x24);  // ADC gain scale
     es8311_write_reg(0x17, 0xC8);  // ADC volume (~0dB)
-    es8311_write_reg(0x1C, 0x6A);  // Bypass ADC EQ
+    es8311_write_reg(0x1B, 0x0A);  // ADC EQ config
+    es8311_write_reg(0x1C, 0x6A);  // Bypass ADC EQ, cancel DC offset
 
     // DAC config
     es8311_write_reg(0x31, 0x00);  // Unmute DAC
@@ -142,6 +152,7 @@ static esp_err_t es8311_init_codec(void) {
 
     // GPIO config
     es8311_write_reg(0x44, 0x08);
+    es8311_write_reg(0x45, 0x00);
 
     // Start codec state machine
     es8311_write_reg(0x00, 0x80);
