@@ -678,7 +678,7 @@ void app_main(void) {
     connect_websocket();
 
     // Start audio capture task
-    xTaskCreatePinnedToCore(audio_task, "audio", 8192, NULL, 5, NULL,
+    xTaskCreatePinnedToCore(audio_task, "audio", 16384, NULL, 5, NULL,
                             1 /* core 1 if available, else 0 on single-core */);
 
     display_status(11, "Ready - hold button to talk", COLOR_WHITE);
