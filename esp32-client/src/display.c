@@ -30,6 +30,9 @@ static esp_lcd_panel_io_handle_t panel_io = NULL;
 #define CHAR_H      (8 * FONT_SCALE)
 #define MAX_COLS    (LCD_H_RES / CHAR_W)
 
+/* Push framebuffer in bands to avoid SPI transfer size limits */
+#define BAND_ROWS   32
+
 /* Persistent framebuffer in PSRAM (368*448*2 = ~322KB) */
 static uint16_t *framebuf = NULL;
 
@@ -41,9 +44,19 @@ static const sh8601_lcd_init_cmd_t init_cmds[] = {
     {0x53, (uint8_t[]){0x20}, 1, 10},                       /* Write CTRL display */
     {0x2A, (uint8_t[]){0x00, 0x00, 0x01, 0x6F}, 4, 0},     /* Column 0-367 */
     {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xBF}, 4, 0},     /* Row 0-447 */
-    {0x51, (uint8_t[]){0xD0}, 1, 10},                       /* Brightness ~80% */
+    {0x51, (uint8_t[]){0xA0}, 1, 10},                       /* Brightness ~63% */
     {0x29, (uint8_t[]){0x00}, 0, 10},                       /* Display ON */
 };
+
+/* Push full framebuffer to display in bands */
+static void flush_framebuf(void) {
+    for (int y = 0; y < LCD_V_RES; y += BAND_ROWS) {
+        int y_end = y + BAND_ROWS;
+        if (y_end > LCD_V_RES) y_end = LCD_V_RES;
+        esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_H_RES, y_end,
+                                   &framebuf[y * LCD_H_RES]);
+    }
+}
 
 static void draw_char(int px, int py, char c, uint16_t fg, uint16_t bg) {
     if (c < 0x20 || c > 0x7E) c = '?';
@@ -103,7 +116,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         .data1_io_num = PIN_LCD_QSPI_D1,
         .data2_io_num = PIN_LCD_QSPI_D2,
         .data3_io_num = PIN_LCD_QSPI_D3,
-        .max_transfer_sz = LCD_H_RES * LCD_V_RES * sizeof(uint16_t),
+        .max_transfer_sz = LCD_H_RES * BAND_ROWS * sizeof(uint16_t),
         .flags = SPICOMMON_BUSFLAG_QUAD,
     };
     ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO),
@@ -186,7 +199,7 @@ void display_status(int row, const char *text, uint16_t color) {
 void display_clear(void) {
     if (!framebuf || !panel) return;
     memset(framebuf, 0, LCD_H_RES * LCD_V_RES * sizeof(uint16_t));
-    esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_H_RES, LCD_V_RES, framebuf);
+    flush_framebuf();
 }
 
 #else /* !BOARD_HAS_DISPLAY */
