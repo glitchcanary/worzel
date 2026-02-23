@@ -4,8 +4,13 @@
 # WiFi (override before building)
 CONFIG_WORZEL_WIFI_SSID="myssid"
 CONFIG_WORZEL_WIFI_PASS="mypassword"
-CONFIG_WORZEL_SERVER_HOST="192.168.1.100"
-CONFIG_WORZEL_SERVER_PORT="3000"
+# Server — Tailscale Funnel (public HTTPS, works from any internet-connected WiFi)
+CONFIG_WORZEL_SERVER_HOST="raz17.tailaf2e8d.ts.net"
+CONFIG_WORZEL_SERVER_PORT="443"
+CONFIG_WORZEL_USE_TLS=y
+
+# Console output via USB-Serial/JTAG (ESP32-S3 has no external UART-to-USB chip)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # Increase main task stack for cJSON allocations
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

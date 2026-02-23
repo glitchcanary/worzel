@@ -30,6 +30,7 @@
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
+#include "esp_crt_bundle.h"
 #include "cJSON.h"
 
 #include <opus.h>  /* esphome/micro-opus (Apache 2.0 + libopus BSD) */
@@ -306,8 +307,13 @@ static void setup_wifi(void) {
 // ======== HTTP Authentication (OTA endpoint) ========
 
 static bool authenticate(void) {
-    char url[128];
+    char url[256];
+#ifdef CONFIG_WORZEL_USE_TLS
+    snprintf(url, sizeof(url), "https://%s:%s/api/ota", SERVER_HOST, SERVER_PORT);
+#else
     snprintf(url, sizeof(url), "http://%s:%s/api/ota", SERVER_HOST, SERVER_PORT);
+#endif
+    ESP_LOGI(TAG, "Authenticating via %s", url);
 
     // Build JSON body
     cJSON *body = cJSON_CreateObject();
@@ -324,6 +330,9 @@ static bool authenticate(void) {
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 10000,
+#ifdef CONFIG_WORZEL_USE_TLS
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
@@ -481,10 +490,14 @@ static void connect_websocket(void) {
     // Build WS URL with auth token
     char full_url[768];
     snprintf(full_url, sizeof(full_url), "%s?token=%s", ws_url, auth_token);
+    ESP_LOGI(TAG, "WebSocket URL: %s", full_url);
 
     esp_websocket_client_config_t ws_cfg = {
         .uri = full_url,
         .buffer_size = 4096,
+#ifdef CONFIG_WORZEL_USE_TLS
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
     };
 
     ws_client = esp_websocket_client_init(&ws_cfg);

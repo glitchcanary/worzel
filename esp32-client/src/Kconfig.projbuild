@@ -16,12 +16,21 @@ menu "Worzel Client Configuration"
         string "Worzel Server Host"
         default "192.168.1.100"
         help
-            IP address or hostname of the Worzel server.
+            Hostname or IP address of the Worzel server.
+            For Tailscale: use your .ts.net hostname (e.g. myhost.tailaf2e8d.ts.net)
 
     config WORZEL_SERVER_PORT
         string "Worzel Server Port"
         default "3000"
         help
             Port number of the Worzel server.
+            Use 443 for Tailscale/HTTPS, 3000 for local HTTP.
+
+    config WORZEL_USE_TLS
+        bool "Use TLS (HTTPS/WSS)"
+        default n
+        help
+            Enable TLS for server connections. Required for Tailscale (.ts.net)
+            or any HTTPS server. Uses ESP-IDF certificate bundle for CA verification.
 
 endmenu
