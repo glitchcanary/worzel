@@ -536,6 +536,12 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             if (t && t->valuestring) {
                                 display_status(15, t->valuestring, COLOR_GREEN);
                             }
+                            // Reset I2S TX DMA on each new TTS stream to avoid stale buffer stall
+                            if (s && s->valuestring && strcmp(s->valuestring, "start") == 0) {
+                                i2s_channel_disable(i2s_tx_chan);
+                                i2s_channel_enable(i2s_tx_chan);
+                                ESP_LOGI(TAG, "I2S TX reset for new TTS stream");
+                            }
                         } else if (strcmp(type->valuestring, "error") == 0) {
                             cJSON *m = cJSON_GetObjectItem(msg, "message");
                             ESP_LOGE(TAG, "Server error: %s", m ? m->valuestring : "?");
@@ -555,7 +561,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                 if (decoded > 0) {
                     size_t written = 0;
                     esp_err_t wr_ret = i2s_channel_write(i2s_tx_chan, pcm_buf, decoded * sizeof(int16_t),
-                                      &written, pdMS_TO_TICKS(200));
+                                      &written, pdMS_TO_TICKS(1000));
                     if (play_frame % 10 == 0) {
                         int16_t mn = 0, mx = 0;
                         for (int i = 0; i < decoded; i++) {
