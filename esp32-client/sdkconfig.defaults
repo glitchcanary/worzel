@@ -21,7 +21,7 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # WebSocket task stack — default 3072 is too small with TLS
-CONFIG_WEBSOCKET_CLIENT_TASK_STACK_SIZE=6144
+CONFIG_WEBSOCKET_CLIENT_TASK_STACK_SIZE=12288
 
 # Flash size — set per board in platformio.ini (board_upload.flash_size).
 # Default to 4MB for boards without explicit override (C3, C6).

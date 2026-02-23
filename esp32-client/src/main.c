@@ -530,6 +530,7 @@ static void connect_websocket(void) {
     esp_websocket_client_config_t ws_cfg = {
         .uri = full_url,
         .buffer_size = 4096,
+        .task_stack = 12288,  /* 12KB — TLS needs much more than the 3KB default */
 #ifdef CONFIG_WORZEL_USE_TLS
         .crt_bundle_attach = esp_crt_bundle_attach,
 #endif
