@@ -159,7 +159,7 @@ static esp_err_t es8311_init_codec(void) {
     // DAC config
     es8311_write_reg(0x37, 0x08);  // Bypass DAC EQ
     es8311_write_reg(0x31, 0x00);  // Unmute DAC
-    es8311_write_reg(0x32, 0xBF);  // DAC volume 0dB (0xFF was +32dB — risky for amp)
+    es8311_write_reg(0x32, 0xD0);  // DAC volume ~+5dB (0xBF=0dB, 0xFF=+32dB)
 
     vTaskDelay(pdMS_TO_TICKS(50));
 
@@ -642,11 +642,23 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             if (t && t->valuestring) {
                                 display_conversation(t->valuestring, COLOR_GREEN);
                             }
-                            // Reset I2S TX DMA on each new TTS stream to avoid stale buffer stall
-                            if (s && s->valuestring && strcmp(s->valuestring, "start") == 0) {
-                                i2s_channel_disable(i2s_tx_chan);
-                                i2s_channel_enable(i2s_tx_chan);
-                                ESP_LOGI(TAG, "I2S TX reset for new TTS stream");
+                            // Enable I2S TX at start of new TTS response; disable at end
+                            if (s && s->valuestring) {
+                                if (strcmp(s->valuestring, "start") == 0) {
+                                    i2s_channel_disable(i2s_tx_chan);
+                                    i2s_channel_enable(i2s_tx_chan);
+                                    ESP_LOGI(TAG, "I2S TX enabled for TTS");
+                                } else if (strcmp(s->valuestring, "stop") == 0) {
+                                    // Flush silence then disable to avoid DMA replay noise
+                                    int16_t silence[256] = {0};
+                                    size_t wr = 0;
+                                    for (int i = 0; i < 4; i++) {
+                                        i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
+                                                          &wr, pdMS_TO_TICKS(50));
+                                    }
+                                    i2s_channel_disable(i2s_tx_chan);
+                                    ESP_LOGI(TAG, "I2S TX disabled after TTS");
+                                }
                             }
                         } else if (strcmp(type->valuestring, "error") == 0) {
                             cJSON *m = cJSON_GetObjectItem(msg, "message");
@@ -855,6 +867,18 @@ void app_main(void) {
     ESP_LOGI(TAG, "Playing startup melody...");
     melody_play(i2s_tx_chan, I2S_SAMPLE_RATE);
     ESP_LOGI(TAG, "Startup melody done");
+
+    // Flush I2S TX with silence so DMA doesn't replay stale melody data
+    {
+        int16_t silence[256] = {0};
+        size_t wr = 0;
+        for (int i = 0; i < 8; i++) {  // ~8 DMA buffers worth
+            i2s_channel_write(i2s_tx_chan, silence, sizeof(silence), &wr, pdMS_TO_TICKS(100));
+        }
+    }
+    // Disable TX until TTS playback needs it (prevents noise/looping)
+    i2s_channel_disable(i2s_tx_chan);
+    ESP_LOGI(TAG, "I2S TX silenced after melody");
 
     // Post-melody diagnostic: re-read key DAC registers to verify config
     ESP_LOGI(TAG, "DAC diag: REG00=0x%02x REG01=0x%02x REG0D=0x%02x REG12=0x%02x "
