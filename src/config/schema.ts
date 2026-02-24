@@ -72,7 +72,7 @@ export const TtsConfigSchema = z.object({
   url: urlWithAllowlist.optional(),
   model: z.string().default('tts-1'),
   voice: z.string().default('en-US-AriaNeural'),
-  sampleRate: z.coerce.number().int().default(24000),
+  sampleRate: z.coerce.number().int().default(16000),
 });
 
 export const LlmSmartConfigSchema = z.object({

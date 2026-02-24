@@ -1,6 +1,7 @@
 import type pino from 'pino';
 import type { TTSProvider } from '../providers/interface.js';
 import { encodeToOpusFrames } from '../utils/opus-encode.js';
+import { resamplePcm } from '../utils/resample.js';
 
 /** Short non-verbal filler phrases for latency masking */
 export const FILLER_TEXTS: readonly string[] = [
@@ -32,8 +33,9 @@ export class FillerCache {
     const results = await Promise.allSettled(
       FILLER_TEXTS.map(async (text): Promise<CachedFiller> => {
         const result = await tts.synthesize(text);
-        const rate = result.sampleRate as 8000 | 12000 | 16000 | 24000 | 48000;
-        const opusFrames = encodeToOpusFrames(result.audio, rate);
+        // Resample to 16kHz (matching pipeline encoder rate) before Opus encoding
+        const pcm16k = resamplePcm(result.audio, result.sampleRate, 16000);
+        const opusFrames = encodeToOpusFrames(pcm16k, 16000);
         return { text, audio: result.audio, opusFrames, sampleRate: result.sampleRate };
       })
     );

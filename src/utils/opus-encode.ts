@@ -4,7 +4,7 @@
  * Encodes PCM int16 LE audio to raw Opus frames for transport to clients.
  * Uses opusscript (Emscripten/WASM port of libopus).
  *
- * Designed for TTS output: 24kHz mono, 60ms frames (1440 samples).
+ * Designed for TTS output: 16kHz mono, 60ms frames (960 samples).
  * The encoder instance is reusable across multiple encode calls —
  * create once per pipeline run, not per packet.
  */
@@ -104,7 +104,7 @@ export class OpusEncoder {
  */
 export function encodeToOpusFrames(
   pcmBuffer: Buffer,
-  sampleRate: 8000 | 12000 | 16000 | 24000 | 48000 = 24000,
+  sampleRate: 8000 | 12000 | 16000 | 24000 | 48000 = 16000,
 ): Buffer[] {
   const encoder = new OpusEncoder({ sampleRate, channels: 1 });
   try {

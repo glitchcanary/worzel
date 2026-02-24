@@ -100,7 +100,7 @@ class WsClient {
 // OpusBrowserDecoder — decodes Opus packets via WebCodecs AudioDecoder
 // ========================================================================
 class OpusBrowserDecoder {
-  constructor(sampleRate = 24000) {
+  constructor(sampleRate = 16000) {
     this.sampleRate = sampleRate;
     this._decoder = null;
     this._onDecoded = null; // callback: (Float32Array) => void
@@ -178,7 +178,7 @@ class OpusBrowserDecoder {
 // AudioPlayer — queued audio playback via Web Audio API
 // ========================================================================
 class AudioPlayer {
-  constructor(sampleRate = 24000) {
+  constructor(sampleRate = 16000) {
     this.sampleRate = sampleRate;
     this.ctx = null;
     this.nextTime = 0;
@@ -805,7 +805,7 @@ class WorzelApp extends HTMLElement {
   }
   doConnect(serverUrl) {
     this.client = new WsClient({ serverUrl });
-    this.player = new AudioPlayer(24000);
+    this.player = new AudioPlayer(16000);
     // Pre-load settings from server
     this.shadowRoot.querySelector('worzel-settings').load(serverUrl);
     const status = this.shadowRoot.querySelector('worzel-status');
@@ -842,7 +842,7 @@ class WorzelApp extends HTMLElement {
         // The filler and LLM audio are gaplessly scheduled on the same timeline.
         // A fresh player is only created if none exists (e.g. first utterance).
         if (!this.player) {
-          this.player = new AudioPlayer(24000);
+          this.player = new AudioPlayer(16000);
         }
         this._audioPackets = 0;
         audio.setPipelineState('speaking');

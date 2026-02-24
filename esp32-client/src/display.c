@@ -17,6 +17,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include "freertos/FreeRTOS.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -127,41 +128,6 @@ static void clock_update_cb(lv_timer_t *timer) {
     }
 }
 
-/* LVGL flush callback: byte-swap RGB565 for the SH8601 big-endian QSPI,
- * send to panel, and ALWAYS signal flush_ready.
- *
- * We cannot rely on the SPI on_color_trans_done ISR to call
- * lv_display_flush_ready(). If a single SPI error corrupts the driver
- * state, subsequent "successful" calls to esp_lcd_panel_draw_bitmap()
- * may start DMA but the ISR never fires — LVGL hangs forever in
- * wait_for_flushing() and the watchdog triggers.
- *
- * Instead we always call lv_display_flush_ready() immediately. This
- * means LVGL may render the next partial area while DMA is still
- * sending the current one. But at 40MHz QSPI, a 368×20 partial
- * buffer (14.7KB) transfers in ~0.3ms, while LVGL rendering takes
- * several ms — the DMA finishes long before LVGL overwrites the
- * buffer. For a text UI, any theoretical tearing is invisible. */
-static void safe_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
-    /* Swap bytes of each RGB565 pixel: ESP32 is little-endian but
-     * SH8601 QSPI expects big-endian. */
-    int pixel_count = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
-    uint16_t *p = (uint16_t *)px_map;
-    for (int i = 0; i < pixel_count; i++) {
-        p[i] = (p[i] >> 8) | (p[i] << 8);
-    }
-
-    esp_err_t ret = esp_lcd_panel_draw_bitmap(panel,
-        area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Display flush failed (%s), skipping frame", esp_err_to_name(ret));
-    }
-
-    /* Always signal completion — never let LVGL spin in wait_for_flushing.
-     * Double-calling flush_ready (if the ISR also fires) is harmless in
-     * LVGL 9 — it just sets a flag. */
-    lv_display_flush_ready(disp);
-}
 
 /* SH8601 vendor init commands */
 static const sh8601_lcd_init_cmd_t init_cmds[] = {
@@ -271,7 +237,7 @@ static void build_ui(void) {
     /* ---- Conversation area (middle, scrollable) ---- */
     int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
     convo_area = lv_obj_create(scr);
-    style_container(convo_area, lv_color_black(),
+    style_container(convo_area, lv_color_make(10, 10, 15),  /* very dark, not pure black */
                     LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
     lv_obj_set_style_pad_left(convo_area, 8, 0);
     lv_obj_set_style_pad_right(convo_area, 8, 0);
@@ -285,6 +251,10 @@ static void build_ui(void) {
 }
 
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
+    /* Suppress SPI panel IO error spam — transient errors are handled
+     * gracefully by the flush callback and don't need log lines. */
+    esp_log_level_set("lcd_panel.io.spi", ESP_LOG_NONE);
+
     /* ---- SH8601 panel init ---- */
 
     /* Reset display via TCA9554 IO expander (same I2C bus as ES8311) */
@@ -327,7 +297,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         .dc_gpio_num = -1,
         .spi_mode = 0,
         .pclk_hz = 40 * 1000 * 1000,
-        .trans_queue_depth = 10,
+        .trans_queue_depth = 3,
         .lcd_cmd_bits = 32,
         .lcd_param_bits = 8,
         .flags = {
@@ -390,12 +360,9 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
     }
     ESP_LOGI(TAG, "LVGL display registered");
 
-    /* Replace the default flush callback with our safe wrapper.
-     * The esp_lvgl_port flush callback calls esp_lcd_panel_draw_bitmap()
-     * but doesn't handle failures — if SPI returns an error, the
-     * on_color_trans_done ISR never fires, and LVGL hangs forever
-     * in wait_for_flushing(). Our wrapper catches failures. */
-    lv_display_set_flush_cb(lvgl_disp, safe_flush_cb);
+    /* Use esp_lvgl_port's default flush callback + ISR.
+     * swap_bytes=true handles RGB565 byte-swap for SH8601.
+     * The ISR calls lv_display_flush_ready() on DMA completion. */
 
     /* ---- Touch init (FT3168 / FT5x06-compatible) ---- */
 #ifdef PIN_TOUCH_INT

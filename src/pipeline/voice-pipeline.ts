@@ -9,6 +9,7 @@ import { SegmentTracker } from './segment-tracker.js';
 import { stripThinkTags } from '../utils/sanitize.js';
 import { decodeOpusFrames } from '../utils/opus-decode.js';
 import { OpusEncoder } from '../utils/opus-encode.js';
+import { resamplePcm } from '../utils/resample.js';
 import { writeFileSync, mkdirSync } from 'node:fs';
 
 /** Debug audio dump: save raw Opus + decoded PCM WAV when WORZEL_DEBUG_AUDIO=1 */
@@ -115,8 +116,9 @@ export class VoicePipeline {
     const abortController = new AbortController();
     session.abortController = abortController;
 
-    // Opus encoder for TTS output (24kHz mono, reused across all segments)
-    const opusEncoder = new OpusEncoder({ sampleRate: 24000, channels: 1 });
+    // Opus encoder for TTS output (16kHz mono — matches ESP32 I2S rate,
+    // avoids costly libopus internal resampling on the microcontroller)
+    const opusEncoder = new OpusEncoder({ sampleRate: 16000, channels: 1 });
 
     try {
       // 1. Decode audio to PCM
@@ -277,6 +279,7 @@ export class VoicePipeline {
 
             const packetsSent = await this.sendOpusAudio(
               ttsResult.audio, opusEncoder, transport, rateController, abortController.signal,
+              ttsResult.sampleRate,
             );
 
             tracker.advance(trackIdx, 'committed');
@@ -332,6 +335,7 @@ export class VoicePipeline {
           rateController.reset();
           const packetsSent = await this.sendOpusAudio(
             ttsResult.audio, opusEncoder, transport, rateController, abortController.signal,
+            ttsResult.sampleRate,
           );
 
           tracker.advance(trackIdx, 'committed');
@@ -379,6 +383,7 @@ export class VoicePipeline {
                 rateController.reset();
                 await this.sendOpusAudio(
                   ttsResult.audio, opusEncoder, transport, rateController, abortController.signal,
+                  ttsResult.sampleRate,
                 );
               } catch (err) {
                 this.logger.error({ err }, 'TTS error for smart correction');
@@ -436,6 +441,7 @@ export class VoicePipeline {
 
   /**
    * Encode PCM audio to Opus and send frames via transport with rate control.
+   * Resamples to the encoder's sample rate if needed (TTS typically returns 24kHz).
    */
   private async sendOpusAudio(
     pcmAudio: Buffer,
@@ -443,8 +449,10 @@ export class VoicePipeline {
     transport: Transport,
     rateController: AudioRateController,
     signal: AbortSignal,
+    srcSampleRate?: number,
   ): Promise<number> {
-    const opusFrames = encoder.encodeAll(pcmAudio);
+    const pcm = srcSampleRate ? resamplePcm(pcmAudio, srcSampleRate, encoder.sampleRate) : pcmAudio;
+    const opusFrames = encoder.encodeAll(pcm);
     let packetsSent = 0;
     for (const opusPacket of opusFrames) {
       if (signal.aborted) break;
