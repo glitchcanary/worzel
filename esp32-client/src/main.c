@@ -600,7 +600,7 @@ static void send_listen(const char *state) {
 // This prevents LVGL display updates and JSON parsing in the WS handler
 // from starving the I2S DMA, which caused audio stutter.
 
-#define PLAYBACK_QUEUE_LEN 30   /* 30 × 60ms = 1.8s buffer */
+#define PLAYBACK_QUEUE_LEN 50   /* 50 × 60ms = 3s buffer */
 
 #define PKT_TYPE_AUDIO     0
 #define PKT_TYPE_TTS_START 1    /* reset decoder, flush silence, unmute DAC */
@@ -634,11 +634,13 @@ static void playback_task(void *arg) {
         switch (item.type) {
         case PKT_TYPE_TTS_START:
             if (opus_dec) opus_decoder_ctl(opus_dec, OPUS_RESET_STATE);
-            /* Flush stale DMA data with silence before unmuting */
+            /* Brief silence flush to clear stale I2S DMA data before unmuting.
+             * Keep this short (3 writes ≈ 24ms) to avoid blocking the playback
+             * task while new audio frames queue up. */
             {
                 int16_t silence[256] = {0};
                 size_t wr = 0;
-                for (int i = 0; i < 8; i++) {
+                for (int i = 0; i < 3; i++) {
                     i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
                                       &wr, pdMS_TO_TICKS(50));
                 }
@@ -659,7 +661,7 @@ static void playback_task(void *arg) {
         case PKT_TYPE_SENT_END: {
             int16_t silence[256] = {0};
             size_t wr = 0;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 2; i++) {
                 i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
                                   &wr, pdMS_TO_TICKS(50));
             }
@@ -763,6 +765,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             // Queue DAC control to playback task (non-blocking)
                             if (s && s->valuestring) {
                                 if (strcmp(s->valuestring, "start") == 0) {
+                                    /* Flush stale audio from previous TTS segment.
+                                     * Without this, old frames fill the queue and the
+                                     * new TTS_START gets dropped → decoder never resets. */
+                                    xQueueReset(playback_queue);
                                     queue_playback(PKT_TYPE_TTS_START, NULL, 0);
                                 } else if (strcmp(s->valuestring, "sentence_end") == 0) {
                                     queue_playback(PKT_TYPE_SENT_END, NULL, 0);

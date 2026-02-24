@@ -291,7 +291,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         .dc_gpio_num = -1,
         .spi_mode = 0,
         .pclk_hz = 40 * 1000 * 1000,
-        .trans_queue_depth = 10,
+        .trans_queue_depth = 20,
         .lcd_cmd_bits = 32,
         .lcd_param_bits = 8,
         .flags = {
