@@ -1,16 +1,18 @@
 /**
- * Zone-based display for SH8601 AMOLED (Waveshare ESP32-S3 1.8").
- * QSPI interface, 368x448, RGB565. No LVGL — direct framebuffer + bitmap font.
+ * LVGL 9.x display for SH8601 AMOLED (Waveshare ESP32-S3 1.8").
+ * QSPI interface, 368x448, RGB565. Touch via FT3168 (FT5x06-compatible).
  *
- * Three zones:
- *   Header (y 0-55):     "Worzel" at 4x, board name at 2x
- *   Status (y 56-191):   8 slots at 2x (WiFi, Auth, WS, etc.)
- *   Conversation (y 192-447): STT/TTS at 2x with word-wrap + scrolling ring buffer
+ * Uses esp_lvgl_port for LVGL lifecycle (tick, task, display bridge, touch).
+ * Thread-safe: all LVGL calls wrapped in lvgl_port_lock/unlock.
+ *
+ * Layout:
+ *   Status bar (~40px top): "Worzel" + WiFi/Auth/WS status
+ *   Conversation (middle): scrollable, touch-enabled, auto-scroll
+ *   Action bar (~36px bottom): state hint text
  */
 
 #include "display.h"
 #include "board.h"
-#include "font8x8.h"
 
 #include <string.h>
 #include "esp_log.h"
@@ -22,52 +24,36 @@
 #include "esp_io_expander_tca9554.h"
 #include "driver/spi_master.h"
 
-#ifdef BOARD_HAS_DISPLAY
+#ifdef BOARD_HAS_LVGL
+
+#include "esp_lvgl_port.h"
+#include "esp_lcd_touch_ft5x06.h"
+#include "lvgl.h"
 
 static const char *TAG = "display";
 
 static esp_lcd_panel_handle_t panel = NULL;
 static esp_lcd_panel_io_handle_t panel_io = NULL;
 
-/* Zone layout (pixel coordinates) */
-#define ZONE_HEADER_Y     0
-#define ZONE_HEADER_H    56    /* 32px title + 16px subtitle + 8px gap */
-#define ZONE_STATUS_Y    56
-#define ZONE_STATUS_H   136    /* 8 slots x 16px + 8px padding */
-#define ZONE_CONVO_Y    192
-#define ZONE_CONVO_H    256    /* 448 - 192 */
+/* LVGL UI elements */
+static lv_obj_t *status_bar = NULL;
+static lv_obj_t *lbl_title = NULL;
+static lv_obj_t *lbl_status[4] = {0};  /* WiFi, IP, Auth, WS */
+static lv_obj_t *convo_area = NULL;
+static lv_obj_t *action_bar = NULL;
+static lv_obj_t *lbl_action = NULL;
 
-/* Font constants */
-#define HEADER_SCALE     4     /* 32px per char */
-#define STATUS_SCALE     2     /* 16px per char */
-#define CONVO_SCALE      2     /* 16px per char — 1x is unreadable on 1.8" */
-#define STATUS_CHAR_H   (8 * STATUS_SCALE)  /* 16px */
-#define CONVO_CHAR_W    (8 * CONVO_SCALE)   /* 16px */
-#define CONVO_CHAR_H    (8 * CONVO_SCALE)   /* 16px */
-#define CONVO_COLS      (LCD_H_RES / CONVO_CHAR_W)           /* 23 chars at 2x */
-#define CONVO_LINES     (ZONE_CONVO_H / CONVO_CHAR_H)        /* 16 lines at 2x */
-#define STATUS_MAX_COLS (LCD_H_RES / (8 * STATUS_SCALE))     /* 23 chars */
-
-#define LEFT_MARGIN     8  /* pixels */
-
-/* Push framebuffer in bands to avoid SPI transfer size limits */
-#define BAND_ROWS   32
-
-/* Persistent framebuffer in PSRAM (368*448*2 = ~322KB) */
-static uint16_t *framebuf = NULL;
-
-/* Conversation ring buffer */
-typedef struct {
-    char text[48];    /* max CONVO_COLS + 2 for safety */
-    uint16_t color;
-} convo_line_t;
-
-static convo_line_t convo_buf[CONVO_LINES];
-static int convo_head = 0;   /* next write position */
-static int convo_count = 0;  /* number of lines in buffer */
-
-/* Separator color */
-#define COLOR_SEPARATOR 0x3186  /* dark grey */
+/*
+ * Status slot mapping (same slots as bitmap version for API compat):
+ *   0 = Audio: OK       → ignored (boot-only)
+ *   1 = Opus: OK        → ignored (boot-only)
+ *   2 = WiFi status     → status bar label 0
+ *   3 = IP address      → status bar label 1
+ *   4 = Auth status     → status bar label 2
+ *   5 = WebSocket       → status bar label 3
+ *   6 = Ready/hint      → action bar
+ */
+#define SLOT_TO_STATUS(s)  ((s) - 2)  /* slots 2-5 → labels 0-3 */
 
 /* SH8601 vendor init commands */
 static const sh8601_lcd_init_cmd_t init_cmds[] = {
@@ -81,121 +67,111 @@ static const sh8601_lcd_init_cmd_t init_cmds[] = {
     {0x29, (uint8_t[]){0x00}, 0, 10},                       /* Display ON */
 };
 
-/* Push full framebuffer to display in bands */
-static void flush_framebuf(void) {
-    for (int y = 0; y < LCD_V_RES; y += BAND_ROWS) {
-        int y_end = y + BAND_ROWS;
-        if (y_end > LCD_V_RES) y_end = LCD_V_RES;
-        esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_H_RES, y_end,
-                                   &framebuf[y * LCD_H_RES]);
-    }
+/* Convert our RGB565 color defines to lv_color_t */
+static lv_color_t to_lv_color(uint16_t rgb565) {
+    uint8_t r = (rgb565 >> 11) & 0x1F;
+    uint8_t g = (rgb565 >> 5) & 0x3F;
+    uint8_t b = rgb565 & 0x1F;
+    return lv_color_make((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2));
 }
 
-/* Push a specific Y range to the display */
-static void flush_region(int y_start, int y_end) {
-    if (!panel || !framebuf) return;
-    /* Align to even boundaries (display requirement) */
-    y_start &= ~1;
-    y_end = (y_end + 1) & ~1;
-    if (y_end > LCD_V_RES) y_end = LCD_V_RES;
-    if (y_start >= y_end) return;
-    esp_lcd_panel_draw_bitmap(panel, 0, y_start, LCD_H_RES, y_end,
-                               &framebuf[y_start * LCD_H_RES]);
-}
+/* Compact status labels shown in the top bar */
 
-/* Draw a single character at arbitrary scale (1-4) */
-static void draw_char_scaled(int px, int py, char c, int scale, uint16_t fg, uint16_t bg) {
-    if (c < 0x20 || c > 0x7E) c = '?';
-    const uint8_t *glyph = font8x8_basic[(int)c];
-    for (int row = 0; row < 8; row++) {
-        uint8_t bits = glyph[row];
-        for (int col = 0; col < 8; col++) {
-            uint16_t color = (bits & (1 << col)) ? fg : bg;
-            for (int sy = 0; sy < scale; sy++) {
-                for (int sx = 0; sx < scale; sx++) {
-                    int x = px + col * scale + sx;
-                    int y = py + row * scale + sy;
-                    if (x >= 0 && x < LCD_H_RES && y >= 0 && y < LCD_V_RES) {
-                        framebuf[y * LCD_H_RES + x] = color;
-                    }
-                }
-            }
-        }
-    }
-}
+/* Build the LVGL UI layout */
+static void build_ui(void) {
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    lv_obj_set_style_pad_all(scr, 0, 0);
 
-/* Draw a text string at given position and scale */
-static void draw_text(int px, int py, const char *text, int scale, uint16_t fg) {
-    int cw = 8 * scale;
-    for (int i = 0; text[i]; i++) {
-        int x = px + i * cw;
-        if (x + cw > LCD_H_RES) break;
-        draw_char_scaled(x, py, text[i], scale, fg, COLOR_BLACK);
-    }
-}
+    /* ---- Status bar (top ~40px) ---- */
+    status_bar = lv_obj_create(scr);
+    lv_obj_set_size(status_bar, LCD_H_RES, 40);
+    lv_obj_align(status_bar, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(status_bar, lv_color_make(20, 20, 30), 0);
+    lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(status_bar, 0, 0);
+    lv_obj_set_style_radius(status_bar, 0, 0);
+    lv_obj_set_style_pad_left(status_bar, 8, 0);
+    lv_obj_set_style_pad_right(status_bar, 8, 0);
+    lv_obj_set_style_pad_top(status_bar, 4, 0);
+    lv_obj_set_scrollbar_mode(status_bar, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-/* Draw a horizontal separator line */
-static void draw_hline(int y, uint16_t color) {
-    if (y < 0 || y >= LCD_V_RES) return;
-    for (int x = 0; x < LCD_H_RES; x++) {
-        framebuf[y * LCD_H_RES + x] = color;
-    }
-}
+    /* Title */
+    lbl_title = lv_label_create(status_bar);
+    lv_label_set_text(lbl_title, "Worzel");
+    lv_obj_set_style_text_color(lbl_title, lv_color_make(0x47, 0xE0 >> 2, 0x00), 0);  /* green-ish */
+    lv_obj_set_style_text_color(lbl_title, lv_color_make(0x50, 0xC8, 0x50), 0);
+    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_flex_grow(lbl_title, 1);
 
-/* Clear a rectangular region to black */
-static void clear_region(int y_start, int height) {
-    for (int y = y_start; y < y_start + height && y < LCD_V_RES; y++) {
-        for (int x = 0; x < LCD_H_RES; x++) {
-            framebuf[y * LCD_H_RES + x] = COLOR_BLACK;
-        }
-    }
-}
-
-/* Render the header zone: "Worzel" at 3x, board name at 2x */
-static void render_header(void) {
-    clear_region(ZONE_HEADER_Y, ZONE_HEADER_H);
-    draw_text(LEFT_MARGIN, ZONE_HEADER_Y + 2, "Worzel", HEADER_SCALE, COLOR_GREEN);
-    draw_text(LEFT_MARGIN, ZONE_HEADER_Y + 36, BOARD_NAME, STATUS_SCALE, COLOR_GREY);
-    draw_hline(ZONE_HEADER_Y + ZONE_HEADER_H - 1, COLOR_SEPARATOR);
-}
-
-/* Redraw the entire conversation zone from the ring buffer */
-static void render_conversation(void) {
-    clear_region(ZONE_CONVO_Y, ZONE_CONVO_H);
-
-    int start = 0;
-    if (convo_count >= CONVO_LINES) {
-        start = convo_head;  /* oldest entry is at head when full */
+    /* Status labels (compact, in status bar: WiFi, IP, Auth, WS) */
+    for (int i = 0; i < 4; i++) {
+        lbl_status[i] = lv_label_create(status_bar);
+        lv_label_set_text(lbl_status[i], "");
+        lv_obj_set_style_text_color(lbl_status[i], lv_color_make(0x99, 0x99, 0x99), 0);
+        lv_obj_set_style_text_font(lbl_status[i], &lv_font_montserrat_14, 0);
     }
 
-    for (int i = 0; i < convo_count && i < CONVO_LINES; i++) {
-        int idx = (start + i) % CONVO_LINES;
-        int py = ZONE_CONVO_Y + i * CONVO_CHAR_H;
-        if (py + CONVO_CHAR_H > LCD_V_RES) break;
-        draw_text(LEFT_MARGIN, py, convo_buf[idx].text, CONVO_SCALE, convo_buf[idx].color);
-    }
+    /* ---- Separator line ---- */
+    lv_obj_t *sep1 = lv_obj_create(scr);
+    lv_obj_set_size(sep1, LCD_H_RES, 1);
+    lv_obj_align(sep1, LV_ALIGN_TOP_LEFT, 0, 40);
+    lv_obj_set_style_bg_color(sep1, lv_color_make(60, 60, 60), 0);
+    lv_obj_set_style_bg_opa(sep1, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sep1, 0, 0);
+    lv_obj_set_style_radius(sep1, 0, 0);
+    lv_obj_set_style_pad_all(sep1, 0, 0);
 
-    flush_region(ZONE_CONVO_Y, ZONE_CONVO_Y + ZONE_CONVO_H);
-}
+    /* ---- Action bar (bottom ~36px) ---- */
+    action_bar = lv_obj_create(scr);
+    lv_obj_set_size(action_bar, LCD_H_RES, 36);
+    lv_obj_align(action_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(action_bar, lv_color_make(20, 20, 30), 0);
+    lv_obj_set_style_bg_opa(action_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(action_bar, 0, 0);
+    lv_obj_set_style_radius(action_bar, 0, 0);
+    lv_obj_set_style_pad_left(action_bar, 8, 0);
+    lv_obj_set_scrollbar_mode(action_bar, LV_SCROLLBAR_MODE_OFF);
 
-/* Add a line to the conversation ring buffer */
-static void convo_push(const char *text, uint16_t color) {
-    strncpy(convo_buf[convo_head].text, text, sizeof(convo_buf[0].text) - 1);
-    convo_buf[convo_head].text[sizeof(convo_buf[0].text) - 1] = '\0';
-    convo_buf[convo_head].color = color;
-    convo_head = (convo_head + 1) % CONVO_LINES;
-    if (convo_count < CONVO_LINES) convo_count++;
+    lbl_action = lv_label_create(action_bar);
+    lv_label_set_text(lbl_action, "");
+    lv_obj_set_style_text_color(lbl_action, lv_color_make(0xCC, 0xCC, 0xCC), 0);
+    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl_action);
+
+    /* ---- Separator line above action bar ---- */
+    lv_obj_t *sep2 = lv_obj_create(scr);
+    lv_obj_set_size(sep2, LCD_H_RES, 1);
+    lv_obj_align(sep2, LV_ALIGN_BOTTOM_LEFT, 0, -36);
+    lv_obj_set_style_bg_color(sep2, lv_color_make(60, 60, 60), 0);
+    lv_obj_set_style_bg_opa(sep2, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sep2, 0, 0);
+    lv_obj_set_style_radius(sep2, 0, 0);
+    lv_obj_set_style_pad_all(sep2, 0, 0);
+
+    /* ---- Conversation area (middle, scrollable) ---- */
+    /* Height: 448 - 40 (status) - 1 (sep) - 1 (sep) - 36 (action) = 370px */
+    convo_area = lv_obj_create(scr);
+    lv_obj_set_size(convo_area, LCD_H_RES, 448 - 40 - 1 - 1 - 36);
+    lv_obj_align(convo_area, LV_ALIGN_TOP_LEFT, 0, 41);
+    lv_obj_set_style_bg_color(convo_area, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(convo_area, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(convo_area, 0, 0);
+    lv_obj_set_style_radius(convo_area, 0, 0);
+    lv_obj_set_style_pad_left(convo_area, 8, 0);
+    lv_obj_set_style_pad_right(convo_area, 8, 0);
+    lv_obj_set_style_pad_top(convo_area, 4, 0);
+    lv_obj_set_style_pad_bottom(convo_area, 4, 0);
+    lv_obj_set_flex_flow(convo_area, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(convo_area, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
 }
 
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
-    /* Allocate framebuffer in PSRAM */
-    size_t fb_size = LCD_H_RES * LCD_V_RES * sizeof(uint16_t);
-    framebuf = heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
-    if (!framebuf) {
-        ESP_LOGE(TAG, "Failed to alloc framebuffer (%d bytes)", fb_size);
-        return ESP_ERR_NO_MEM;
-    }
-    memset(framebuf, 0, fb_size);
+    /* ---- SH8601 panel init (preserved from bitmap version) ---- */
 
     /* Reset display via TCA9554 IO expander (same I2C bus as ES8311) */
     esp_io_expander_handle_t expander = NULL;
@@ -225,7 +201,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         .data1_io_num = PIN_LCD_QSPI_D1,
         .data2_io_num = PIN_LCD_QSPI_D2,
         .data3_io_num = PIN_LCD_QSPI_D3,
-        .max_transfer_sz = LCD_H_RES * BAND_ROWS * sizeof(uint16_t),
+        .max_transfer_sz = LCD_H_RES * 50 * sizeof(uint16_t),
         .flags = SPICOMMON_BUSFLAG_QUAD,
     };
     ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO),
@@ -270,112 +246,136 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
 
     ESP_LOGI(TAG, "SH8601 AMOLED ready (%dx%d)", LCD_H_RES, LCD_V_RES);
 
-    /* Clear and render initial layout */
-    display_clear();
-    render_header();
-    draw_hline(ZONE_CONVO_Y - 1, COLOR_SEPARATOR);
-    flush_framebuf();
+    /* ---- LVGL port init ---- */
+    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "LVGL port init failed");
 
+    /* Register display with LVGL port */
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle = panel_io,
+        .panel_handle = panel,
+        .buffer_size = LCD_H_RES * 50,
+        .double_buffer = false,
+        .hres = LCD_H_RES,
+        .vres = LCD_V_RES,
+        .flags = {
+            .buff_spiram = true,
+            .swap_bytes = false,
+        },
+    };
+    lv_display_t *lvgl_disp = lvgl_port_add_disp(&disp_cfg);
+    if (!lvgl_disp) {
+        ESP_LOGE(TAG, "Failed to add display to LVGL port");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "LVGL display registered");
+
+    /* ---- Touch init (FT3168 / FT5x06-compatible) ---- */
+#ifdef PIN_TOUCH_INT
+    esp_lcd_touch_handle_t touch_handle = NULL;
+    esp_lcd_panel_io_i2c_config_t touch_io_cfg = ESP_LCD_TOUCH_IO_I2C_FT5x06_CONFIG();
+    esp_lcd_panel_io_handle_t touch_io = NULL;
+
+    /* Create I2C IO for touch (on same bus as ES8311) */
+    ret = esp_lcd_new_panel_io_i2c(i2c_bus, &touch_io_cfg, &touch_io);
+    if (ret == ESP_OK) {
+        esp_lcd_touch_config_t touch_cfg = {
+            .x_max = LCD_H_RES,
+            .y_max = LCD_V_RES,
+            .rst_gpio_num = GPIO_NUM_NC,
+            .int_gpio_num = PIN_TOUCH_INT,
+            .levels = {
+                .reset = 0,
+                .interrupt = 0,
+            },
+            .flags = {
+                .swap_xy = 0,
+                .mirror_x = 0,
+                .mirror_y = 0,
+            },
+        };
+        ret = esp_lcd_touch_new_i2c_ft5x06(touch_io, &touch_cfg, &touch_handle);
+    }
+
+    if (ret == ESP_OK && touch_handle) {
+        const lvgl_port_touch_cfg_t lvgl_touch_cfg = {
+            .disp = lvgl_disp,
+            .handle = touch_handle,
+        };
+        lv_indev_t *touch_indev = lvgl_port_add_touch(&lvgl_touch_cfg);
+        if (touch_indev) {
+            ESP_LOGI(TAG, "Touch input registered (FT3168 @ 0x%02X, INT=GPIO%d)",
+                     TOUCH_I2C_ADDR, PIN_TOUCH_INT);
+        } else {
+            ESP_LOGW(TAG, "Touch LVGL registration failed — continuing without touch");
+        }
+    } else {
+        ESP_LOGW(TAG, "Touch init failed (%s) — continuing without touch", esp_err_to_name(ret));
+    }
+#endif
+
+    /* ---- Build UI ---- */
+    if (lvgl_port_lock(0)) {
+        build_ui();
+        lvgl_port_unlock();
+    }
+
+    ESP_LOGI(TAG, "LVGL UI ready");
     return ESP_OK;
 }
 
 void display_status(int slot, const char *text, uint16_t color) {
-    if (!framebuf || !panel || slot < 0 || slot >= 8) return;
+    if (!convo_area) return;
 
-    int py = ZONE_STATUS_Y + slot * STATUS_CHAR_H;
-    if (py + STATUS_CHAR_H > ZONE_STATUS_Y + ZONE_STATUS_H) return;
-
-    /* Clear the slot row */
-    clear_region(py, STATUS_CHAR_H);
-
-    /* Draw text at 2x scale */
-    draw_text(LEFT_MARGIN, py, text, STATUS_SCALE, color);
-
-    /* Push just this row to display */
-    flush_region(py, py + STATUS_CHAR_H);
+    if (lvgl_port_lock(0)) {
+        if (slot == 6 && lbl_action) {
+            /* Slot 6 = "Ready" hint → action bar */
+            lv_label_set_text(lbl_action, text ? text : "");
+            lv_obj_set_style_text_color(lbl_action, to_lv_color(color), 0);
+        } else if (slot >= 2 && slot <= 5) {
+            /* Slots 2-5 = WiFi/IP/Auth/WS → status bar labels 0-3 */
+            int idx = SLOT_TO_STATUS(slot);
+            if (idx >= 0 && idx < 4 && lbl_status[idx]) {
+                lv_label_set_text(lbl_status[idx], text ? text : "");
+                lv_obj_set_style_text_color(lbl_status[idx], to_lv_color(color), 0);
+            }
+        }
+        /* Slots 0-1 (Audio/Opus) silently ignored — boot-time only */
+        lvgl_port_unlock();
+    }
 }
 
 void display_conversation(const char *text, uint16_t color) {
-    if (!framebuf || !panel || !text || !text[0]) return;
+    if (!convo_area || !text || !text[0]) return;
 
-    /* Blank line between messages for readability */
-    if (convo_count > 0) {
-        convo_push("", COLOR_BLACK);
+    if (lvgl_port_lock(0)) {
+        lv_obj_t *lbl = lv_label_create(convo_area);
+        lv_label_set_text(lbl, text);
+        lv_obj_set_width(lbl, LCD_H_RES - 24);  /* account for padding */
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(lbl, to_lv_color(color), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_pad_bottom(lbl, 4, 0);
+
+        /* Auto-scroll to bottom */
+        lv_obj_scroll_to_y(convo_area, LV_COORD_MAX, LV_ANIM_ON);
+
+        lvgl_port_unlock();
     }
-
-    int len = strlen(text);
-    int max_chars = CONVO_COLS - 1;  /* leave 1 col margin for left padding */
-
-    /* Detect prefix like "> " or "< " for continuation indent */
-    int indent = 0;
-    if (len >= 2 && (text[0] == '>' || text[0] == '<') && text[1] == ' ') {
-        indent = 2;  /* continuation lines get "  " indent */
-    }
-
-    /* Word-wrap into lines */
-    int pos = 0;
-    int first_line = 1;
-    while (pos < len) {
-        int line_max = first_line ? max_chars : (max_chars - indent);
-        int line_len = 0;
-
-        /* Find how many chars fit on this line */
-        int remaining = len - pos;
-        if (remaining <= line_max) {
-            line_len = remaining;
-        } else {
-            /* Try to break at a space */
-            line_len = line_max;
-            int last_space = -1;
-            for (int i = 0; i < line_len && pos + i < len; i++) {
-                if (text[pos + i] == ' ') last_space = i;
-            }
-            if (last_space > line_max / 3) {
-                line_len = last_space + 1;  /* include the space */
-            }
-        }
-
-        /* Build line with indent for continuations */
-        char out[48];
-        if (!first_line && indent > 0) {
-            memset(out, ' ', indent);
-            int copy_len = line_len;
-            if (copy_len > (int)sizeof(out) - indent - 1)
-                copy_len = sizeof(out) - indent - 1;
-            memcpy(out + indent, &text[pos], copy_len);
-            out[indent + copy_len] = '\0';
-        } else {
-            if (line_len > (int)sizeof(out) - 1) line_len = sizeof(out) - 1;
-            memcpy(out, &text[pos], line_len);
-            out[line_len] = '\0';
-        }
-
-        /* Remove trailing spaces */
-        int out_len = strlen(out);
-        while (out_len > 0 && out[out_len - 1] == ' ') {
-            out[--out_len] = '\0';
-        }
-
-        convo_push(out, color);
-        pos += line_len;
-        first_line = 0;
-
-        /* Skip leading spaces on next line */
-        while (pos < len && text[pos] == ' ') pos++;
-    }
-
-    render_conversation();
 }
 
 void display_clear(void) {
-    if (!framebuf || !panel) return;
-    memset(framebuf, 0, LCD_H_RES * LCD_V_RES * sizeof(uint16_t));
-    convo_head = 0;
-    convo_count = 0;
-    flush_framebuf();
+    if (!convo_area) return;
+
+    if (lvgl_port_lock(0)) {
+        /* Delete all children of conversation area */
+        lv_obj_clean(convo_area);
+        lvgl_port_unlock();
+    }
 }
 
-#else /* !BOARD_HAS_DISPLAY */
+#elif !defined(BOARD_HAS_DISPLAY)
+/* No display at all — stubs (bitmap version is in display_bitmap.c) */
 
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
     (void)i2c_bus;

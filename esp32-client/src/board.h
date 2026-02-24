@@ -23,6 +23,7 @@
 
 #define BOARD_NAME "waveshare-s3-amoled-1.8"
 #define BOARD_HAS_DISPLAY 1
+#define BOARD_HAS_LVGL    1
 
 /* QSPI display (SH8601 AMOLED, 368x448) */
 #define PIN_LCD_QSPI_CLK  GPIO_NUM_11
@@ -49,6 +50,10 @@
 
 /* Amplifier enable (NS4150) */
 #define PIN_AMP_ENABLE  GPIO_NUM_46
+
+/* Touch controller (FT3168, FT5x06-compatible — same I2C bus as ES8311) */
+#define TOUCH_I2C_ADDR  0x38
+#define PIN_TOUCH_INT   GPIO_NUM_21
 
 /* Button */
 #define PIN_BUTTON      GPIO_NUM_0
