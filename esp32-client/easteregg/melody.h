@@ -34,16 +34,11 @@ typedef struct {
     int duration_ms;
 } melody_note_t;
 
-/* "Close Encounters" inspired ascending phrase — short and distinctive */
+/* Quick two-tone chime — confirms speaker works, nothing more */
 static const melody_note_t startup_melody[] = {
-    { NOTE_G4,  200 },
-    { NOTE_A4,  200 },
-    { NOTE_F4,  200 },
-    { NOTE_REST, 50 },
-    { NOTE_C4,  300 },
-    { NOTE_REST, 80 },
-    { NOTE_G4,  150 },
-    { NOTE_E5,  350 },
+    { NOTE_E5,  80 },
+    { NOTE_REST, 30 },
+    { NOTE_G5,  120 },
 };
 
 #define MELODY_LEN (sizeof(startup_melody) / sizeof(startup_melody[0]))
