@@ -95,72 +95,67 @@ static uint8_t es8311_read_reg(uint8_t reg) {
 static esp_err_t es8311_init_codec(void) {
     esp_err_t ret;
 
-    // --- Phase 1: Reset and configuration (matching Espressif esp_codec_dev driver) ---
-
-    // Soft reset via codec state machine enable
+    // Reset — configure all registers BEFORE enabling the codec state machine (CSM).
+    // The CSM must not run while registers are being written (caused mic regression).
     ret = es8311_write_reg(0x00, 0x1F);  // Assert all resets
     vTaskDelay(pdMS_TO_TICKS(20));
-    ret = es8311_write_reg(0x00, 0x80);  // Enable CSM, deassert resets (slave mode: bit6=0)
+    ret = es8311_write_reg(0x00, 0x00);  // Deassert resets (CSM still off)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "ES8311 not responding on I2C");
         return ret;
     }
 
-    // Clock config — MCLK from I2S master, 16kHz sample rate.
-    // Values from Espressif ESP-ADF coefficient table for MCLK=4.096MHz, fs=16kHz.
-    es8311_write_reg(0x01, 0x3F);  // MCLK from MCLK pin, enable all clocks
+    // Clock config — MCLK from I2S master, 16kHz sample rate
+    es8311_write_reg(0x01, 0x3F);  // MCLK from pin, enable all clocks
     es8311_write_reg(0x02, 0x00);  // pre_div=1, pre_multi=0
     es8311_write_reg(0x03, 0x10);  // ADC OSR=16
     es8311_write_reg(0x04, 0x10);  // DAC OSR=16
     es8311_write_reg(0x05, 0x00);  // ADC div=1, DAC div=1
     es8311_write_reg(0x06, 0x04);  // BCLK divider=4
-    es8311_write_reg(0x07, 0x00);  // LRCK divider high byte
-    es8311_write_reg(0x08, 0xFF);  // LRCK divider low byte (MCLK/256 = 16kHz)
+    es8311_write_reg(0x07, 0x00);  // LRCK divider high
+    es8311_write_reg(0x08, 0xFF);  // LRCK divider low (MCLK/256 = 16kHz)
 
     // I2S format: 16-bit, I2S standard
-    es8311_write_reg(0x09, 0x0C);  // SDP_IN (DAC): 16-bit I2S
-    es8311_write_reg(0x0A, 0x0C);  // SDP_OUT (ADC): 16-bit I2S
+    es8311_write_reg(0x09, 0x0C);  // SDP_IN (DAC)
+    es8311_write_reg(0x0A, 0x0C);  // SDP_OUT (ADC)
 
     // System config
     es8311_write_reg(0x0B, 0x00);
     es8311_write_reg(0x0C, 0x00);
-    es8311_write_reg(0x10, 0x1F);  // Power management
-    es8311_write_reg(0x11, 0x7F);  // Power management
+    es8311_write_reg(0x10, 0x1F);
+    es8311_write_reg(0x11, 0x7F);
 
-    // Output driver + EQ bypass
-    es8311_write_reg(0x13, 0x10);  // Enable HP output driver
+    // Power up analog (VMID/VREF ramp)
+    es8311_write_reg(0x0D, 0x01);
+    // ADC analog power: PGA + modulator enabled (active-low bits)
+    es8311_write_reg(0x0E, 0x02);
+    // DAC power
+    es8311_write_reg(0x12, 0x00);
+    // HP output driver
+    es8311_write_reg(0x13, 0x10);
+
+    // Mic input: analog MIC1P-MIC1N, PGA gain 30dB
+    es8311_write_reg(0x14, 0x1A);
+
+    // ADC digital config
+    es8311_write_reg(0x15, 0x40);  // ADC ramp rate
+    es8311_write_reg(0x16, 0x24);  // ADC gain scale
+    es8311_write_reg(0x17, 0xC8);  // ADC volume (~0dB)
     es8311_write_reg(0x1B, 0x0A);  // ADC EQ config
     es8311_write_reg(0x1C, 0x6A);  // Bypass ADC EQ, cancel DC offset
 
-    // DAC analog reference — CRITICAL for output.
-    // 0x08 = I2C noise immunity. 0x50 = enable internal ADCL+DACR analog ref.
-    // Without 0x50, DAC output has no bias reference and produces silence.
-    // (Espressif esp_codec_dev driver: "set internal reference signal")
+    // DAC config
+    es8311_write_reg(0x31, 0x00);  // Unmute DAC
+    es8311_write_reg(0x32, 0xD0);  // DAC volume ~+5dB
+    es8311_write_reg(0x37, 0x08);  // Bypass DAC EQ
+
+    // GPIO/analog reference — 0x58 enables DAC analog reference (CRITICAL for output).
+    // Without the 0x50 bits, DAC has no bias and produces silence.
     es8311_write_reg(0x44, 0x58);
     es8311_write_reg(0x45, 0x00);
 
-    // --- Phase 2: Start (power-up, matching esp_codec_dev es8311_start()) ---
-
-    // Unmute I2S data paths (clear bit 6 on SDP registers)
-    es8311_write_reg(0x09, es8311_read_reg(0x09) & 0xBF);
-    es8311_write_reg(0x0A, es8311_read_reg(0x0A) & 0xBF);
-
-    // ADC enable
-    es8311_write_reg(0x17, 0xBF);  // ADC power enable (esp_codec_dev uses 0xBF in start)
-    es8311_write_reg(0x0E, 0x02);  // ADC analog: PGA+modulator enabled
-    es8311_write_reg(0x12, 0x00);  // DAC power enable
-    es8311_write_reg(0x14, 0x1A);  // Mic: analog MIC1P-MIC1N, PGA gain 30dB
-    es8311_write_reg(0x16, 0x24);  // ADC gain scale
-
-    // Analog power up LAST (after all config is stable)
-    es8311_write_reg(0x0D, 0x01);
-    es8311_write_reg(0x15, 0x40);  // ADC ramp rate
-
-    // DAC config
-    es8311_write_reg(0x37, 0x08);  // Bypass DAC EQ
-    es8311_write_reg(0x31, 0x00);  // Unmute DAC
-    es8311_write_reg(0x32, 0xD0);  // DAC volume ~+5dB (0xBF=0dB, 0xFF=+32dB)
-
+    // Start codec state machine LAST (after all registers configured)
+    es8311_write_reg(0x00, 0x80);
     vTaskDelay(pdMS_TO_TICKS(50));
 
     ESP_LOGI(TAG, "ES8311 initialized (16kHz, 16-bit, I2S slave, DAC ref=0x58)");
@@ -366,25 +361,28 @@ static esp_err_t setup_i2s(void) {
 
 // ======== Amplifier enable ========
 
+static bool amp_gpio_initialized = false;
+
 static void amp_enable(bool on) {
     if ((int)PIN_AMP_ENABLE < 0) return;  // GPIO_NUM_NC = -1
 
-    gpio_reset_pin(PIN_AMP_ENABLE);
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << PIN_AMP_ENABLE),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-    };
-    esp_err_t ret = gpio_config(&io_conf);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "GPIO%d config FAILED: %s", PIN_AMP_ENABLE, esp_err_to_name(ret));
-        return;
+    if (!amp_gpio_initialized) {
+        gpio_reset_pin(PIN_AMP_ENABLE);
+        gpio_config_t io_conf = {
+            .pin_bit_mask = (1ULL << PIN_AMP_ENABLE),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        };
+        esp_err_t ret = gpio_config(&io_conf);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "GPIO%d config FAILED: %s", PIN_AMP_ENABLE, esp_err_to_name(ret));
+            return;
+        }
+        amp_gpio_initialized = true;
     }
     gpio_set_level(PIN_AMP_ENABLE, on ? 1 : 0);
-    int readback = gpio_get_level(PIN_AMP_ENABLE);
-    ESP_LOGI(TAG, "Amplifier %s (GPIO%d set=%d read=%d)",
-             on ? "ON" : "OFF", PIN_AMP_ENABLE, on ? 1 : 0, readback);
+    ESP_LOGI(TAG, "Amplifier %s", on ? "ON" : "OFF");
 }
 
 // ======== WiFi ========
