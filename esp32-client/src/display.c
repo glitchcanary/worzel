@@ -6,9 +6,9 @@
  * Thread-safe: all LVGL calls wrapped in lvgl_port_lock/unlock.
  *
  * Layout:
- *   Status bar (~40px top): "Worzel" + WiFi/Auth/WS status
- *   Conversation (middle): scrollable, touch-enabled, auto-scroll
- *   Action bar (~36px bottom): state hint text
+ *   Status bar (28px top): "Worzel" + colored icons (WiFi/Auth/WS)
+ *   Conversation (382px middle): scrollable, touch-enabled, auto-scroll
+ *   Action bar (36px bottom): state hint in 18px font
  */
 
 #include "display.h"
@@ -38,7 +38,9 @@ static esp_lcd_panel_io_handle_t panel_io = NULL;
 /* LVGL UI elements */
 static lv_obj_t *status_bar = NULL;
 static lv_obj_t *lbl_title = NULL;
-static lv_obj_t *lbl_status[4] = {0};  /* WiFi, IP, Auth, WS */
+static lv_obj_t *lbl_icon_wifi = NULL;  /* slot 2: WiFi status */
+static lv_obj_t *lbl_icon_auth = NULL;  /* slot 4: Auth status */
+static lv_obj_t *lbl_icon_ws   = NULL;  /* slot 5: WebSocket status */
 static lv_obj_t *convo_area = NULL;
 static lv_obj_t *action_bar = NULL;
 static lv_obj_t *lbl_action = NULL;
@@ -47,13 +49,16 @@ static lv_obj_t *lbl_action = NULL;
  * Status slot mapping (same slots as bitmap version for API compat):
  *   0 = Audio: OK       → ignored (boot-only)
  *   1 = Opus: OK        → ignored (boot-only)
- *   2 = WiFi status     → status bar label 0
- *   3 = IP address      → status bar label 1
- *   4 = Auth status     → status bar label 2
- *   5 = WebSocket       → status bar label 3
- *   6 = Ready/hint      → action bar
+ *   2 = WiFi status     → WiFi icon color
+ *   3 = IP address      → ignored (in serial log)
+ *   4 = Auth status     → Auth icon color
+ *   5 = WebSocket       → WS icon color
+ *   6 = Ready/hint      → action bar text
  */
-#define SLOT_TO_STATUS(s)  ((s) - 2)  /* slots 2-5 → labels 0-3 */
+
+#define STATUS_BAR_H  28
+#define ACTION_BAR_H  36
+#define ICON_INACTIVE  lv_color_make(0x40, 0x40, 0x40)
 
 /* SH8601 vendor init commands */
 static const sh8601_lcd_init_cmd_t init_cmds[] = {
@@ -75,7 +80,15 @@ static lv_color_t to_lv_color(uint16_t rgb565) {
     return lv_color_make((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2));
 }
 
-/* Compact status labels shown in the top bar */
+/* Helper: create a status icon label in the status bar */
+static lv_obj_t *create_status_icon(lv_obj_t *parent, const char *symbol) {
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, symbol);
+    lv_obj_set_style_text_color(lbl, ICON_INACTIVE, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_pad_left(lbl, 6, 0);
+    return lbl;
+}
 
 /* Build the LVGL UI layout */
 static void build_ui(void) {
@@ -83,79 +96,73 @@ static void build_ui(void) {
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
 
-    /* ---- Status bar (top ~40px) ---- */
+    /* ---- Status bar (compact, icon-based) ---- */
     status_bar = lv_obj_create(scr);
-    lv_obj_set_size(status_bar, LCD_H_RES, 40);
+    lv_obj_set_size(status_bar, LCD_H_RES, STATUS_BAR_H);
     lv_obj_align(status_bar, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_style_bg_color(status_bar, lv_color_make(20, 20, 30), 0);
+    lv_obj_set_style_bg_color(status_bar, lv_color_make(15, 15, 25), 0);
     lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(status_bar, 0, 0);
     lv_obj_set_style_radius(status_bar, 0, 0);
     lv_obj_set_style_pad_left(status_bar, 8, 0);
     lv_obj_set_style_pad_right(status_bar, 8, 0);
-    lv_obj_set_style_pad_top(status_bar, 4, 0);
     lv_obj_set_scrollbar_mode(status_bar, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    /* Title */
+    /* Title "Worzel" — left side */
     lbl_title = lv_label_create(status_bar);
     lv_label_set_text(lbl_title, "Worzel");
-    lv_obj_set_style_text_color(lbl_title, lv_color_make(0x47, 0xE0 >> 2, 0x00), 0);  /* green-ish */
     lv_obj_set_style_text_color(lbl_title, lv_color_make(0x50, 0xC8, 0x50), 0);
     lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_14, 0);
     lv_obj_set_flex_grow(lbl_title, 1);
 
-    /* Status labels (compact, in status bar: WiFi, IP, Auth, WS) */
-    for (int i = 0; i < 4; i++) {
-        lbl_status[i] = lv_label_create(status_bar);
-        lv_label_set_text(lbl_status[i], "");
-        lv_obj_set_style_text_color(lbl_status[i], lv_color_make(0x99, 0x99, 0x99), 0);
-        lv_obj_set_style_text_font(lbl_status[i], &lv_font_montserrat_14, 0);
-    }
+    /* Status icons — right side: WiFi, Auth, WebSocket */
+    lbl_icon_wifi = create_status_icon(status_bar, LV_SYMBOL_WIFI);
+    lbl_icon_auth = create_status_icon(status_bar, LV_SYMBOL_EYE_OPEN);
+    lbl_icon_ws   = create_status_icon(status_bar, LV_SYMBOL_CALL);
 
-    /* ---- Separator line ---- */
+    /* ---- Thin separator ---- */
     lv_obj_t *sep1 = lv_obj_create(scr);
     lv_obj_set_size(sep1, LCD_H_RES, 1);
-    lv_obj_align(sep1, LV_ALIGN_TOP_LEFT, 0, 40);
-    lv_obj_set_style_bg_color(sep1, lv_color_make(60, 60, 60), 0);
+    lv_obj_align(sep1, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H);
+    lv_obj_set_style_bg_color(sep1, lv_color_make(50, 50, 50), 0);
     lv_obj_set_style_bg_opa(sep1, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(sep1, 0, 0);
     lv_obj_set_style_radius(sep1, 0, 0);
     lv_obj_set_style_pad_all(sep1, 0, 0);
 
-    /* ---- Action bar (bottom ~36px) ---- */
+    /* ---- Action bar (bottom) — larger font for state hint ---- */
     action_bar = lv_obj_create(scr);
-    lv_obj_set_size(action_bar, LCD_H_RES, 36);
+    lv_obj_set_size(action_bar, LCD_H_RES, ACTION_BAR_H);
     lv_obj_align(action_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    lv_obj_set_style_bg_color(action_bar, lv_color_make(20, 20, 30), 0);
+    lv_obj_set_style_bg_color(action_bar, lv_color_make(15, 15, 25), 0);
     lv_obj_set_style_bg_opa(action_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(action_bar, 0, 0);
     lv_obj_set_style_radius(action_bar, 0, 0);
-    lv_obj_set_style_pad_left(action_bar, 8, 0);
     lv_obj_set_scrollbar_mode(action_bar, LV_SCROLLBAR_MODE_OFF);
 
     lbl_action = lv_label_create(action_bar);
     lv_label_set_text(lbl_action, "");
-    lv_obj_set_style_text_color(lbl_action, lv_color_make(0xCC, 0xCC, 0xCC), 0);
-    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl_action, lv_color_white(), 0);
+    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_18, 0);
     lv_obj_center(lbl_action);
 
-    /* ---- Separator line above action bar ---- */
+    /* ---- Separator above action bar ---- */
     lv_obj_t *sep2 = lv_obj_create(scr);
     lv_obj_set_size(sep2, LCD_H_RES, 1);
-    lv_obj_align(sep2, LV_ALIGN_BOTTOM_LEFT, 0, -36);
-    lv_obj_set_style_bg_color(sep2, lv_color_make(60, 60, 60), 0);
+    lv_obj_align(sep2, LV_ALIGN_BOTTOM_LEFT, 0, -ACTION_BAR_H);
+    lv_obj_set_style_bg_color(sep2, lv_color_make(50, 50, 50), 0);
     lv_obj_set_style_bg_opa(sep2, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(sep2, 0, 0);
     lv_obj_set_style_radius(sep2, 0, 0);
     lv_obj_set_style_pad_all(sep2, 0, 0);
 
-    /* ---- Conversation area (middle, scrollable) ---- */
-    /* Height: 448 - 40 (status) - 1 (sep) - 1 (sep) - 36 (action) = 370px */
+    /* ---- Conversation area (middle, scrollable, max space) ---- */
+    int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;  /* 382px */
     convo_area = lv_obj_create(scr);
-    lv_obj_set_size(convo_area, LCD_H_RES, 448 - 40 - 1 - 1 - 36);
-    lv_obj_align(convo_area, LV_ALIGN_TOP_LEFT, 0, 41);
+    lv_obj_set_size(convo_area, LCD_H_RES, convo_h);
+    lv_obj_align(convo_area, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
     lv_obj_set_style_bg_color(convo_area, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(convo_area, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(convo_area, 0, 0);
@@ -326,22 +333,31 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
 }
 
 void display_status(int slot, const char *text, uint16_t color) {
-    if (!convo_area) return;
+    if (!status_bar) return;
 
     if (lvgl_port_lock(0)) {
-        if (slot == 6 && lbl_action) {
-            /* Slot 6 = "Ready" hint → action bar */
-            lv_label_set_text(lbl_action, text ? text : "");
-            lv_obj_set_style_text_color(lbl_action, to_lv_color(color), 0);
-        } else if (slot >= 2 && slot <= 5) {
-            /* Slots 2-5 = WiFi/IP/Auth/WS → status bar labels 0-3 */
-            int idx = SLOT_TO_STATUS(slot);
-            if (idx >= 0 && idx < 4 && lbl_status[idx]) {
-                lv_label_set_text(lbl_status[idx], text ? text : "");
-                lv_obj_set_style_text_color(lbl_status[idx], to_lv_color(color), 0);
+        lv_color_t c = to_lv_color(color);
+        switch (slot) {
+        case 2:  /* WiFi → icon color */
+            if (lbl_icon_wifi) lv_obj_set_style_text_color(lbl_icon_wifi, c, 0);
+            break;
+        case 3:  /* IP address → ignored on display (in serial log) */
+            break;
+        case 4:  /* Auth → icon color */
+            if (lbl_icon_auth) lv_obj_set_style_text_color(lbl_icon_auth, c, 0);
+            break;
+        case 5:  /* WebSocket → icon color */
+            if (lbl_icon_ws) lv_obj_set_style_text_color(lbl_icon_ws, c, 0);
+            break;
+        case 6:  /* Action hint → text in action bar */
+            if (lbl_action) {
+                lv_label_set_text(lbl_action, text ? text : "");
+                lv_obj_set_style_text_color(lbl_action, c, 0);
             }
+            break;
+        default:  /* 0-1 (Audio/Opus) — boot-only, ignored */
+            break;
         }
-        /* Slots 0-1 (Audio/Opus) silently ignored — boot-time only */
         lvgl_port_unlock();
     }
 }
