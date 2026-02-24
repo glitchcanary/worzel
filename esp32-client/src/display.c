@@ -354,6 +354,17 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
     }
     ESP_LOGI(TAG, "LVGL display registered");
 
+    /* Force dark theme so LVGL never applies light/pink default styles.
+     * Without this, lv_obj_create() containers get a light background and
+     * pink border from the default theme, even after lv_obj_remove_style_all(). */
+    lv_theme_t *th = lv_theme_default_init(
+        lvgl_disp,
+        lv_color_make(0x50, 0xC8, 0x50),   /* primary: green */
+        lv_color_make(0x80, 0xC8, 0xFF),   /* secondary: blue */
+        true,                               /* dark mode */
+        &lv_font_montserrat_14);
+    lv_display_set_theme(lvgl_disp, th);
+
     /* ---- Touch init (FT3168 / FT5x06-compatible) ---- */
 #ifdef PIN_TOUCH_INT
     esp_lcd_touch_handle_t touch_handle = NULL;

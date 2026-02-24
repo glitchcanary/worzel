@@ -595,6 +595,119 @@ static void send_listen(const char *state) {
     cJSON_Delete(msg);
 }
 
+// ======== Audio playback task (decoupled from WebSocket handler) ========
+// Binary Opus frames are queued by the WS handler and decoded+played here.
+// This prevents LVGL display updates and JSON parsing in the WS handler
+// from starving the I2S DMA, which caused audio stutter.
+
+#define PLAYBACK_QUEUE_LEN 30   /* 30 × 60ms = 1.8s buffer */
+
+#define PKT_TYPE_AUDIO     0
+#define PKT_TYPE_TTS_START 1    /* reset decoder, flush silence, unmute DAC */
+#define PKT_TYPE_TTS_STOP  2    /* mute DAC */
+#define PKT_TYPE_SENT_END  3    /* sentence boundary: insert silence gap */
+
+typedef struct {
+    uint16_t len;
+    uint8_t  type;
+    uint8_t  data[MAX_OPUS_PACKET];
+} playback_item_t;
+
+static QueueHandle_t playback_queue = NULL;
+
+static void playback_task(void *arg) {
+    int16_t *pcm_buf = heap_caps_malloc(FRAME_SAMPLES * sizeof(int16_t), MALLOC_CAP_DEFAULT);
+    int16_t *stereo_buf = heap_caps_malloc(FRAME_SAMPLES * 2 * sizeof(int16_t), MALLOC_CAP_DEFAULT);
+    if (!pcm_buf || !stereo_buf) {
+        ESP_LOGE(TAG, "Playback task: buffer alloc failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    playback_item_t item;
+    int play_frame = 0;
+    ESP_LOGI(TAG, "Playback task started");
+
+    while (true) {
+        if (xQueueReceive(playback_queue, &item, portMAX_DELAY) != pdTRUE) continue;
+
+        switch (item.type) {
+        case PKT_TYPE_TTS_START:
+            if (opus_dec) opus_decoder_ctl(opus_dec, OPUS_RESET_STATE);
+            /* Flush stale DMA data with silence before unmuting */
+            {
+                int16_t silence[256] = {0};
+                size_t wr = 0;
+                for (int i = 0; i < 8; i++) {
+                    i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
+                                      &wr, pdMS_TO_TICKS(50));
+                }
+            }
+            es8311_write_reg(0x31, 0x00);  /* Unmute DAC */
+            play_frame = 0;
+            ESP_LOGI(TAG, "Playback: TTS start");
+            break;
+
+        case PKT_TYPE_TTS_STOP:
+            es8311_write_reg(0x31, 0x40);  /* Mute DAC */
+            ESP_LOGI(TAG, "Playback: TTS stop (played %d frames)", play_frame);
+            break;
+
+        case PKT_TYPE_SENT_END: {
+            int16_t silence[256] = {0};
+            size_t wr = 0;
+            for (int i = 0; i < 4; i++) {
+                i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
+                                  &wr, pdMS_TO_TICKS(50));
+            }
+            break;
+        }
+
+        case PKT_TYPE_AUDIO:
+            if (opus_dec && item.len > 0) {
+                int decoded = opus_decode(opus_dec, item.data, item.len,
+                                          pcm_buf, FRAME_SAMPLES, 0);
+                if (decoded > 0) {
+                    for (int i = 0; i < decoded; i++) {
+                        stereo_buf[i * 2] = pcm_buf[i];
+                        stereo_buf[i * 2 + 1] = pcm_buf[i];
+                    }
+                    size_t written = 0;
+                    i2s_channel_write(i2s_tx_chan, stereo_buf,
+                                      decoded * 2 * sizeof(int16_t),
+                                      &written, pdMS_TO_TICKS(1000));
+                    if (play_frame % 10 == 0) {
+                        int16_t mn = 0, mx = 0;
+                        for (int i = 0; i < decoded; i++) {
+                            if (pcm_buf[i] < mn) mn = pcm_buf[i];
+                            if (pcm_buf[i] > mx) mx = pcm_buf[i];
+                        }
+                        ESP_LOGI(TAG, "Play frame %d: opus=%d decoded=%d written=%zu min=%d max=%d",
+                                 play_frame, item.len, decoded, written, mn, mx);
+                    }
+                    play_frame++;
+                } else {
+                    ESP_LOGW(TAG, "Opus decode error: %d (len=%d)", decoded, item.len);
+                }
+            }
+            break;
+        }
+    }
+}
+
+/* Queue a playback command (non-blocking from WS handler context) */
+static void queue_playback(uint8_t type, const uint8_t *data, int len) {
+    if (!playback_queue) return;
+    playback_item_t item = { .type = type, .len = 0 };
+    if (data && len > 0 && len <= MAX_OPUS_PACKET) {
+        memcpy(item.data, data, len);
+        item.len = len;
+    }
+    if (xQueueSend(playback_queue, &item, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Playback queue full, dropping packet (type=%d)", type);
+    }
+}
+
 // ======== WebSocket event handler ========
 
 static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data) {
@@ -644,34 +757,14 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             if (t && t->valuestring) {
                                 display_conversation(t->valuestring, COLOR_GREEN);
                             }
-                            // Unmute DAC for TTS playback, mute after
+                            // Queue DAC control to playback task (non-blocking)
                             if (s && s->valuestring) {
                                 if (strcmp(s->valuestring, "start") == 0) {
-                                    // Reset Opus decoder to clear any residual state
-                                    if (opus_dec) {
-                                        opus_decoder_ctl(opus_dec, OPUS_RESET_STATE);
-                                    }
-                                    // Flush stale DMA data with silence before unmuting
-                                    int16_t silence[256] = {0};
-                                    size_t wr = 0;
-                                    for (int i = 0; i < 8; i++) {
-                                        i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
-                                                          &wr, pdMS_TO_TICKS(50));
-                                    }
-                                    es8311_write_reg(0x31, 0x00);  // Unmute DAC
-                                    ESP_LOGI(TAG, "TTS stream start");
+                                    queue_playback(PKT_TYPE_TTS_START, NULL, 0);
                                 } else if (strcmp(s->valuestring, "sentence_end") == 0) {
-                                    // Fill DMA with silence so gaps between sentences
-                                    // play silence instead of replaying the last frame
-                                    int16_t silence[256] = {0};
-                                    size_t wr = 0;
-                                    for (int i = 0; i < 4; i++) {
-                                        i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
-                                                          &wr, pdMS_TO_TICKS(50));
-                                    }
+                                    queue_playback(PKT_TYPE_SENT_END, NULL, 0);
                                 } else if (strcmp(s->valuestring, "stop") == 0) {
-                                    es8311_write_reg(0x31, 0x40);  // Mute DAC
-                                    ESP_LOGI(TAG, "TTS stream end");
+                                    queue_playback(PKT_TYPE_TTS_STOP, NULL, 0);
                                 }
                             }
                         } else if (strcmp(type->valuestring, "error") == 0) {
@@ -684,40 +777,9 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                 free(text);
             }
         } else if (ev->op_code == 0x02) {
-            // Binary message — Opus audio from server, decode and play
-            static int play_frame = 0;
-            if (i2s_tx_chan && opus_dec && ev->data_len > 0) {
-                int16_t pcm_buf[FRAME_SAMPLES];
-                int decoded = opus_decode(opus_dec, (const unsigned char *)ev->data_ptr,
-                                          ev->data_len, pcm_buf, FRAME_SAMPLES, 0);
-                if (decoded > 0) {
-                    // Duplicate mono to stereo (L+R interleaved) for I2S STEREO mode
-                    int16_t stereo_buf[FRAME_SAMPLES * 2];
-                    for (int i = 0; i < decoded; i++) {
-                        stereo_buf[i * 2] = pcm_buf[i];      // L
-                        stereo_buf[i * 2 + 1] = pcm_buf[i];  // R
-                    }
-                    size_t written = 0;
-                    esp_err_t wr_ret = i2s_channel_write(i2s_tx_chan, stereo_buf,
-                                      decoded * 2 * sizeof(int16_t),
-                                      &written, pdMS_TO_TICKS(1000));
-                    if (play_frame % 10 == 0) {
-                        int16_t mn = 0, mx = 0;
-                        for (int i = 0; i < decoded; i++) {
-                            if (pcm_buf[i] < mn) mn = pcm_buf[i];
-                            if (pcm_buf[i] > mx) mx = pcm_buf[i];
-                        }
-                        ESP_LOGI(TAG, "Play frame %d: opus=%d decoded=%d written=%zu ret=%d min=%d max=%d",
-                                 play_frame, ev->data_len, decoded, written, wr_ret, mn, mx);
-                    }
-                    play_frame++;
-                } else {
-                    ESP_LOGW(TAG, "Opus decode error: %d (opus_len=%d)", decoded, ev->data_len);
-                }
-            } else {
-                ESP_LOGW(TAG, "Playback skip: tx=%p dec=%p len=%d",
-                         i2s_tx_chan, opus_dec, ev->data_len);
-            }
+            // Binary message — queue Opus frame for playback task (non-blocking)
+            queue_playback(PKT_TYPE_AUDIO,
+                           (const uint8_t *)ev->data_ptr, ev->data_len);
         }
         break;
 
@@ -926,21 +988,35 @@ void app_main(void) {
     }
     display_status(4, "Auth: OK", COLOR_GREEN);
 
+    // Create playback queue (must exist before WS connects and sends audio)
+    playback_queue = xQueueCreate(PLAYBACK_QUEUE_LEN, sizeof(playback_item_t));
+    if (!playback_queue) {
+        ESP_LOGE(TAG, "FAILED to create playback queue!");
+    }
+
     // Connect WebSocket
     display_status(5, "WebSocket: connecting...", COLOR_YELLOW);
     connect_websocket();
 
-    // Heap diagnostics before audio task creation
+    // Heap diagnostics before task creation
     ESP_LOGI(TAG, "Heap free: %lu total, %lu largest block, %lu DMA-capable",
              (unsigned long)esp_get_free_heap_size(),
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_DMA));
 
-    // Start audio capture task
+    // Start audio capture task (mic → Opus → server)
     BaseType_t audio_ok = xTaskCreatePinnedToCore(audio_task, "audio", 16384, NULL, 5, NULL,
                             1 /* core 1 if available, else 0 on single-core */);
     if (audio_ok != pdPASS) {
         ESP_LOGE(TAG, "FAILED to create audio task! (heap exhausted?)");
+    }
+
+    // Start playback task (server → Opus decode → I2S speaker)
+    // Runs on core 1 at priority 5 to match audio capture task.
+    // Decoupled from WS handler so display updates can't starve audio.
+    BaseType_t play_ok = xTaskCreatePinnedToCore(playback_task, "playback", 8192, NULL, 5, NULL, 1);
+    if (play_ok != pdPASS) {
+        ESP_LOGE(TAG, "FAILED to create playback task!");
     }
 
     display_status(6, "Push to talk", COLOR_WHITE);
