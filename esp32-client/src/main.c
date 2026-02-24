@@ -819,6 +819,8 @@ static void button_task(void *arg) {
 // ======== Main ========
 
 void app_main(void) {
+    // Delay so USB serial monitor has time to connect before boot logs
+    vTaskDelay(pdMS_TO_TICKS(2000));
     ESP_LOGI(TAG, "Worzel client starting on %s", BOARD_NAME);
 
     // Init NVS (required for WiFi)
@@ -853,6 +855,14 @@ void app_main(void) {
     ESP_LOGI(TAG, "Playing startup melody...");
     melody_play(i2s_tx_chan, I2S_SAMPLE_RATE);
     ESP_LOGI(TAG, "Startup melody done");
+
+    // Post-melody diagnostic: re-read key DAC registers to verify config
+    ESP_LOGI(TAG, "DAC diag: REG00=0x%02x REG01=0x%02x REG0D=0x%02x REG12=0x%02x "
+             "REG13=0x%02x REG31=0x%02x REG32=0x%02x REG44=0x%02x",
+             es8311_read_reg(0x00), es8311_read_reg(0x01), es8311_read_reg(0x0D),
+             es8311_read_reg(0x12), es8311_read_reg(0x13), es8311_read_reg(0x31),
+             es8311_read_reg(0x32), es8311_read_reg(0x44));
+    ESP_LOGI(TAG, "Amp GPIO%d level=%d", PIN_AMP_ENABLE, gpio_get_level(PIN_AMP_ENABLE));
 
     // Connect WiFi
     display_status(2, "WiFi: connecting...", COLOR_YELLOW);
