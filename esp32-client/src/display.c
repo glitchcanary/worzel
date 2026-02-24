@@ -145,7 +145,11 @@ static void build_ui(void) {
     lbl_action = lv_label_create(action_bar);
     lv_label_set_text(lbl_action, "");
     lv_obj_set_style_text_color(lbl_action, lv_color_white(), 0);
+#if LV_FONT_MONTSERRAT_18
     lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_18, 0);
+#else
+    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_14, 0);
+#endif
     lv_obj_center(lbl_action);
 
     /* ---- Separator above action bar ---- */
