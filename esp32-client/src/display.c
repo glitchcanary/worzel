@@ -145,7 +145,9 @@ static void build_ui(void) {
     lbl_action = lv_label_create(action_bar);
     lv_label_set_text(lbl_action, "");
     lv_obj_set_style_text_color(lbl_action, lv_color_white(), 0);
-#if LV_FONT_MONTSERRAT_18
+#if LV_FONT_MONTSERRAT_20
+    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_20, 0);
+#elif LV_FONT_MONTSERRAT_18
     lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_18, 0);
 #else
     lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_14, 0);
@@ -386,11 +388,16 @@ void display_conversation(const char *text, uint16_t color) {
         lv_obj_set_width(lbl, LCD_H_RES - 24);  /* account for padding */
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(lbl, to_lv_color(color), 0);
+#if LV_FONT_MONTSERRAT_20
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+#else
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_pad_bottom(lbl, 4, 0);
+#endif
+        lv_obj_set_style_pad_bottom(lbl, 6, 0);
 
-        /* Auto-scroll to bottom */
-        lv_obj_scroll_to_y(convo_area, LV_COORD_MAX, LV_ANIM_ON);
+        /* Force layout recalc then scroll new label into view */
+        lv_obj_update_layout(convo_area);
+        lv_obj_scroll_to_view(lbl, LV_ANIM_ON);
 
         lvgl_port_unlock();
     }
