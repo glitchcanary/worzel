@@ -212,7 +212,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         .data1_io_num = PIN_LCD_QSPI_D1,
         .data2_io_num = PIN_LCD_QSPI_D2,
         .data3_io_num = PIN_LCD_QSPI_D3,
-        .max_transfer_sz = LCD_H_RES * 50 * sizeof(uint16_t),
+        .max_transfer_sz = LCD_H_RES * 20 * sizeof(uint16_t),
         .flags = SPICOMMON_BUSFLAG_QUAD,
     };
     ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO),
@@ -258,19 +258,30 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
     ESP_LOGI(TAG, "SH8601 AMOLED ready (%dx%d)", LCD_H_RES, LCD_V_RES);
 
     /* ---- LVGL port init ---- */
-    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    /* Pin LVGL task to core 0 (where SPI ISR runs), lower priority than
+       audio (5) and WiFi (23), above IDLE (0). */
+    const lvgl_port_cfg_t lvgl_cfg = {
+        .task_priority = 3,
+        .task_stack = 6144,
+        .task_affinity = 0,
+        .task_max_sleep_ms = 500,
+        .timer_period_ms = 10,
+    };
     ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "LVGL port init failed");
 
-    /* Register display with LVGL port */
+    /* Register display with LVGL port.
+     * Buffer in internal DMA RAM (not PSRAM) — PSRAM DMA has cache alignment
+     * constraints that cause spi_device_queue_trans failures on flush.
+     * 20 rows × 368px × 2 bytes = ~14.4KB, well within DMA-capable heap. */
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = panel_io,
         .panel_handle = panel,
-        .buffer_size = LCD_H_RES * 50,
+        .buffer_size = LCD_H_RES * 20,
         .double_buffer = false,
         .hres = LCD_H_RES,
         .vres = LCD_V_RES,
         .flags = {
-            .buff_spiram = true,
+            .buff_spiram = false,
             .swap_bytes = false,
         },
     };
