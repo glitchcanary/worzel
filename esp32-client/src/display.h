@@ -1,6 +1,11 @@
 /**
- * Minimal boot status display for Worzel ESP32 client.
- * SH8601 AMOLED via QSPI, 8x8 bitmap font, no LVGL.
+ * Zone-based display for Worzel ESP32 client.
+ * SH8601 AMOLED via QSPI, 368x448, RGB565.
+ *
+ * Three zones:
+ *   Header (y 0-47):     "Worzel" title, board name
+ *   Status (y 48-175):   8 slots for WiFi/Auth/WS status
+ *   Conversation (y 176-447): STT/TTS with word-wrap + scrolling
  */
 
 #ifndef WORZEL_DISPLAY_H
@@ -19,20 +24,25 @@
 #define COLOR_GREY    0x9CD3   /* light grey */
 
 /**
- * Initialize the display hardware (QSPI bus, IO expander reset, SH8601 panel).
+ * Initialize display hardware and render header.
  * Must be called after I2C bus is initialized (shares bus with ES8311).
  */
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus);
 
 /**
- * Show a status line at the given row (0-based).
- * Text is rendered in the given color on a black background.
- * Rows 0-27 are available (16px high each on 448px display).
+ * Show a status line in the status zone (slots 0-7).
+ * Text is rendered at 2x scale (16px) on black background.
  */
-void display_status(int row, const char *text, uint16_t color);
+void display_status(int slot, const char *text, uint16_t color);
 
 /**
- * Clear the entire display to black.
+ * Append a message to the conversation zone with word-wrapping.
+ * Text is rendered at 1x scale (8px) and auto-scrolls when full.
+ */
+void display_conversation(const char *text, uint16_t color);
+
+/**
+ * Clear the entire display to black and reset conversation history.
  */
 void display_clear(void);
 

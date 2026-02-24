@@ -440,7 +440,7 @@ static void setup_wifi(void) {
     }
 
     ESP_LOGE(TAG, "Failed to get IP after %d attempts. Rebooting.", max_retries);
-    display_status(5, "WiFi: DHCP failed", COLOR_RED);
+    display_status(2, "WiFi: DHCP failed", COLOR_RED);
     vTaskDelay(pdMS_TO_TICKS(2000));
     esp_restart();
 }
@@ -587,14 +587,14 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "WebSocket connected");
         ws_connected = true;
-        display_status(9, "WebSocket: connected", COLOR_GREEN);
+        display_status(5, "WebSocket: connected", COLOR_GREEN);
         send_hello();
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WebSocket disconnected");
         ws_connected = false;
-        display_status(9, "WebSocket: disconnected", COLOR_RED);
+        display_status(5, "WebSocket: disconnected", COLOR_RED);
         break;
 
     case WEBSOCKET_EVENT_DATA:
@@ -614,7 +614,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             cJSON *t = cJSON_GetObjectItem(msg, "text");
                             ESP_LOGI(TAG, "STT: %s", t ? t->valuestring : "");
                             if (t && t->valuestring) {
-                                display_status(13, t->valuestring, COLOR_CYAN);
+                                display_conversation(t->valuestring, COLOR_CYAN);
                             }
                         } else if (strcmp(type->valuestring, "tts") == 0) {
                             cJSON *s = cJSON_GetObjectItem(msg, "state");
@@ -623,7 +623,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                                      s ? s->valuestring : "?",
                                      t ? t->valuestring : "");
                             if (t && t->valuestring) {
-                                display_status(15, t->valuestring, COLOR_GREEN);
+                                display_conversation(t->valuestring, COLOR_GREEN);
                             }
                             // Reset I2S TX DMA on each new TTS stream to avoid stale buffer stall
                             if (s && s->valuestring && strcmp(s->valuestring, "start") == 0) {
@@ -816,11 +816,11 @@ void app_main(void) {
 
     // Init I2S (after codec, so MCLK feeds into initialized codec)
     ESP_ERROR_CHECK(setup_i2s());
-    display_status(2, "Audio: OK", COLOR_GREEN);
+    display_status(0, "Audio: OK", COLOR_GREEN);
 
     // Init Opus encoder/decoder
     ESP_ERROR_CHECK(setup_opus());
-    display_status(3, "Opus: OK", COLOR_GREEN);
+    display_status(1, "Opus: OK", COLOR_GREEN);
 
     // Enable amplifier
     amp_enable(true);
@@ -831,7 +831,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "Startup melody done");
 
     // Connect WiFi
-    display_status(5, "WiFi: connecting...", COLOR_YELLOW);
+    display_status(2, "WiFi: connecting...", COLOR_YELLOW);
     setup_wifi();
 
     // Show IP (re-read from netif)
@@ -841,29 +841,29 @@ void app_main(void) {
         if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
             char ip_str[48];
             snprintf(ip_str, sizeof(ip_str), "IP: " IPSTR, IP2STR(&ip_info.ip));
-            display_status(5, "WiFi: connected", COLOR_GREEN);
-            display_status(6, ip_str, COLOR_CYAN);
+            display_status(2, "WiFi: connected", COLOR_GREEN);
+            display_status(3, ip_str, COLOR_CYAN);
         }
     }
 
     // Authenticate with Worzel server
-    display_status(8, "Auth: connecting...", COLOR_YELLOW);
+    display_status(4, "Auth: connecting...", COLOR_YELLOW);
     if (!authenticate()) {
         ESP_LOGE(TAG, "Authentication failed. Halting.");
-        display_status(8, "Auth: FAILED", COLOR_RED);
+        display_status(4, "Auth: FAILED", COLOR_RED);
         return;
     }
-    display_status(8, "Auth: OK", COLOR_GREEN);
+    display_status(4, "Auth: OK", COLOR_GREEN);
 
     // Connect WebSocket
-    display_status(9, "WebSocket: connecting...", COLOR_YELLOW);
+    display_status(5, "WebSocket: connecting...", COLOR_YELLOW);
     connect_websocket();
 
     // Start audio capture task
     xTaskCreatePinnedToCore(audio_task, "audio", 32768, NULL, 5, NULL,
                             1 /* core 1 if available, else 0 on single-core */);
 
-    display_status(11, "Ready - hold button to talk", COLOR_WHITE);
+    display_status(6, "Ready - hold button to talk", COLOR_WHITE);
 
     // Button handling on main core
     button_task(NULL);  // Blocks forever
