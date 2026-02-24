@@ -643,6 +643,13 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             // Unmute DAC for TTS playback, mute after
                             if (s && s->valuestring) {
                                 if (strcmp(s->valuestring, "start") == 0) {
+                                    // Flush stale DMA data with silence before unmuting
+                                    int16_t silence[256] = {0};
+                                    size_t wr = 0;
+                                    for (int i = 0; i < 8; i++) {
+                                        i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
+                                                          &wr, pdMS_TO_TICKS(50));
+                                    }
                                     es8311_write_reg(0x31, 0x00);  // Unmute DAC
                                     ESP_LOGI(TAG, "TTS stream start");
                                 } else if (strcmp(s->valuestring, "stop") == 0) {
