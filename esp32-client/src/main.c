@@ -146,7 +146,7 @@ static esp_err_t es8311_init_codec(void) {
 
     // DAC config
     es8311_write_reg(0x31, 0x00);  // Unmute DAC
-    es8311_write_reg(0x32, 0xE0);  // DAC volume ~+16.5dB (0xBF=0dB, 0xFF=+32dB)
+    es8311_write_reg(0x32, 0xD8);  // DAC volume ~+12.5dB (0xBF=0dB, 0xFF=+32dB)
     es8311_write_reg(0x37, 0x08);  // Bypass DAC EQ
 
     // GPIO/analog reference — 0x58 enables DAC analog reference (CRITICAL for output).
@@ -643,6 +643,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             // Unmute DAC for TTS playback, mute after
                             if (s && s->valuestring) {
                                 if (strcmp(s->valuestring, "start") == 0) {
+                                    // Reset Opus decoder to clear any residual state
+                                    if (opus_dec) {
+                                        opus_decoder_ctl(opus_dec, OPUS_RESET_STATE);
+                                    }
                                     // Flush stale DMA data with silence before unmuting
                                     int16_t silence[256] = {0};
                                     size_t wr = 0;
@@ -652,6 +656,15 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                                     }
                                     es8311_write_reg(0x31, 0x00);  // Unmute DAC
                                     ESP_LOGI(TAG, "TTS stream start");
+                                } else if (strcmp(s->valuestring, "sentence_end") == 0) {
+                                    // Fill DMA with silence so gaps between sentences
+                                    // play silence instead of replaying the last frame
+                                    int16_t silence[256] = {0};
+                                    size_t wr = 0;
+                                    for (int i = 0; i < 4; i++) {
+                                        i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
+                                                          &wr, pdMS_TO_TICKS(50));
+                                    }
                                 } else if (strcmp(s->valuestring, "stop") == 0) {
                                     es8311_write_reg(0x31, 0x40);  // Mute DAC
                                     ESP_LOGI(TAG, "TTS stream end");
