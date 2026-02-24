@@ -36,6 +36,8 @@
 
 #include <opus.h>  /* esphome/micro-opus (Apache 2.0 + libopus BSD) */
 
+#include "esp_sntp.h"
+
 #include "board.h"
 #include "display.h"
 #include "../easteregg/melody.h"
@@ -909,6 +911,11 @@ void app_main(void) {
             display_status(3, ip_str, COLOR_CYAN);
         }
     }
+
+    // Start NTP time sync (for clock display)
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
 
     // Authenticate with Worzel server
     display_status(4, "Auth: connecting...", COLOR_YELLOW);

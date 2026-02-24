@@ -15,6 +15,8 @@
 #include "board.h"
 
 #include <string.h>
+#include <time.h>
+#include <sys/time.h>
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -38,6 +40,7 @@ static esp_lcd_panel_io_handle_t panel_io = NULL;
 /* LVGL UI elements */
 static lv_obj_t *status_bar = NULL;
 static lv_obj_t *lbl_title = NULL;
+static lv_obj_t *lbl_time = NULL;
 static lv_obj_t *lbl_icon_wifi = NULL;
 static lv_obj_t *lbl_icon_auth = NULL;
 static lv_obj_t *lbl_icon_ws   = NULL;
@@ -61,24 +64,24 @@ static lv_obj_t *lbl_action = NULL;
 /* ---- Font size cycling (tap action bar to toggle) ---- */
 
 static const lv_font_t *font_sizes[] = {
-#if LV_FONT_MONTSERRAT_20
-    &lv_font_montserrat_20,
-#endif
-#if LV_FONT_MONTSERRAT_22
-    &lv_font_montserrat_22,
-#endif
-#if LV_FONT_MONTSERRAT_24
-    &lv_font_montserrat_24,
-#endif
-#if LV_FONT_MONTSERRAT_26
-    &lv_font_montserrat_26,
+#if LV_FONT_MONTSERRAT_28
+    &lv_font_montserrat_28,     /* 0: one below "bearable" */
 #endif
 #if LV_FONT_MONTSERRAT_30
-    &lv_font_montserrat_30,
+    &lv_font_montserrat_30,     /* 1: bearable (default) */
+#endif
+#if LV_FONT_MONTSERRAT_32
+    &lv_font_montserrat_32,     /* 2 */
+#endif
+#if LV_FONT_MONTSERRAT_34
+    &lv_font_montserrat_34,     /* 3 */
+#endif
+#if LV_FONT_MONTSERRAT_36
+    &lv_font_montserrat_36,     /* 4: largest */
 #endif
 };
 #define FONT_COUNT (sizeof(font_sizes) / sizeof(font_sizes[0]))
-static int font_idx = 0;  /* start at smallest (montserrat_20) */
+static int font_idx = 1;  /* start at montserrat_30 (bearable) */
 
 /* Map our RGB565 color codes to pleasant lv_color_t directly.
  * Bypasses bit-manipulation to avoid byte-swap / theme issues. */
@@ -104,6 +107,23 @@ static void font_cycle_cb(lv_event_t *e) {
     for (uint32_t i = 0; i < count; i++) {
         lv_obj_t *child = lv_obj_get_child(convo_area, i);
         lv_obj_set_style_text_font(child, font_sizes[font_idx], 0);
+    }
+}
+
+/* LVGL timer callback: update clock label every 10s */
+static void clock_update_cb(lv_timer_t *timer) {
+    (void)timer;
+    if (!lbl_time) return;
+    time_t now;
+    time(&now);
+    struct tm ti;
+    localtime_r(&now, &ti);
+    if (ti.tm_year > 100) {  /* year > 2000 means NTP synced */
+        char buf[20];
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &ti);
+        lv_label_set_text(lbl_time, buf);
+    } else {
+        lv_label_set_text(lbl_time, "--:--");
     }
 }
 
@@ -148,50 +168,44 @@ static void build_ui(void) {
     status_bar = lv_obj_create(scr);
     style_container(status_bar, bar_bg,
                     LCD_H_RES, STATUS_BAR_H, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_style_pad_left(status_bar, 10, 0);
-    lv_obj_set_style_pad_right(status_bar, 10, 0);
+    lv_obj_set_style_pad_left(status_bar, 16, 0);
+    lv_obj_set_style_pad_right(status_bar, 16, 0);
     lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_START,
+    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    /* Title "Worzel" — left side, montserrat_20 */
+    /* Title "Worzel" — left */
     lbl_title = lv_label_create(status_bar);
     lv_label_set_text(lbl_title, "Worzel");
     lv_obj_set_style_text_color(lbl_title, lv_color_make(0x50, 0xC8, 0x50), 0);
-#if LV_FONT_MONTSERRAT_20
-    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_20, 0);
-#else
     lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_14, 0);
-#endif
-    lv_obj_set_flex_grow(lbl_title, 1);
 
-    /* Status icons — right side, montserrat_20, well-spaced.
-     * Start dim grey; display_status() colors them green/yellow/red. */
+    /* Clock — center (ISO 8601 date + time, updated by LVGL timer) */
+    lbl_time = lv_label_create(status_bar);
+    lv_label_set_text(lbl_time, "--:--");
+    lv_obj_set_style_text_color(lbl_time, lv_color_make(0x99, 0x99, 0x99), 0);
+    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_14, 0);
+
+    /* Status icons — right side, montserrat_14, spaced.
+     * Start dim grey; display_status() colors them. */
     lv_color_t icon_off = lv_color_make(0x55, 0x55, 0x55);
 
     lbl_icon_wifi = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_wifi, LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(lbl_icon_wifi, icon_off, 0);
-#if LV_FONT_MONTSERRAT_20
-    lv_obj_set_style_text_font(lbl_icon_wifi, &lv_font_montserrat_20, 0);
-#endif
-    lv_obj_set_style_pad_left(lbl_icon_wifi, 12, 0);
+    lv_obj_set_style_text_font(lbl_icon_wifi, &lv_font_montserrat_14, 0);
 
     lbl_icon_auth = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_auth, LV_SYMBOL_EYE_OPEN);
     lv_obj_set_style_text_color(lbl_icon_auth, icon_off, 0);
-#if LV_FONT_MONTSERRAT_20
-    lv_obj_set_style_text_font(lbl_icon_auth, &lv_font_montserrat_20, 0);
-#endif
-    lv_obj_set_style_pad_left(lbl_icon_auth, 12, 0);
+    lv_obj_set_style_text_font(lbl_icon_auth, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_pad_left(lbl_icon_auth, 8, 0);
 
     lbl_icon_ws = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_ws, LV_SYMBOL_CALL);
     lv_obj_set_style_text_color(lbl_icon_ws, icon_off, 0);
-#if LV_FONT_MONTSERRAT_20
-    lv_obj_set_style_text_font(lbl_icon_ws, &lv_font_montserrat_20, 0);
-#endif
-    lv_obj_set_style_pad_left(lbl_icon_ws, 12, 0);
+    lv_obj_set_style_text_font(lbl_icon_ws, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_pad_left(lbl_icon_ws, 8, 0);
 
     /* ---- Thin separator ---- */
     lv_obj_t *sep1 = lv_obj_create(scr);
@@ -387,6 +401,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
     /* ---- Build UI ---- */
     if (lvgl_port_lock(0)) {
         build_ui();
+        lv_timer_create(clock_update_cb, 10000, NULL);  /* update clock every 10s */
         lvgl_port_unlock();
     }
 
@@ -397,7 +412,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
 void display_status(int slot, const char *text, uint16_t color) {
     if (!status_bar) return;
 
-    if (lvgl_port_lock(0)) {
+    if (lvgl_port_lock(50)) {
         lv_color_t c = map_color(color);
         switch (slot) {
         case 2:
@@ -434,7 +449,12 @@ void display_status(int slot, const char *text, uint16_t color) {
 void display_conversation(const char *text, uint16_t color) {
     if (!convo_area || !text || !text[0]) return;
 
-    if (lvgl_port_lock(0)) {
+    /* Use a short timeout (50ms) instead of blocking indefinitely.
+     * During TTS playback, the WS handler delivers audio frames on core 0.
+     * If LVGL is mid-refresh and holds the mutex, blocking here starves
+     * audio reception → I2S DMA replays the last frame → stutter.
+     * Dropping a display update is acceptable; dropping audio is not. */
+    if (lvgl_port_lock(50)) {
         lv_obj_t *lbl = lv_label_create(convo_area);
         lv_label_set_text(lbl, text);
         lv_obj_set_width(lbl, LCD_H_RES - 24);

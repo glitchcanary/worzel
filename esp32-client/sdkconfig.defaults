@@ -26,12 +26,13 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # WebSocket task stack is set programmatically in main.c (task_stack = 12288)
 # because the Kconfig symbol varies between esp_websocket_client versions.
 
-# LVGL fonts — montserrat_14 is on by default; 20-30 for conversation cycling
+# LVGL fonts — montserrat_14 is on by default; 28-36 for conversation cycling
 CONFIG_LV_FONT_MONTSERRAT_20=y
-CONFIG_LV_FONT_MONTSERRAT_22=y
-CONFIG_LV_FONT_MONTSERRAT_24=y
-CONFIG_LV_FONT_MONTSERRAT_26=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_30=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_FONT_MONTSERRAT_34=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
 
 # Flash size — set per board via sdkconfig.flash-NNmb chained in platformio.ini.
 # Do NOT set CONFIG_ESPTOOLPY_FLASHSIZE here (causes mismatch warnings).
