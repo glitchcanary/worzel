@@ -344,7 +344,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         .vres = LCD_V_RES,
         .flags = {
             .buff_spiram = false,
-            .swap_bytes = false,
+            .swap_bytes = true,   /* SH8601 QSPI expects big-endian RGB565 */
         },
     };
     lv_display_t *lvgl_disp = lvgl_port_add_disp(&disp_cfg);
@@ -353,17 +353,6 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "LVGL display registered");
-
-    /* Force dark theme so LVGL never applies light/pink default styles.
-     * Without this, lv_obj_create() containers get a light background and
-     * pink border from the default theme, even after lv_obj_remove_style_all(). */
-    lv_theme_t *th = lv_theme_default_init(
-        lvgl_disp,
-        lv_color_make(0x50, 0xC8, 0x50),   /* primary: green */
-        lv_color_make(0x80, 0xC8, 0xFF),   /* secondary: blue */
-        true,                               /* dark mode */
-        &lv_font_montserrat_14);
-    lv_display_set_theme(lvgl_disp, th);
 
     /* ---- Touch init (FT3168 / FT5x06-compatible) ---- */
 #ifdef PIN_TOUCH_INT
@@ -423,7 +412,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
 void display_status(int slot, const char *text, uint16_t color) {
     if (!status_bar) return;
 
-    if (lvgl_port_lock(50)) {
+    if (lvgl_port_lock(500)) {
         lv_color_t c = map_color(color);
         switch (slot) {
         case 2:
@@ -460,12 +449,11 @@ void display_status(int slot, const char *text, uint16_t color) {
 void display_conversation(const char *text, uint16_t color) {
     if (!convo_area || !text || !text[0]) return;
 
-    /* Use a short timeout (50ms) instead of blocking indefinitely.
-     * During TTS playback, the WS handler delivers audio frames on core 0.
-     * If LVGL is mid-refresh and holds the mutex, blocking here starves
-     * audio reception → I2S DMA replays the last frame → stutter.
-     * Dropping a display update is acceptable; dropping audio is not. */
-    if (lvgl_port_lock(50)) {
+    /* Audio playback is decoupled to its own task+queue, so blocking
+     * the WS handler here won't cause stutter. Use a generous timeout
+     * to survive touch-scroll events (touch processing holds the LVGL
+     * mutex longer than usual). */
+    if (lvgl_port_lock(500)) {
         lv_obj_t *lbl = lv_label_create(convo_area);
         lv_label_set_text(lbl, text);
         lv_obj_set_width(lbl, LCD_H_RES - 24);
@@ -476,11 +464,10 @@ void display_conversation(const char *text, uint16_t color) {
         }
         lv_obj_set_style_pad_bottom(lbl, 6, 0);
 
-        /* Scroll new label into view. No lv_obj_update_layout() here —
-         * that forces a synchronous layout pass in the WS handler context,
-         * blocking audio data reception and causing TTS stutter.
-         * LVGL applies the scroll target on its next refresh cycle. */
-        lv_obj_scroll_to_view(lbl, LV_ANIM_ON);
+        /* Always scroll to bottom. lv_obj_scroll_to_view() stops working
+         * after the user manually touch-scrolls (LVGL thinks the user is
+         * controlling scroll position). Scrolling to max Y always works. */
+        lv_obj_scroll_to_y(convo_area, LV_COORD_MAX, LV_ANIM_ON);
 
         lvgl_port_unlock();
     }

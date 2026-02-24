@@ -649,6 +649,9 @@ static void playback_task(void *arg) {
             break;
 
         case PKT_TYPE_TTS_STOP:
+            /* Let I2S DMA drain its last buffers before muting.
+             * Without this delay, the final ~100ms of speech gets cut off. */
+            vTaskDelay(pdMS_TO_TICKS(150));
             es8311_write_reg(0x31, 0x40);  /* Mute DAC */
             ESP_LOGI(TAG, "Playback: TTS stop (played %d frames)", play_frame);
             break;
