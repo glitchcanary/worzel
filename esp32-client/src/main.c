@@ -73,8 +73,8 @@ static OpusDecoder *opus_dec = NULL;
 
 static char auth_token[256] = {0};
 static char ws_url[256] = {0};
-static bool ws_connected = false;
-static bool recording = false;
+static volatile bool ws_connected = false;
+static volatile bool recording = false;
 
 static EventGroupHandle_t wifi_events;
 #define WIFI_CONNECTED_BIT BIT0

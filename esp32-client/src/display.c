@@ -274,6 +274,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
 #ifdef PIN_TOUCH_INT
     esp_lcd_touch_handle_t touch_handle = NULL;
     esp_lcd_panel_io_i2c_config_t touch_io_cfg = ESP_LCD_TOUCH_IO_I2C_FT5x06_CONFIG();
+    touch_io_cfg.scl_speed_hz = 400000;  /* must set explicitly — macro leaves it 0 */
     esp_lcd_panel_io_handle_t touch_io = NULL;
 
     /* Create I2C IO for touch (on same bus as ES8311) */
