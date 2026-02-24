@@ -643,19 +643,17 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             // Enable I2S TX at start of new TTS response; disable at end
                             if (s && s->valuestring) {
                                 if (strcmp(s->valuestring, "start") == 0) {
-                                    i2s_channel_disable(i2s_tx_chan);
-                                    i2s_channel_enable(i2s_tx_chan);
-                                    ESP_LOGI(TAG, "I2S TX enabled for TTS");
+                                    ESP_LOGI(TAG, "TTS stream start");
                                 } else if (strcmp(s->valuestring, "stop") == 0) {
-                                    // Flush silence then disable to avoid DMA replay noise
+                                    // Flush silence after TTS to clear DMA buffers.
+                                    // Do NOT disable TX — shared clock with RX (mic).
                                     int16_t silence[256] = {0};
                                     size_t wr = 0;
                                     for (int i = 0; i < 4; i++) {
                                         i2s_channel_write(i2s_tx_chan, silence, sizeof(silence),
                                                           &wr, pdMS_TO_TICKS(50));
                                     }
-                                    i2s_channel_disable(i2s_tx_chan);
-                                    ESP_LOGI(TAG, "I2S TX disabled after TTS");
+                                    ESP_LOGI(TAG, "TTS stream end");
                                 }
                             }
                         } else if (strcmp(type->valuestring, "error") == 0) {
@@ -866,16 +864,16 @@ void app_main(void) {
     melody_play(i2s_tx_chan, I2S_SAMPLE_RATE);
     ESP_LOGI(TAG, "Startup melody done");
 
-    // Flush I2S TX with silence so DMA doesn't replay stale melody data
+    // Flush I2S TX with silence so DMA doesn't replay stale melody data.
+    // Do NOT disable TX — in full-duplex, TX and RX share the I2S clock.
+    // Disabling TX stops the clock, which kills mic reads.
     {
         int16_t silence[256] = {0};
         size_t wr = 0;
-        for (int i = 0; i < 8; i++) {  // ~8 DMA buffers worth
+        for (int i = 0; i < 8; i++) {
             i2s_channel_write(i2s_tx_chan, silence, sizeof(silence), &wr, pdMS_TO_TICKS(100));
         }
     }
-    // Disable TX until TTS playback needs it (prevents noise/looping)
-    i2s_channel_disable(i2s_tx_chan);
     ESP_LOGI(TAG, "I2S TX silenced after melody");
 
     // Post-melody diagnostic: re-read key DAC registers to verify config
