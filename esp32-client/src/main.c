@@ -146,7 +146,7 @@ static esp_err_t es8311_init_codec(void) {
 
     // DAC config
     es8311_write_reg(0x31, 0x00);  // Unmute DAC
-    es8311_write_reg(0x32, 0xD0);  // DAC volume ~+5dB
+    es8311_write_reg(0x32, 0xE0);  // DAC volume ~+16.5dB (0xBF=0dB, 0xFF=+32dB)
     es8311_write_reg(0x37, 0x08);  // Bypass DAC EQ
 
     // GPIO/analog reference — 0x58 enables DAC analog reference (CRITICAL for output).
