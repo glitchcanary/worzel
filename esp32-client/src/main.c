@@ -342,7 +342,7 @@ static esp_err_t setup_i2s(void) {
 
     // Create both TX+RX channels on the same I2S port (full-duplex)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 4;
+    chan_cfg.dma_desc_num = 6;   /* 6 × 60ms = 360ms DMA buffer; absorbs jitter */
     chan_cfg.dma_frame_num = FRAME_SAMPLES;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &i2s_tx_chan, &i2s_rx_chan), TAG, "I2S channel create failed");
 
@@ -595,10 +595,48 @@ static void send_listen(const char *state) {
     cJSON_Delete(msg);
 }
 
+// ======== Display text queue (decoupled from WebSocket handler) ========
+// The WS handler must NEVER call display_conversation() directly because
+// it blocks on the LVGL mutex (up to 500ms). While blocked, the WS task
+// can't receive frames — TCP buffers fill, the playback queue drains,
+// and I2S DMA replays stale audio (= stutter). Especially bad during
+// touch-scroll when LVGL holds its mutex continuously.
+//
+// Instead, the WS handler posts text to this queue (non-blocking), and a
+// separate display_task consumes it at its own pace on core 0.
+
+#define DISPLAY_QUEUE_LEN 8
+
+typedef struct {
+    char text[256];
+    uint16_t color;
+} display_text_item_t;
+
+static QueueHandle_t display_text_queue = NULL;
+
+static void display_update_task(void *arg) {
+    display_text_item_t item;
+    while (true) {
+        if (xQueueReceive(display_text_queue, &item, portMAX_DELAY) == pdTRUE) {
+            display_conversation(item.text, item.color);
+        }
+    }
+}
+
+/* Post text to display queue (non-blocking, safe from any task context) */
+static void queue_display_text(const char *text, uint16_t color) {
+    if (!display_text_queue || !text || !text[0]) return;
+    display_text_item_t item = { .color = color };
+    strncpy(item.text, text, sizeof(item.text) - 1);
+    item.text[sizeof(item.text) - 1] = '\0';
+    if (xQueueSend(display_text_queue, &item, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Display queue full, dropping text update");
+    }
+}
+
 // ======== Audio playback task (decoupled from WebSocket handler) ========
 // Binary Opus frames are queued by the WS handler and decoded+played here.
-// This prevents LVGL display updates and JSON parsing in the WS handler
-// from starving the I2S DMA, which caused audio stutter.
+// This prevents JSON parsing in the WS handler from starving the I2S DMA.
 
 #define PLAYBACK_QUEUE_LEN 30   /* 30 × 60ms = 1.8s buffer */
 
@@ -616,27 +654,45 @@ typedef struct {
 static QueueHandle_t playback_queue = NULL;
 
 static void playback_task(void *arg) {
-    int16_t *pcm_buf = heap_caps_malloc(FRAME_SAMPLES * sizeof(int16_t), MALLOC_CAP_DEFAULT);
-    int16_t *stereo_buf = heap_caps_malloc(FRAME_SAMPLES * 2 * sizeof(int16_t), MALLOC_CAP_DEFAULT);
+    /* Force internal SRAM — PSRAM has 15-30x higher latency than SRAM,
+     * and the mono→stereo loop + Opus decode cause cache misses in PSRAM
+     * that accumulate into audible stutter after heap fragmentation. */
+    int16_t *pcm_buf = heap_caps_malloc(FRAME_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL);
+    int16_t *stereo_buf = heap_caps_malloc(FRAME_SAMPLES * 2 * sizeof(int16_t), MALLOC_CAP_INTERNAL);
     if (!pcm_buf || !stereo_buf) {
-        ESP_LOGE(TAG, "Playback task: buffer alloc failed");
+        ESP_LOGE(TAG, "Playback task: buffer alloc failed (need 5.7KB internal SRAM)");
         vTaskDelete(NULL);
         return;
     }
 
     playback_item_t item;
     int play_frame = 0;
+    bool playing = false;  /* true between TTS_START and TTS_STOP */
     ESP_LOGI(TAG, "Playback task started");
 
     while (true) {
-        if (xQueueReceive(playback_queue, &item, portMAX_DELAY) != pdTRUE) continue;
+        /* When actively playing, use a short timeout so we can write silence
+         * if the queue empties (prevents I2S DMA from replaying the last
+         * buffer = stutter). When idle, block forever to save CPU. */
+        TickType_t timeout = playing ? pdMS_TO_TICKS(40) : portMAX_DELAY;
+        if (xQueueReceive(playback_queue, &item, timeout) != pdTRUE) {
+            /* Queue empty during active playback — write silence to prevent
+             * I2S DMA circular replay (which sounds like a repeating fragment).
+             * This turns network jitter into brief pauses instead of stutter. */
+            if (playing) {
+                memset(stereo_buf, 0, FRAME_SAMPLES * 2 * sizeof(int16_t));
+                size_t wr = 0;
+                i2s_channel_write(i2s_tx_chan, stereo_buf,
+                                  FRAME_SAMPLES * 2 * sizeof(int16_t),
+                                  &wr, pdMS_TO_TICKS(100));
+            }
+            continue;
+        }
 
         switch (item.type) {
         case PKT_TYPE_TTS_START:
             if (opus_dec) opus_decoder_ctl(opus_dec, OPUS_RESET_STATE);
-            /* Brief silence flush to clear stale I2S DMA data before unmuting.
-             * Keep this short (3 writes ≈ 24ms) to avoid blocking the playback
-             * task while new audio frames queue up. */
+            /* Brief silence flush to clear stale I2S DMA data before unmuting. */
             {
                 int16_t silence[256] = {0};
                 size_t wr = 0;
@@ -647,14 +703,15 @@ static void playback_task(void *arg) {
             }
             es8311_write_reg(0x31, 0x00);  /* Unmute DAC */
             play_frame = 0;
+            playing = true;
             ESP_LOGI(TAG, "Playback: TTS start");
             break;
 
         case PKT_TYPE_TTS_STOP:
-            /* Let I2S DMA drain its last buffers before muting.
-             * Without this delay, the final ~100ms of speech gets cut off. */
+            /* Let I2S DMA drain its last buffers before muting. */
             vTaskDelay(pdMS_TO_TICKS(150));
             es8311_write_reg(0x31, 0x40);  /* Mute DAC */
+            playing = false;
             ESP_LOGI(TAG, "Playback: TTS stop (played %d frames)", play_frame);
             break;
 
@@ -681,14 +738,9 @@ static void playback_task(void *arg) {
                     i2s_channel_write(i2s_tx_chan, stereo_buf,
                                       decoded * 2 * sizeof(int16_t),
                                       &written, pdMS_TO_TICKS(1000));
-                    if (play_frame % 10 == 0) {
-                        int16_t mn = 0, mx = 0;
-                        for (int i = 0; i < decoded; i++) {
-                            if (pcm_buf[i] < mn) mn = pcm_buf[i];
-                            if (pcm_buf[i] > mx) mx = pcm_buf[i];
-                        }
-                        ESP_LOGI(TAG, "Play frame %d: opus=%d decoded=%d written=%zu min=%d max=%d",
-                                 play_frame, item.len, decoded, written, mn, mx);
+                    if (play_frame % 50 == 0) {
+                        ESP_LOGI(TAG, "Play frame %d: opus=%d decoded=%d written=%zu",
+                                 play_frame, item.len, decoded, written);
                     }
                     play_frame++;
                 } else {
@@ -751,7 +803,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             if (t && t->valuestring) {
                                 char prefixed[512];
                                 snprintf(prefixed, sizeof(prefixed), "> %s", t->valuestring);
-                                display_conversation(prefixed, COLOR_CYAN);
+                                queue_display_text(prefixed, COLOR_CYAN);
                             }
                         } else if (strcmp(type->valuestring, "tts") == 0) {
                             cJSON *s = cJSON_GetObjectItem(msg, "state");
@@ -760,7 +812,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                                      s ? s->valuestring : "?",
                                      t ? t->valuestring : "");
                             if (t && t->valuestring) {
-                                display_conversation(t->valuestring, COLOR_GREEN);
+                                queue_display_text(t->valuestring, COLOR_GREEN);
                             }
                             // Queue DAC control to playback task (non-blocking)
                             if (s && s->valuestring) {
@@ -999,10 +1051,14 @@ void app_main(void) {
     }
     display_status(4, "Auth: OK", COLOR_GREEN);
 
-    // Create playback queue (must exist before WS connects and sends audio)
+    // Create queues (must exist before WS connects and sends audio/text)
     playback_queue = xQueueCreate(PLAYBACK_QUEUE_LEN, sizeof(playback_item_t));
     if (!playback_queue) {
         ESP_LOGE(TAG, "FAILED to create playback queue!");
+    }
+    display_text_queue = xQueueCreate(DISPLAY_QUEUE_LEN, sizeof(display_text_item_t));
+    if (!display_text_queue) {
+        ESP_LOGE(TAG, "FAILED to create display text queue!");
     }
 
     // Connect WebSocket
@@ -1010,10 +1066,11 @@ void app_main(void) {
     connect_websocket();
 
     // Heap diagnostics before task creation
-    ESP_LOGI(TAG, "Heap free: %lu total, %lu largest block, %lu DMA-capable",
+    ESP_LOGI(TAG, "Heap free: %lu total, %lu largest block, %lu DMA-capable, %lu internal",
              (unsigned long)esp_get_free_heap_size(),
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
-             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_DMA));
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
     // Start audio capture task (mic → Opus → server)
     BaseType_t audio_ok = xTaskCreatePinnedToCore(audio_task, "audio", 16384, NULL, 5, NULL,
@@ -1023,11 +1080,20 @@ void app_main(void) {
     }
 
     // Start playback task (server → Opus decode → I2S speaker)
-    // Runs on core 1 at priority 5 to match audio capture task.
-    // Decoupled from WS handler so display updates can't starve audio.
+    // Runs on core 1 at priority 5. Writes silence on queue underrun
+    // to prevent I2S DMA from replaying the last buffer (= stutter).
     BaseType_t play_ok = xTaskCreatePinnedToCore(playback_task, "playback", 8192, NULL, 5, NULL, 1);
     if (play_ok != pdPASS) {
         ESP_LOGE(TAG, "FAILED to create playback task!");
+    }
+
+    // Start display update task — processes text from display_text_queue.
+    // Runs on core 0 (where LVGL runs) at priority 3 (above LVGL's 2,
+    // below WiFi). This task is the ONLY one that calls display_conversation(),
+    // so the LVGL mutex never blocks the WS handler or audio tasks.
+    BaseType_t disp_ok = xTaskCreatePinnedToCore(display_update_task, "disp_text", 4096, NULL, 3, NULL, 0);
+    if (disp_ok != pdPASS) {
+        ESP_LOGE(TAG, "FAILED to create display update task!");
     }
 
     display_status(6, "Push to talk", COLOR_WHITE);
