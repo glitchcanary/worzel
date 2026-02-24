@@ -342,7 +342,7 @@ static esp_err_t setup_i2s(void) {
 
     // Create both TX+RX channels on the same I2S port (full-duplex)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 6;   /* 6 × 60ms = 360ms DMA buffer; absorbs jitter */
+    chan_cfg.dma_desc_num = 4;
     chan_cfg.dma_frame_num = FRAME_SAMPLES;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &i2s_tx_chan, &i2s_rx_chan), TAG, "I2S channel create failed");
 
