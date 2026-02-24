@@ -119,9 +119,15 @@ static const sh8601_lcd_init_cmd_t init_cmds[] = {
     {0x29, (uint8_t[]){0x00}, 0, 10},                       /* Display ON */
 };
 
-/* Helper: strip LVGL theme defaults from a container */
-static void style_container(lv_obj_t *obj, lv_color_t bg) {
+/* Helper: strip LVGL theme then set geometry + background.
+ * MUST set size/align AFTER lv_obj_remove_style_all() because
+ * LVGL 9 stores size and position as style properties. */
+static void style_container(lv_obj_t *obj, lv_color_t bg,
+                             int32_t w, int32_t h,
+                             lv_align_t align, int32_t x_ofs, int32_t y_ofs) {
     lv_obj_remove_style_all(obj);
+    lv_obj_set_size(obj, w, h);
+    lv_obj_align(obj, align, x_ofs, y_ofs);
     lv_obj_set_style_bg_color(obj, bg, 0);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(obj, 0, 0);
@@ -140,9 +146,8 @@ static void build_ui(void) {
 
     /* ---- Status bar (top) ---- */
     status_bar = lv_obj_create(scr);
-    lv_obj_set_size(status_bar, LCD_H_RES, STATUS_BAR_H);
-    lv_obj_align(status_bar, LV_ALIGN_TOP_LEFT, 0, 0);
-    style_container(status_bar, bar_bg);
+    style_container(status_bar, bar_bg,
+                    LCD_H_RES, STATUS_BAR_H, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_set_style_pad_left(status_bar, 10, 0);
     lv_obj_set_style_pad_right(status_bar, 10, 0);
     lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
@@ -190,15 +195,13 @@ static void build_ui(void) {
 
     /* ---- Thin separator ---- */
     lv_obj_t *sep1 = lv_obj_create(scr);
-    lv_obj_set_size(sep1, LCD_H_RES, 1);
-    lv_obj_align(sep1, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H);
-    style_container(sep1, lv_color_make(50, 50, 50));
+    style_container(sep1, lv_color_make(50, 50, 50),
+                    LCD_H_RES, 1, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H);
 
     /* ---- Action bar (bottom) — tap to cycle font size ---- */
     action_bar = lv_obj_create(scr);
-    lv_obj_set_size(action_bar, LCD_H_RES, ACTION_BAR_H);
-    lv_obj_align(action_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    style_container(action_bar, bar_bg);
+    style_container(action_bar, bar_bg,
+                    LCD_H_RES, ACTION_BAR_H, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_add_flag(action_bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(action_bar, font_cycle_cb, LV_EVENT_CLICKED, NULL);
 
@@ -212,16 +215,14 @@ static void build_ui(void) {
 
     /* ---- Separator above action bar ---- */
     lv_obj_t *sep2 = lv_obj_create(scr);
-    lv_obj_set_size(sep2, LCD_H_RES, 1);
-    lv_obj_align(sep2, LV_ALIGN_BOTTOM_LEFT, 0, -ACTION_BAR_H);
-    style_container(sep2, lv_color_make(50, 50, 50));
+    style_container(sep2, lv_color_make(50, 50, 50),
+                    LCD_H_RES, 1, LV_ALIGN_BOTTOM_LEFT, 0, -ACTION_BAR_H);
 
     /* ---- Conversation area (middle, scrollable) ---- */
     int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
     convo_area = lv_obj_create(scr);
-    lv_obj_set_size(convo_area, LCD_H_RES, convo_h);
-    lv_obj_align(convo_area, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
-    style_container(convo_area, lv_color_black());
+    style_container(convo_area, lv_color_black(),
+                    LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
     lv_obj_set_style_pad_left(convo_area, 8, 0);
     lv_obj_set_style_pad_right(convo_area, 8, 0);
     lv_obj_set_style_pad_top(convo_area, 4, 0);
