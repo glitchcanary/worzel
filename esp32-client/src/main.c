@@ -38,6 +38,7 @@
 
 #include "board.h"
 #include "display.h"
+#include "../easteregg/melody.h"
 
 static const char *TAG = "worzel";
 
@@ -64,6 +65,7 @@ static i2s_chan_handle_t i2s_rx_chan = NULL;  /* mic */
 static i2s_chan_handle_t i2s_tx_chan = NULL;  /* speaker */
 static i2c_master_bus_handle_t i2c_bus = NULL;
 static i2c_master_dev_handle_t es8311_dev = NULL;
+static i2c_master_dev_handle_t axp2101_dev = NULL;
 static esp_websocket_client_handle_t ws_client = NULL;
 
 static OpusEncoder *opus_enc = NULL;
@@ -82,6 +84,12 @@ static EventGroupHandle_t wifi_events;
 static esp_err_t es8311_write_reg(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = {reg, val};
     return i2c_master_transmit(es8311_dev, buf, 2, 100);
+}
+
+static uint8_t es8311_read_reg(uint8_t reg) {
+    uint8_t val = 0;
+    i2c_master_transmit_receive(es8311_dev, &reg, 1, &val, 1, 100);
+    return val;
 }
 
 static esp_err_t es8311_init_codec(void) {
@@ -159,12 +167,90 @@ static esp_err_t es8311_init_codec(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
 
     ESP_LOGI(TAG, "ES8311 initialized (16kHz, 16-bit, I2S slave)");
+
+    // Read back key registers to verify writes
+    ESP_LOGI(TAG, "ES8311 verify: REG00=0x%02x REG01=0x%02x REG02=0x%02x REG0D=0x%02x "
+             "REG0E=0x%02x REG12=0x%02x REG13=0x%02x REG14=0x%02x REG31=0x%02x REG32=0x%02x",
+             es8311_read_reg(0x00), es8311_read_reg(0x01), es8311_read_reg(0x02),
+             es8311_read_reg(0x0D), es8311_read_reg(0x0E), es8311_read_reg(0x12),
+             es8311_read_reg(0x13), es8311_read_reg(0x14), es8311_read_reg(0x31),
+             es8311_read_reg(0x32));
+
     return ESP_OK;
 }
 
 static void es8311_set_volume(uint8_t vol) __attribute__((unused));
 static void es8311_set_volume(uint8_t vol) {
     es8311_write_reg(0x32, vol);  // 0x00=-95.5dB, 0xBF=0dB, 0xFF=+32dB
+}
+
+// ======== AXP2101 PMIC (power management) ========
+// The Waveshare ESP32-S3 AMOLED 1.8" has an AXP2101 PMIC that controls
+// power rails. ALDO1 provides 3.3V for the microphone. Without PMIC init,
+// audio power rails may be in an undefined state.
+
+#define AXP2101_I2C_ADDR 0x34
+
+static esp_err_t axp2101_write_reg(uint8_t reg, uint8_t val) {
+    uint8_t buf[2] = {reg, val};
+    return i2c_master_transmit(axp2101_dev, buf, 2, 100);
+}
+
+static uint8_t axp2101_read_reg(uint8_t reg) {
+    uint8_t val = 0;
+    i2c_master_transmit_receive(axp2101_dev, &reg, 1, &val, 1, 100);
+    return val;
+}
+
+static esp_err_t setup_pmic(void) {
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = AXP2101_I2C_ADDR,
+        .scl_speed_hz = 400000,
+    };
+    esp_err_t ret = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &axp2101_dev);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "AXP2101 PMIC not found on I2C (board may not have one)");
+        return ESP_OK;  // Non-fatal: not all boards have a PMIC
+    }
+
+    // Verify chip is present by reading status register
+    uint8_t chip_id = axp2101_read_reg(0x03);
+    ESP_LOGI(TAG, "AXP2101 chip ID register: 0x%02x", chip_id);
+
+    // Power off source config
+    axp2101_write_reg(0x22, 0x06);  // PWRON > OFFLEVEL as power-off source
+    axp2101_write_reg(0x27, 0x10);  // Hold 4s to power off
+
+    // DC outputs: enable DC1 only (main 3.3V rail)
+    axp2101_write_reg(0x80, 0x01);
+
+    // Disable all LDOs initially, then selectively enable
+    axp2101_write_reg(0x90, 0x00);  // ALDO1-4, BLDO1-2 off
+    axp2101_write_reg(0x91, 0x00);  // DLDO1-2, CPUSLDO off
+
+    // DC1 voltage: 3.3V = (3300-1500)/100 = 18 = 0x12
+    axp2101_write_reg(0x82, 0x12);
+
+    // ALDO1 voltage: 3.3V = (3300-500)/100 = 28 = 0x1C
+    axp2101_write_reg(0x92, 0x1C);
+
+    // Enable ALDO1 (microphone power)
+    axp2101_write_reg(0x90, 0x01);
+
+    // Battery charger config
+    axp2101_write_reg(0x64, 0x02);  // CV voltage 4.1V
+    axp2101_write_reg(0x61, 0x02);  // Precharge current 50mA
+    axp2101_write_reg(0x62, 0x08);  // Charge current 400mA
+    axp2101_write_reg(0x63, 0x01);  // Termination current 25mA
+
+    // Read back to verify
+    ESP_LOGI(TAG, "AXP2101 PMIC: DC_EN=0x%02x LDO_EN=0x%02x DC1_V=0x%02x ALDO1_V=0x%02x",
+             axp2101_read_reg(0x80), axp2101_read_reg(0x90),
+             axp2101_read_reg(0x82), axp2101_read_reg(0x92));
+
+    ESP_LOGI(TAG, "AXP2101 PMIC initialized (DC1=3.3V, ALDO1=3.3V)");
+    return ESP_OK;
 }
 
 // ======== Opus codec setup ========
@@ -718,8 +804,9 @@ void app_main(void) {
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
-    // Init I2C → ES8311 codec
+    // Init I2C → PMIC → ES8311 codec
     ESP_ERROR_CHECK(setup_i2c());
+    setup_pmic();  // Non-fatal if PMIC absent; must run before codec
     ESP_ERROR_CHECK(es8311_init_codec());
 
     // Init display (uses same I2C bus for IO expander)
@@ -738,26 +825,10 @@ void app_main(void) {
     // Enable amplifier
     amp_enable(true);
 
-    // Startup beep — verifies speaker hardware path (I2S → ES8311 DAC → amp)
-    {
-        const int tone_hz = 1000;
-        const int duration_ms = 500;
-        const int samples = I2S_SAMPLE_RATE * duration_ms / 1000;  /* 8000 samples */
-        int16_t *tone_buf = malloc(samples * sizeof(int16_t));
-        if (tone_buf) {
-            for (int i = 0; i < samples; i++) {
-                /* 1kHz sine at ~75% volume (24000/32767) */
-                float t = (float)i / I2S_SAMPLE_RATE;
-                tone_buf[i] = (int16_t)(24000.0f * sinf(2.0f * 3.14159f * tone_hz * t));
-            }
-            size_t written = 0;
-            i2s_channel_write(i2s_tx_chan, tone_buf, samples * sizeof(int16_t),
-                              &written, pdMS_TO_TICKS(1000));
-            ESP_LOGI(TAG, "Startup beep: %d/%d samples written",
-                     (int)(written / sizeof(int16_t)), samples);
-            free(tone_buf);
-        }
-    }
+    // Startup melody — verifies speaker hardware path (I2S → ES8311 DAC → amp)
+    ESP_LOGI(TAG, "Playing startup melody...");
+    melody_play(i2s_tx_chan, I2S_SAMPLE_RATE);
+    ESP_LOGI(TAG, "Startup melody done");
 
     // Connect WiFi
     display_status(5, "WiFi: connecting...", COLOR_YELLOW);
