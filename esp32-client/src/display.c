@@ -312,11 +312,11 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
 
     /* ---- LVGL port init ---- */
     const lvgl_port_cfg_t lvgl_cfg = {
-        .task_priority = 3,
+        .task_priority = 2,     /* just above IDLE — must not starve WiFi/WS */
         .task_stack = 6144,
         .task_affinity = 0,
         .task_max_sleep_ms = 500,
-        .timer_period_ms = 10,
+        .timer_period_ms = 30,  /* 33fps is fine for text UI, saves CPU for audio */
     };
     ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "LVGL port init failed");
 
@@ -445,8 +445,10 @@ void display_conversation(const char *text, uint16_t color) {
         }
         lv_obj_set_style_pad_bottom(lbl, 6, 0);
 
-        /* Force layout recalc then scroll new label into view */
-        lv_obj_update_layout(convo_area);
+        /* Scroll new label into view. No lv_obj_update_layout() here —
+         * that forces a synchronous layout pass in the WS handler context,
+         * blocking audio data reception and causing TTS stutter.
+         * LVGL applies the scroll target on its next refresh cycle. */
         lv_obj_scroll_to_view(lbl, LV_ANIM_ON);
 
         lvgl_port_unlock();
