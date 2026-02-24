@@ -600,7 +600,7 @@ static void send_listen(const char *state) {
 // This prevents LVGL display updates and JSON parsing in the WS handler
 // from starving the I2S DMA, which caused audio stutter.
 
-#define PLAYBACK_QUEUE_LEN 50   /* 50 × 60ms = 3s buffer */
+#define PLAYBACK_QUEUE_LEN 30   /* 30 × 60ms = 1.8s buffer */
 
 #define PKT_TYPE_AUDIO     0
 #define PKT_TYPE_TTS_START 1    /* reset decoder, flush silence, unmute DAC */

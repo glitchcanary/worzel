@@ -127,6 +127,21 @@ static void clock_update_cb(lv_timer_t *timer) {
     }
 }
 
+/* Safe LVGL flush callback: if the SPI transfer fails, call
+ * lv_display_flush_ready() to prevent LVGL spinning forever in
+ * wait_for_flushing(). A failed flush causes a visual glitch for
+ * one frame but the device stays alive instead of watchdog-crashing. */
+static void safe_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
+    esp_err_t ret = esp_lcd_panel_draw_bitmap(panel,
+        area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Display flush failed (%s), skipping frame", esp_err_to_name(ret));
+        lv_display_flush_ready(disp);
+    }
+    /* On success, the SPI on_color_trans_done ISR callback calls
+     * lv_display_flush_ready() — must NOT double-call it here. */
+}
+
 /* SH8601 vendor init commands */
 static const sh8601_lcd_init_cmd_t init_cmds[] = {
     {0x11, (uint8_t[]){0x00}, 0, 120},                     /* Sleep out */
@@ -291,7 +306,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         .dc_gpio_num = -1,
         .spi_mode = 0,
         .pclk_hz = 40 * 1000 * 1000,
-        .trans_queue_depth = 20,
+        .trans_queue_depth = 10,
         .lcd_cmd_bits = 32,
         .lcd_param_bits = 8,
         .flags = {
@@ -353,6 +368,13 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "LVGL display registered");
+
+    /* Replace the default flush callback with our safe wrapper.
+     * The esp_lvgl_port flush callback calls esp_lcd_panel_draw_bitmap()
+     * but doesn't handle failures — if SPI returns an error, the
+     * on_color_trans_done ISR never fires, and LVGL hangs forever
+     * in wait_for_flushing(). Our wrapper catches failures. */
+    lv_display_set_flush_cb(lvgl_disp, safe_flush_cb);
 
     /* ---- Touch init (FT3168 / FT5x06-compatible) ---- */
 #ifdef PIN_TOUCH_INT
