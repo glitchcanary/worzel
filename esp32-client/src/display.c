@@ -103,7 +103,7 @@ static void build_ui(void) {
     lv_label_set_text(lbl_title, "Worzel");
     lv_obj_set_style_text_color(lbl_title, lv_color_make(0x47, 0xE0 >> 2, 0x00), 0);  /* green-ish */
     lv_obj_set_style_text_color(lbl_title, lv_color_make(0x50, 0xC8, 0x50), 0);
-    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_14, 0);
     lv_obj_set_flex_grow(lbl_title, 1);
 
     /* Status labels (compact, in status bar: WiFi, IP, Auth, WS) */
