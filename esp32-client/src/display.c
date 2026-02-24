@@ -298,6 +298,11 @@ void display_status(int slot, const char *text, uint16_t color) {
 void display_conversation(const char *text, uint16_t color) {
     if (!framebuf || !panel || !text || !text[0]) return;
 
+    /* Blank line between messages for readability */
+    if (convo_count > 0) {
+        convo_push("", COLOR_BLACK);
+    }
+
     int len = strlen(text);
     int max_chars = CONVO_COLS - 2;  /* leave room for left margin */
 

@@ -629,7 +629,9 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             cJSON *t = cJSON_GetObjectItem(msg, "text");
                             ESP_LOGI(TAG, "STT: %s", t ? t->valuestring : "");
                             if (t && t->valuestring) {
-                                display_conversation(t->valuestring, COLOR_CYAN);
+                                char prefixed[512];
+                                snprintf(prefixed, sizeof(prefixed), "> %s", t->valuestring);
+                                display_conversation(prefixed, COLOR_CYAN);
                             }
                         } else if (strcmp(type->valuestring, "tts") == 0) {
                             cJSON *s = cJSON_GetObjectItem(msg, "state");
@@ -638,7 +640,9 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                                      s ? s->valuestring : "?",
                                      t ? t->valuestring : "");
                             if (t && t->valuestring) {
-                                display_conversation(t->valuestring, COLOR_GREEN);
+                                char prefixed[512];
+                                snprintf(prefixed, sizeof(prefixed), "< %s", t->valuestring);
+                                display_conversation(prefixed, COLOR_GREEN);
                             }
                             // Unmute DAC for TTS playback, mute after
                             if (s && s->valuestring) {
