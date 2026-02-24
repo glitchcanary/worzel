@@ -127,11 +127,26 @@ static void clock_update_cb(lv_timer_t *timer) {
     }
 }
 
-/* Safe LVGL flush callback: if the SPI transfer fails, call
+/* Safe LVGL flush callback: byte-swap RGB565 for the SH8601 big-endian
+ * QSPI interface, then send to panel. If the SPI transfer fails, call
  * lv_display_flush_ready() to prevent LVGL spinning forever in
  * wait_for_flushing(). A failed flush causes a visual glitch for
- * one frame but the device stays alive instead of watchdog-crashing. */
+ * one frame but the device stays alive instead of watchdog-crashing.
+ *
+ * The byte swap was previously handled inside esp_lvgl_port's internal
+ * flush callback (enabled by swap_bytes=true in disp_cfg). Since we
+ * replace that callback, we must do the swap ourselves. */
 static void safe_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
+    /* Swap bytes of each RGB565 pixel: ESP32 is little-endian but
+     * SH8601 QSPI expects big-endian. This modifies the draw buffer
+     * in-place, which is safe because LVGL won't reuse the buffer
+     * until after lv_display_flush_ready() is called. */
+    int pixel_count = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
+    uint16_t *p = (uint16_t *)px_map;
+    for (int i = 0; i < pixel_count; i++) {
+        p[i] = (p[i] >> 8) | (p[i] << 8);
+    }
+
     esp_err_t ret = esp_lcd_panel_draw_bitmap(panel,
         area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
     if (ret != ESP_OK) {

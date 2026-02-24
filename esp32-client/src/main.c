@@ -765,10 +765,6 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                             // Queue DAC control to playback task (non-blocking)
                             if (s && s->valuestring) {
                                 if (strcmp(s->valuestring, "start") == 0) {
-                                    /* Flush stale audio from previous TTS segment.
-                                     * Without this, old frames fill the queue and the
-                                     * new TTS_START gets dropped → decoder never resets. */
-                                    xQueueReset(playback_queue);
                                     queue_playback(PKT_TYPE_TTS_START, NULL, 0);
                                 } else if (strcmp(s->valuestring, "sentence_end") == 0) {
                                     queue_playback(PKT_TYPE_SENT_END, NULL, 0);
@@ -896,6 +892,12 @@ static void button_task(void *arg) {
 
         if (pressed && !was_pressed && ws_connected) {
             // Button down — start recording
+            // Flush any stale TTS audio from the playback queue so the
+            // queue has room for the new response after recording stops.
+            // This replaces the old xQueueReset() in the tts:start handler,
+            // which killed filler audio mid-stream and caused stutter.
+            if (playback_queue) xQueueReset(playback_queue);
+            es8311_write_reg(0x31, 0x40);  // Mute DAC immediately
             recording = true;
             send_listen("start");
             amp_enable(false);  // Mute speaker while recording
