@@ -155,7 +155,7 @@ static esp_err_t es8311_init_codec(void) {
 
     // DAC config
     es8311_write_reg(0x31, 0x00);  // Unmute DAC
-    es8311_write_reg(0x32, 0xBF);  // DAC volume 0dB
+    es8311_write_reg(0x32, 0xFF);  // DAC volume MAX (+32dB) for speaker diagnostic
     es8311_write_reg(0x37, 0x08);  // Bypass DAC EQ
 
     // GPIO config
@@ -168,13 +168,25 @@ static esp_err_t es8311_init_codec(void) {
 
     ESP_LOGI(TAG, "ES8311 initialized (16kHz, 16-bit, I2S slave)");
 
-    // Read back key registers to verify writes
-    ESP_LOGI(TAG, "ES8311 verify: REG00=0x%02x REG01=0x%02x REG02=0x%02x REG0D=0x%02x "
-             "REG0E=0x%02x REG12=0x%02x REG13=0x%02x REG14=0x%02x REG31=0x%02x REG32=0x%02x",
-             es8311_read_reg(0x00), es8311_read_reg(0x01), es8311_read_reg(0x02),
-             es8311_read_reg(0x0D), es8311_read_reg(0x0E), es8311_read_reg(0x12),
-             es8311_read_reg(0x13), es8311_read_reg(0x14), es8311_read_reg(0x31),
-             es8311_read_reg(0x32));
+    // Full register dump for debugging DAC output issues
+    ESP_LOGI(TAG, "ES8311 regs 00-0F: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             es8311_read_reg(0x00), es8311_read_reg(0x01), es8311_read_reg(0x02), es8311_read_reg(0x03),
+             es8311_read_reg(0x04), es8311_read_reg(0x05), es8311_read_reg(0x06), es8311_read_reg(0x07),
+             es8311_read_reg(0x08), es8311_read_reg(0x09), es8311_read_reg(0x0A), es8311_read_reg(0x0B),
+             es8311_read_reg(0x0C), es8311_read_reg(0x0D), es8311_read_reg(0x0E), es8311_read_reg(0x0F));
+    ESP_LOGI(TAG, "ES8311 regs 10-1F: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             es8311_read_reg(0x10), es8311_read_reg(0x11), es8311_read_reg(0x12), es8311_read_reg(0x13),
+             es8311_read_reg(0x14), es8311_read_reg(0x15), es8311_read_reg(0x16), es8311_read_reg(0x17),
+             es8311_read_reg(0x18), es8311_read_reg(0x19), es8311_read_reg(0x1A), es8311_read_reg(0x1B),
+             es8311_read_reg(0x1C), es8311_read_reg(0x1D), es8311_read_reg(0x1E), es8311_read_reg(0x1F));
+    ESP_LOGI(TAG, "ES8311 regs 30-3F: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             es8311_read_reg(0x30), es8311_read_reg(0x31), es8311_read_reg(0x32), es8311_read_reg(0x33),
+             es8311_read_reg(0x34), es8311_read_reg(0x35), es8311_read_reg(0x36), es8311_read_reg(0x37),
+             es8311_read_reg(0x38), es8311_read_reg(0x39), es8311_read_reg(0x3A), es8311_read_reg(0x3B),
+             es8311_read_reg(0x3C), es8311_read_reg(0x3D), es8311_read_reg(0x3E), es8311_read_reg(0x3F));
+    ESP_LOGI(TAG, "ES8311 regs 40-45: %02x %02x %02x %02x %02x %02x",
+             es8311_read_reg(0x40), es8311_read_reg(0x41), es8311_read_reg(0x42),
+             es8311_read_reg(0x43), es8311_read_reg(0x44), es8311_read_reg(0x45));
 
     return ESP_OK;
 }
@@ -310,14 +322,16 @@ static esp_err_t setup_i2c(void) {
 // ======== I2S setup (full-duplex via separate RX/TX channels) ========
 
 static esp_err_t setup_i2s(void) {
-    // Shared I2S clock config
+    // I2S config — STEREO mode (matches ES8311 standard I2S expectations).
+    // Both the Arduino reference and XiaoZhi firmware use stereo mode.
+    // The mono audio data is duplicated to both L+R channels during write.
     i2s_std_config_t std_cfg = {
         .clk_cfg = {
             .sample_rate_hz = I2S_SAMPLE_RATE,
             .clk_src = I2S_CLK_SRC_DEFAULT,
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,
         },
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = PIN_I2S_MCLK,
             .bclk = PIN_I2S_BCLK,
@@ -338,14 +352,11 @@ static esp_err_t setup_i2s(void) {
     chan_cfg.dma_frame_num = FRAME_SAMPLES;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &i2s_tx_chan, &i2s_rx_chan), TAG, "I2S channel create failed");
 
-    // TX (speaker): write mono sample to BOTH L+R slots so the ES8311 DAC
-    // receives data regardless of which slot it reads from.
+    // TX (speaker): stereo, both slots active
     std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(i2s_tx_chan, &std_cfg), TAG, "I2S TX init failed");
 
-    // RX (mic): read from LEFT slot only. SLOT_BOTH in mono mode reads both
-    // L+R slots into the DMA buffer, doubling the sample count and halving
-    // the effective playback rate — this was the root cause of garbled ASR.
+    // RX (mic): LEFT slot only — in stereo mode this gives us just the mono mic data
     std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(i2s_rx_chan, &std_cfg), TAG, "I2S RX init failed");
 
@@ -360,13 +371,22 @@ static esp_err_t setup_i2s(void) {
 
 static void amp_enable(bool on) {
 #if PIN_AMP_ENABLE != GPIO_NUM_NC
+    gpio_reset_pin(PIN_AMP_ENABLE);  // Release from any peripheral assignment
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << PIN_AMP_ENABLE),
         .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
     };
-    gpio_config(&io_conf);
+    esp_err_t ret = gpio_config(&io_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "GPIO%d config FAILED: %s", PIN_AMP_ENABLE, esp_err_to_name(ret));
+        return;
+    }
     gpio_set_level(PIN_AMP_ENABLE, on ? 1 : 0);
-    ESP_LOGI(TAG, "Amplifier %s", on ? "ON" : "OFF");
+    int readback = gpio_get_level(PIN_AMP_ENABLE);
+    ESP_LOGI(TAG, "Amplifier %s (GPIO%d set=%d read=%d)",
+             on ? "ON" : "OFF", PIN_AMP_ENABLE, on ? 1 : 0, readback);
 #endif
 }
 
@@ -648,8 +668,15 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                 int decoded = opus_decode(opus_dec, (const unsigned char *)ev->data_ptr,
                                           ev->data_len, pcm_buf, FRAME_SAMPLES, 0);
                 if (decoded > 0) {
+                    // Duplicate mono to stereo (L+R interleaved) for I2S STEREO mode
+                    int16_t stereo_buf[FRAME_SAMPLES * 2];
+                    for (int i = 0; i < decoded; i++) {
+                        stereo_buf[i * 2] = pcm_buf[i];      // L
+                        stereo_buf[i * 2 + 1] = pcm_buf[i];  // R
+                    }
                     size_t written = 0;
-                    esp_err_t wr_ret = i2s_channel_write(i2s_tx_chan, pcm_buf, decoded * sizeof(int16_t),
+                    esp_err_t wr_ret = i2s_channel_write(i2s_tx_chan, stereo_buf,
+                                      decoded * 2 * sizeof(int16_t),
                                       &written, pdMS_TO_TICKS(1000));
                     if (play_frame % 10 == 0) {
                         int16_t mn = 0, mx = 0;

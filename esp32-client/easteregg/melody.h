@@ -2,7 +2,8 @@
  * Startup melody for Worzel — plays through ES8311 DAC + NS4150 amp.
  * A cheerful ascending phrase that doubles as a hardware audio test.
  *
- * Usage: call melody_play(i2s_tx_chan) after I2S is initialized.
+ * Usage: call melody_play(i2s_tx_chan, sample_rate) after I2S is initialized.
+ * Outputs stereo (L+R interleaved) to match I2S STEREO mode.
  */
 
 #ifndef WORZEL_MELODY_H
@@ -10,6 +11,7 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 #include "driver/i2s_std.h"
 
 /* Note frequencies (Hz) — equal temperament, A4=440Hz */
@@ -47,11 +49,8 @@ static const melody_note_t startup_melody[] = {
 #define MELODY_LEN (sizeof(startup_melody) / sizeof(startup_melody[0]))
 
 /**
- * Generate and play the startup melody through I2S.
+ * Generate and play the startup melody through I2S (stereo output).
  * Blocks until playback completes (typically < 2 seconds).
- *
- * @param tx_chan  Enabled I2S TX channel handle
- * @param sample_rate  I2S sample rate (must match channel config)
  */
 static inline void melody_play(i2s_chan_handle_t tx_chan, int sample_rate) {
     if (!tx_chan) return;
@@ -61,12 +60,12 @@ static inline void melody_play(i2s_chan_handle_t tx_chan, int sample_rate) {
         int dur_ms = startup_melody[n].duration_ms;
         int num_samples = sample_rate * dur_ms / 1000;
 
-        /* Allocate sample buffer (DMA-capable for I2S) */
-        int16_t *buf = heap_caps_malloc(num_samples * sizeof(int16_t), MALLOC_CAP_DMA);
+        /* Allocate stereo buffer (L+R interleaved, DMA-capable) */
+        int16_t *buf = heap_caps_malloc(num_samples * 2 * sizeof(int16_t), MALLOC_CAP_DMA);
         if (!buf) continue;
 
         if (freq == NOTE_REST) {
-            memset(buf, 0, num_samples * sizeof(int16_t));
+            memset(buf, 0, num_samples * 2 * sizeof(int16_t));
         } else {
             /* Sine wave with 5ms fade-in/out to avoid clicks */
             int fade_samples = sample_rate * 5 / 1000;  /* 5ms */
@@ -81,12 +80,14 @@ static inline void melody_play(i2s_chan_handle_t tx_chan, int sample_rate) {
                     amplitude *= (float)(num_samples - i) / fade_samples;
                 }
 
-                buf[i] = (int16_t)(amplitude * sinf(2.0f * 3.14159265f * freq * t));
+                int16_t sample = (int16_t)(amplitude * sinf(2.0f * 3.14159265f * freq * t));
+                buf[i * 2] = sample;      /* L */
+                buf[i * 2 + 1] = sample;  /* R */
             }
         }
 
         size_t written = 0;
-        i2s_channel_write(tx_chan, buf, num_samples * sizeof(int16_t),
+        i2s_channel_write(tx_chan, buf, num_samples * 2 * sizeof(int16_t),
                           &written, pdMS_TO_TICKS(dur_ms + 500));
         heap_caps_free(buf);
     }

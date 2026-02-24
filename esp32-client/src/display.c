@@ -31,16 +31,16 @@ static esp_lcd_panel_io_handle_t panel_io = NULL;
 
 /* Zone layout (pixel coordinates) */
 #define ZONE_HEADER_Y     0
-#define ZONE_HEADER_H    48    /* 24px title + 16px subtitle + 8px gap */
-#define ZONE_STATUS_Y    48
-#define ZONE_STATUS_H   128    /* 8 slots x 16px each */
-#define ZONE_CONVO_Y    176
-#define ZONE_CONVO_H    272    /* 448 - 176 */
+#define ZONE_HEADER_H    56    /* 32px title + 16px subtitle + 8px gap */
+#define ZONE_STATUS_Y    56
+#define ZONE_STATUS_H   136    /* 8 slots x 16px + 8px padding */
+#define ZONE_CONVO_Y    192
+#define ZONE_CONVO_H    256    /* 448 - 192 */
 
 /* Font constants */
-#define HEADER_SCALE     3     /* 24px per char */
+#define HEADER_SCALE     4     /* 32px per char — 3x was minimum readable */
 #define STATUS_SCALE     2     /* 16px per char */
-#define CONVO_SCALE      1     /* 8px per char */
+#define CONVO_SCALE      2     /* 16px per char — 1x is unreadable on 1.8" */
 #define STATUS_CHAR_H   (8 * STATUS_SCALE)  /* 16px */
 #define CONVO_CHAR_W    (8 * CONVO_SCALE)   /* 8px */
 #define CONVO_CHAR_H    (8 * CONVO_SCALE)   /* 8px */
@@ -155,7 +155,7 @@ static void clear_region(int y_start, int height) {
 static void render_header(void) {
     clear_region(ZONE_HEADER_Y, ZONE_HEADER_H);
     draw_text(LEFT_MARGIN, ZONE_HEADER_Y + 2, "Worzel", HEADER_SCALE, COLOR_GREEN);
-    draw_text(LEFT_MARGIN, ZONE_HEADER_Y + 26, BOARD_NAME, STATUS_SCALE, COLOR_GREY);
+    draw_text(LEFT_MARGIN, ZONE_HEADER_Y + 36, BOARD_NAME, STATUS_SCALE, COLOR_GREY);
     draw_hline(ZONE_HEADER_Y + ZONE_HEADER_H - 1, COLOR_SEPARATOR);
 }
 
