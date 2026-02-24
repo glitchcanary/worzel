@@ -3,9 +3,9 @@
  * SH8601 AMOLED via QSPI, 368x448, RGB565.
  *
  * Three zones:
- *   Header (y 0-47):     "Worzel" title, board name
- *   Status (y 48-175):   8 slots for WiFi/Auth/WS status
- *   Conversation (y 176-447): STT/TTS with word-wrap + scrolling
+ *   Header (y 0-55):     "Worzel" title at 4x, board name at 2x
+ *   Status (y 56-191):   8 slots at 2x for WiFi/Auth/WS status
+ *   Conversation (y 192-447): STT/TTS at 2x with word-wrap + scrolling
  */
 
 #ifndef WORZEL_DISPLAY_H
@@ -37,7 +37,8 @@ void display_status(int slot, const char *text, uint16_t color);
 
 /**
  * Append a message to the conversation zone with word-wrapping.
- * Text is rendered at 1x scale (8px) and auto-scrolls when full.
+ * Text is rendered at 2x scale (16px) and auto-scrolls when full.
+ * Detects "> " / "< " prefixes and indents continuation lines.
  */
 void display_conversation(const char *text, uint16_t color);
 

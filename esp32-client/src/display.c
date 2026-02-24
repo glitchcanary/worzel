@@ -3,9 +3,9 @@
  * QSPI interface, 368x448, RGB565. No LVGL — direct framebuffer + bitmap font.
  *
  * Three zones:
- *   Header (y 0-47):     "Worzel" at 3x, board name at 2x
- *   Status (y 48-175):   8 slots at 2x (WiFi, Auth, WS, etc.)
- *   Conversation (y 176-447): STT/TTS with word-wrap + scrolling ring buffer at 1x
+ *   Header (y 0-55):     "Worzel" at 4x, board name at 2x
+ *   Status (y 56-191):   8 slots at 2x (WiFi, Auth, WS, etc.)
+ *   Conversation (y 192-447): STT/TTS at 2x with word-wrap + scrolling ring buffer
  */
 
 #include "display.h"
@@ -38,14 +38,14 @@ static esp_lcd_panel_io_handle_t panel_io = NULL;
 #define ZONE_CONVO_H    256    /* 448 - 192 */
 
 /* Font constants */
-#define HEADER_SCALE     4     /* 32px per char — 3x was minimum readable */
+#define HEADER_SCALE     4     /* 32px per char */
 #define STATUS_SCALE     2     /* 16px per char */
 #define CONVO_SCALE      2     /* 16px per char — 1x is unreadable on 1.8" */
 #define STATUS_CHAR_H   (8 * STATUS_SCALE)  /* 16px */
-#define CONVO_CHAR_W    (8 * CONVO_SCALE)   /* 8px */
-#define CONVO_CHAR_H    (8 * CONVO_SCALE)   /* 8px */
-#define CONVO_COLS      (LCD_H_RES / CONVO_CHAR_W)           /* 46 chars */
-#define CONVO_LINES     (ZONE_CONVO_H / CONVO_CHAR_H)        /* 34 lines */
+#define CONVO_CHAR_W    (8 * CONVO_SCALE)   /* 16px */
+#define CONVO_CHAR_H    (8 * CONVO_SCALE)   /* 16px */
+#define CONVO_COLS      (LCD_H_RES / CONVO_CHAR_W)           /* 23 chars at 2x */
+#define CONVO_LINES     (ZONE_CONVO_H / CONVO_CHAR_H)        /* 16 lines at 2x */
 #define STATUS_MAX_COLS (LCD_H_RES / (8 * STATUS_SCALE))     /* 23 chars */
 
 #define LEFT_MARGIN     8  /* pixels */
@@ -304,42 +304,61 @@ void display_conversation(const char *text, uint16_t color) {
     }
 
     int len = strlen(text);
-    int max_chars = CONVO_COLS - 2;  /* leave room for left margin */
+    int max_chars = CONVO_COLS - 1;  /* leave 1 col margin for left padding */
+
+    /* Detect prefix like "> " or "< " for continuation indent */
+    int indent = 0;
+    if (len >= 2 && (text[0] == '>' || text[0] == '<') && text[1] == ' ') {
+        indent = 2;  /* continuation lines get "  " indent */
+    }
 
     /* Word-wrap into lines */
     int pos = 0;
+    int first_line = 1;
     while (pos < len) {
-        char line[48];
+        int line_max = first_line ? max_chars : (max_chars - indent);
         int line_len = 0;
 
         /* Find how many chars fit on this line */
         int remaining = len - pos;
-        if (remaining <= max_chars) {
+        if (remaining <= line_max) {
             line_len = remaining;
         } else {
             /* Try to break at a space */
-            line_len = max_chars;
+            line_len = line_max;
             int last_space = -1;
             for (int i = 0; i < line_len && pos + i < len; i++) {
                 if (text[pos + i] == ' ') last_space = i;
             }
-            if (last_space > max_chars / 3) {
+            if (last_space > line_max / 3) {
                 line_len = last_space + 1;  /* include the space */
             }
         }
 
-        /* Copy line text */
-        if (line_len > (int)sizeof(line) - 3) line_len = sizeof(line) - 3;
-        memcpy(line, &text[pos], line_len);
-        line[line_len] = '\0';
-
-        /* Remove trailing space */
-        while (line_len > 0 && line[line_len - 1] == ' ') {
-            line[--line_len] = '\0';
+        /* Build line with indent for continuations */
+        char out[48];
+        if (!first_line && indent > 0) {
+            memset(out, ' ', indent);
+            int copy_len = line_len;
+            if (copy_len > (int)sizeof(out) - indent - 1)
+                copy_len = sizeof(out) - indent - 1;
+            memcpy(out + indent, &text[pos], copy_len);
+            out[indent + copy_len] = '\0';
+        } else {
+            if (line_len > (int)sizeof(out) - 1) line_len = sizeof(out) - 1;
+            memcpy(out, &text[pos], line_len);
+            out[line_len] = '\0';
         }
 
-        convo_push(line, color);
+        /* Remove trailing spaces */
+        int out_len = strlen(out);
+        while (out_len > 0 && out[out_len - 1] == ' ') {
+            out[--out_len] = '\0';
+        }
+
+        convo_push(out, color);
         pos += line_len;
+        first_line = 0;
 
         /* Skip leading spaces on next line */
         while (pos < len && text[pos] == ' ') pos++;
