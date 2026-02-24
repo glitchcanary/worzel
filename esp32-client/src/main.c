@@ -925,9 +925,18 @@ void app_main(void) {
     display_status(5, "WebSocket: connecting...", COLOR_YELLOW);
     connect_websocket();
 
+    // Heap diagnostics before audio task creation
+    ESP_LOGI(TAG, "Heap free: %lu total, %lu largest block, %lu DMA-capable",
+             (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_DMA));
+
     // Start audio capture task
-    xTaskCreatePinnedToCore(audio_task, "audio", 32768, NULL, 5, NULL,
+    BaseType_t audio_ok = xTaskCreatePinnedToCore(audio_task, "audio", 16384, NULL, 5, NULL,
                             1 /* core 1 if available, else 0 on single-core */);
+    if (audio_ok != pdPASS) {
+        ESP_LOGE(TAG, "FAILED to create audio task! (heap exhausted?)");
+    }
 
     display_status(6, "Ready - hold button to talk", COLOR_WHITE);
 
