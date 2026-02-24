@@ -1,0 +1,2 @@
+# Flash size override for 16MB boards (ESP32-S3 AMOLED)
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y

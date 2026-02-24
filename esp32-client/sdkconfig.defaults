@@ -26,6 +26,5 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # WebSocket task stack is set programmatically in main.c (task_stack = 12288)
 # because the Kconfig symbol varies between esp_websocket_client versions.
 
-# Flash size — set per board in platformio.ini (board_upload.flash_size).
-# Default to 4MB for boards without explicit override (C3, C6).
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Flash size — set per board via sdkconfig.flash-NNmb chained in platformio.ini.
+# Do NOT set CONFIG_ESPTOOLPY_FLASHSIZE here (causes mismatch warnings).
