@@ -95,10 +95,12 @@ static uint8_t es8311_read_reg(uint8_t reg) {
 static esp_err_t es8311_init_codec(void) {
     esp_err_t ret;
 
-    // Reset
+    // --- Phase 1: Reset and configuration (matching Espressif esp_codec_dev driver) ---
+
+    // Soft reset via codec state machine enable
     ret = es8311_write_reg(0x00, 0x1F);  // Assert all resets
     vTaskDelay(pdMS_TO_TICKS(20));
-    ret = es8311_write_reg(0x00, 0x00);  // Deassert resets
+    ret = es8311_write_reg(0x00, 0x80);  // Enable CSM, deassert resets (slave mode: bit6=0)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "ES8311 not responding on I2C");
         return ret;
@@ -106,67 +108,62 @@ static esp_err_t es8311_init_codec(void) {
 
     // Clock config — MCLK from I2S master, 16kHz sample rate.
     // Values from Espressif ESP-ADF coefficient table for MCLK=4.096MHz, fs=16kHz.
-    // REG01: MCLK from MCLK pin, enable MCLK+ADC+DAC clocks
-    es8311_write_reg(0x01, 0x3F);
-    // REG02: pre_div=1 (bits 7:5=0), pre_multi=0 (bits 4:3=0)
-    es8311_write_reg(0x02, 0x00);
-    // REG03: ADC OSR=16
-    es8311_write_reg(0x03, 0x10);
-    // REG04: DAC OSR=16 (matches official esp-adf driver for 16kHz)
-    es8311_write_reg(0x04, 0x10);
-    // REG05: ADC div=1, DAC div=1
-    es8311_write_reg(0x05, 0x00);
-    // REG06: BCLK divider=4
-    es8311_write_reg(0x06, 0x04);
-    // REG07-08: LRCK divider=255 (MCLK/256 = 16kHz)
-    es8311_write_reg(0x07, 0x00);
-    es8311_write_reg(0x08, 0xFF);
+    es8311_write_reg(0x01, 0x3F);  // MCLK from MCLK pin, enable all clocks
+    es8311_write_reg(0x02, 0x00);  // pre_div=1, pre_multi=0
+    es8311_write_reg(0x03, 0x10);  // ADC OSR=16
+    es8311_write_reg(0x04, 0x10);  // DAC OSR=16
+    es8311_write_reg(0x05, 0x00);  // ADC div=1, DAC div=1
+    es8311_write_reg(0x06, 0x04);  // BCLK divider=4
+    es8311_write_reg(0x07, 0x00);  // LRCK divider high byte
+    es8311_write_reg(0x08, 0xFF);  // LRCK divider low byte (MCLK/256 = 16kHz)
 
     // I2S format: 16-bit, I2S standard
     es8311_write_reg(0x09, 0x0C);  // SDP_IN (DAC): 16-bit I2S
     es8311_write_reg(0x0A, 0x0C);  // SDP_OUT (ADC): 16-bit I2S
 
-    // System config (from esp-adf/esp-bsp official drivers)
+    // System config
     es8311_write_reg(0x0B, 0x00);
     es8311_write_reg(0x0C, 0x00);
-    es8311_write_reg(0x10, 0x1F);
-    es8311_write_reg(0x11, 0x7F);
+    es8311_write_reg(0x10, 0x1F);  // Power management
+    es8311_write_reg(0x11, 0x7F);  // Power management
 
-    // Power up analog (VMID/VREF ramp)
-    es8311_write_reg(0x0D, 0x01);
-    // ADC analog power: PGA + ADC modulator enabled.
-    // Bits are ACTIVE-LOW: 0=enable, 1=power down.
-    // Bit 6 (PDN_PGA)=0, Bit 5 (PDN_MOD)=0, Bit 1=1 (per official drivers).
-    es8311_write_reg(0x0E, 0x02);
-    // Power up DAC
-    es8311_write_reg(0x12, 0x00);
-    // Enable HP output driver
-    es8311_write_reg(0x13, 0x10);
-
-    // Mic input: analog mic (MIC1P-MIC1N), PGA gain 30dB (matches official drivers)
-    es8311_write_reg(0x14, 0x1A);
-
-    // ADC digital config
-    es8311_write_reg(0x15, 0x40);  // ADC ramp rate
-    es8311_write_reg(0x16, 0x24);  // ADC gain scale
-    es8311_write_reg(0x17, 0xC8);  // ADC volume (~0dB)
+    // Output driver + EQ bypass
+    es8311_write_reg(0x13, 0x10);  // Enable HP output driver
     es8311_write_reg(0x1B, 0x0A);  // ADC EQ config
     es8311_write_reg(0x1C, 0x6A);  // Bypass ADC EQ, cancel DC offset
 
-    // DAC config
-    es8311_write_reg(0x31, 0x00);  // Unmute DAC
-    es8311_write_reg(0x32, 0xFF);  // DAC volume MAX (+32dB) for speaker diagnostic
-    es8311_write_reg(0x37, 0x08);  // Bypass DAC EQ
-
-    // GPIO config
-    es8311_write_reg(0x44, 0x08);
+    // DAC analog reference — CRITICAL for output.
+    // 0x08 = I2C noise immunity. 0x50 = enable internal ADCL+DACR analog ref.
+    // Without 0x50, DAC output has no bias reference and produces silence.
+    // (Espressif esp_codec_dev driver: "set internal reference signal")
+    es8311_write_reg(0x44, 0x58);
     es8311_write_reg(0x45, 0x00);
 
-    // Start codec state machine
-    es8311_write_reg(0x00, 0x80);
+    // --- Phase 2: Start (power-up, matching esp_codec_dev es8311_start()) ---
+
+    // Unmute I2S data paths (clear bit 6 on SDP registers)
+    es8311_write_reg(0x09, es8311_read_reg(0x09) & 0xBF);
+    es8311_write_reg(0x0A, es8311_read_reg(0x0A) & 0xBF);
+
+    // ADC enable
+    es8311_write_reg(0x17, 0xBF);  // ADC power enable (esp_codec_dev uses 0xBF in start)
+    es8311_write_reg(0x0E, 0x02);  // ADC analog: PGA+modulator enabled
+    es8311_write_reg(0x12, 0x00);  // DAC power enable
+    es8311_write_reg(0x14, 0x1A);  // Mic: analog MIC1P-MIC1N, PGA gain 30dB
+    es8311_write_reg(0x16, 0x24);  // ADC gain scale
+
+    // Analog power up LAST (after all config is stable)
+    es8311_write_reg(0x0D, 0x01);
+    es8311_write_reg(0x15, 0x40);  // ADC ramp rate
+
+    // DAC config
+    es8311_write_reg(0x37, 0x08);  // Bypass DAC EQ
+    es8311_write_reg(0x31, 0x00);  // Unmute DAC
+    es8311_write_reg(0x32, 0xBF);  // DAC volume 0dB (0xFF was +32dB — risky for amp)
+
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    ESP_LOGI(TAG, "ES8311 initialized (16kHz, 16-bit, I2S slave)");
+    ESP_LOGI(TAG, "ES8311 initialized (16kHz, 16-bit, I2S slave, DAC ref=0x58)");
 
     // Full register dump for debugging DAC output issues
     ESP_LOGI(TAG, "ES8311 regs 00-0F: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
@@ -363,7 +360,7 @@ static esp_err_t setup_i2s(void) {
     ESP_RETURN_ON_ERROR(i2s_channel_enable(i2s_tx_chan), TAG, "I2S TX enable failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(i2s_rx_chan), TAG, "I2S RX enable failed");
 
-    ESP_LOGI(TAG, "I2S initialized (16kHz, 16-bit, mono, full-duplex)");
+    ESP_LOGI(TAG, "I2S initialized (16kHz, 16-bit, stereo, full-duplex)");
     return ESP_OK;
 }
 
