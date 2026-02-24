@@ -640,9 +640,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                                      s ? s->valuestring : "?",
                                      t ? t->valuestring : "");
                             if (t && t->valuestring) {
-                                char prefixed[512];
-                                snprintf(prefixed, sizeof(prefixed), "< %s", t->valuestring);
-                                display_conversation(prefixed, COLOR_GREEN);
+                                display_conversation(t->valuestring, COLOR_GREEN);
                             }
                             // Unmute DAC for TTS playback, mute after
                             if (s && s->valuestring) {
@@ -938,7 +936,7 @@ void app_main(void) {
         ESP_LOGE(TAG, "FAILED to create audio task! (heap exhausted?)");
     }
 
-    display_status(6, "Ready - hold button to talk", COLOR_WHITE);
+    display_status(6, "Push to talk", COLOR_WHITE);
 
     // Button handling on main core
     button_task(NULL);  // Blocks forever

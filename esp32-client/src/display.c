@@ -6,9 +6,9 @@
  * Thread-safe: all LVGL calls wrapped in lvgl_port_lock/unlock.
  *
  * Layout:
- *   Status bar (28px top): "Worzel" + colored icons (WiFi/Auth/WS)
- *   Conversation (382px middle): scrollable, touch-enabled, auto-scroll
- *   Action bar (36px bottom): state hint in 18px font
+ *   Status bar (32px top): "Worzel" + spaced WiFi/Auth/WS icons
+ *   Conversation (376px middle): scrollable, touch-scrollable, auto-scroll
+ *   Action bar (38px bottom): icon + "Push to talk", tap to cycle font size
  */
 
 #include "display.h"
@@ -38,27 +38,74 @@ static esp_lcd_panel_io_handle_t panel_io = NULL;
 /* LVGL UI elements */
 static lv_obj_t *status_bar = NULL;
 static lv_obj_t *lbl_title = NULL;
-static lv_obj_t *lbl_icon_wifi = NULL;  /* slot 2: WiFi status */
-static lv_obj_t *lbl_icon_auth = NULL;  /* slot 4: Auth status */
-static lv_obj_t *lbl_icon_ws   = NULL;  /* slot 5: WebSocket status */
+static lv_obj_t *lbl_icon_wifi = NULL;
+static lv_obj_t *lbl_icon_auth = NULL;
+static lv_obj_t *lbl_icon_ws   = NULL;
 static lv_obj_t *convo_area = NULL;
 static lv_obj_t *action_bar = NULL;
 static lv_obj_t *lbl_action = NULL;
 
 /*
  * Status slot mapping (same slots as bitmap version for API compat):
- *   0 = Audio: OK       → ignored (boot-only)
- *   1 = Opus: OK        → ignored (boot-only)
- *   2 = WiFi status     → WiFi icon color
- *   3 = IP address      → ignored (in serial log)
- *   4 = Auth status     → Auth icon color
- *   5 = WebSocket       → WS icon color
- *   6 = Ready/hint      → action bar text
+ *   0-1 = Audio/Opus OK  → ignored (boot-only)
+ *   2   = WiFi status    → WiFi icon color
+ *   3   = IP address     → ignored (serial log only)
+ *   4   = Auth status    → Auth icon color
+ *   5   = WebSocket      → WS icon color
+ *   6   = Ready/hint     → action bar text
  */
 
-#define STATUS_BAR_H  28
-#define ACTION_BAR_H  36
-#define ICON_INACTIVE  lv_color_make(0x40, 0x40, 0x40)
+#define STATUS_BAR_H  32
+#define ACTION_BAR_H  38
+
+/* ---- Font size cycling (tap action bar to toggle) ---- */
+
+static const lv_font_t *font_sizes[] = {
+#if LV_FONT_MONTSERRAT_20
+    &lv_font_montserrat_20,
+#endif
+#if LV_FONT_MONTSERRAT_22
+    &lv_font_montserrat_22,
+#endif
+#if LV_FONT_MONTSERRAT_24
+    &lv_font_montserrat_24,
+#endif
+#if LV_FONT_MONTSERRAT_26
+    &lv_font_montserrat_26,
+#endif
+#if LV_FONT_MONTSERRAT_30
+    &lv_font_montserrat_30,
+#endif
+};
+#define FONT_COUNT (sizeof(font_sizes) / sizeof(font_sizes[0]))
+static int font_idx = 0;  /* start at smallest (montserrat_20) */
+
+/* Map our RGB565 color codes to pleasant lv_color_t directly.
+ * Bypasses bit-manipulation to avoid byte-swap / theme issues. */
+static lv_color_t map_color(uint16_t color) {
+    if (color == COLOR_GREEN)  return lv_color_make(0x70, 0xD0, 0x70);  /* soft green */
+    if (color == COLOR_CYAN)   return lv_color_make(0x80, 0xC8, 0xFF);  /* soft blue */
+    if (color == COLOR_YELLOW) return lv_color_make(0xE0, 0xD0, 0x40);  /* warm yellow */
+    if (color == COLOR_RED)    return lv_color_make(0xE0, 0x50, 0x50);  /* soft red */
+    if (color == COLOR_WHITE)  return lv_color_make(0xEE, 0xEE, 0xEE);  /* off-white */
+    if (color == COLOR_GREY)   return lv_color_make(0x99, 0x99, 0x99);
+    return lv_color_make(0xDD, 0xDD, 0xDD);
+}
+
+/* Callback: tap action bar to cycle conversation font size */
+static void font_cycle_cb(lv_event_t *e) {
+    (void)e;
+    if (FONT_COUNT <= 1) return;
+    font_idx = (font_idx + 1) % FONT_COUNT;
+    ESP_LOGI(TAG, "Font size cycled to index %d", font_idx);
+
+    /* Update all existing conversation labels */
+    uint32_t count = lv_obj_get_child_count(convo_area);
+    for (uint32_t i = 0; i < count; i++) {
+        lv_obj_t *child = lv_obj_get_child(convo_area, i);
+        lv_obj_set_style_text_font(child, font_sizes[font_idx], 0);
+    }
+}
 
 /* SH8601 vendor init commands */
 static const sh8601_lcd_init_cmd_t init_cmds[] = {
@@ -72,22 +119,15 @@ static const sh8601_lcd_init_cmd_t init_cmds[] = {
     {0x29, (uint8_t[]){0x00}, 0, 10},                       /* Display ON */
 };
 
-/* Convert our RGB565 color defines to lv_color_t */
-static lv_color_t to_lv_color(uint16_t rgb565) {
-    uint8_t r = (rgb565 >> 11) & 0x1F;
-    uint8_t g = (rgb565 >> 5) & 0x3F;
-    uint8_t b = rgb565 & 0x1F;
-    return lv_color_make((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2));
-}
-
-/* Helper: create a status icon label in the status bar */
-static lv_obj_t *create_status_icon(lv_obj_t *parent, const char *symbol) {
-    lv_obj_t *lbl = lv_label_create(parent);
-    lv_label_set_text(lbl, symbol);
-    lv_obj_set_style_text_color(lbl, ICON_INACTIVE, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_pad_left(lbl, 6, 0);
-    return lbl;
+/* Helper: strip LVGL theme defaults from a container */
+static void style_container(lv_obj_t *obj, lv_color_t bg) {
+    lv_obj_remove_style_all(obj);
+    lv_obj_set_style_bg_color(obj, bg, 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(obj, 0, 0);
+    lv_obj_set_style_radius(obj, 0, 0);
+    lv_obj_set_style_pad_all(obj, 0, 0);
+    lv_obj_set_scrollbar_mode(obj, LV_SCROLLBAR_MODE_OFF);
 }
 
 /* Build the LVGL UI layout */
@@ -96,95 +136,105 @@ static void build_ui(void) {
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
 
-    /* ---- Status bar (compact, icon-based) ---- */
+    lv_color_t bar_bg = lv_color_make(20, 20, 30);
+
+    /* ---- Status bar (top) ---- */
     status_bar = lv_obj_create(scr);
     lv_obj_set_size(status_bar, LCD_H_RES, STATUS_BAR_H);
     lv_obj_align(status_bar, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_style_bg_color(status_bar, lv_color_make(15, 15, 25), 0);
-    lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(status_bar, 0, 0);
-    lv_obj_set_style_radius(status_bar, 0, 0);
-    lv_obj_set_style_pad_left(status_bar, 8, 0);
-    lv_obj_set_style_pad_right(status_bar, 8, 0);
-    lv_obj_set_scrollbar_mode(status_bar, LV_SCROLLBAR_MODE_OFF);
+    style_container(status_bar, bar_bg);
+    lv_obj_set_style_pad_left(status_bar, 10, 0);
+    lv_obj_set_style_pad_right(status_bar, 10, 0);
     lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    /* Title "Worzel" — left side */
+    /* Title "Worzel" — left side, montserrat_20 */
     lbl_title = lv_label_create(status_bar);
     lv_label_set_text(lbl_title, "Worzel");
     lv_obj_set_style_text_color(lbl_title, lv_color_make(0x50, 0xC8, 0x50), 0);
+#if LV_FONT_MONTSERRAT_20
+    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_20, 0);
+#else
     lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_14, 0);
+#endif
     lv_obj_set_flex_grow(lbl_title, 1);
 
-    /* Status icons — right side: WiFi, Auth, WebSocket */
-    lbl_icon_wifi = create_status_icon(status_bar, LV_SYMBOL_WIFI);
-    lbl_icon_auth = create_status_icon(status_bar, LV_SYMBOL_EYE_OPEN);
-    lbl_icon_ws   = create_status_icon(status_bar, LV_SYMBOL_CALL);
+    /* Status icons — right side, montserrat_20, well-spaced.
+     * Start dim grey; display_status() colors them green/yellow/red. */
+    lv_color_t icon_off = lv_color_make(0x55, 0x55, 0x55);
+
+    lbl_icon_wifi = lv_label_create(status_bar);
+    lv_label_set_text(lbl_icon_wifi, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_color(lbl_icon_wifi, icon_off, 0);
+#if LV_FONT_MONTSERRAT_20
+    lv_obj_set_style_text_font(lbl_icon_wifi, &lv_font_montserrat_20, 0);
+#endif
+    lv_obj_set_style_pad_left(lbl_icon_wifi, 12, 0);
+
+    lbl_icon_auth = lv_label_create(status_bar);
+    lv_label_set_text(lbl_icon_auth, LV_SYMBOL_EYE_OPEN);
+    lv_obj_set_style_text_color(lbl_icon_auth, icon_off, 0);
+#if LV_FONT_MONTSERRAT_20
+    lv_obj_set_style_text_font(lbl_icon_auth, &lv_font_montserrat_20, 0);
+#endif
+    lv_obj_set_style_pad_left(lbl_icon_auth, 12, 0);
+
+    lbl_icon_ws = lv_label_create(status_bar);
+    lv_label_set_text(lbl_icon_ws, LV_SYMBOL_CALL);
+    lv_obj_set_style_text_color(lbl_icon_ws, icon_off, 0);
+#if LV_FONT_MONTSERRAT_20
+    lv_obj_set_style_text_font(lbl_icon_ws, &lv_font_montserrat_20, 0);
+#endif
+    lv_obj_set_style_pad_left(lbl_icon_ws, 12, 0);
 
     /* ---- Thin separator ---- */
     lv_obj_t *sep1 = lv_obj_create(scr);
     lv_obj_set_size(sep1, LCD_H_RES, 1);
     lv_obj_align(sep1, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H);
-    lv_obj_set_style_bg_color(sep1, lv_color_make(50, 50, 50), 0);
-    lv_obj_set_style_bg_opa(sep1, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sep1, 0, 0);
-    lv_obj_set_style_radius(sep1, 0, 0);
-    lv_obj_set_style_pad_all(sep1, 0, 0);
+    style_container(sep1, lv_color_make(50, 50, 50));
 
-    /* ---- Action bar (bottom) — larger font for state hint ---- */
+    /* ---- Action bar (bottom) — tap to cycle font size ---- */
     action_bar = lv_obj_create(scr);
     lv_obj_set_size(action_bar, LCD_H_RES, ACTION_BAR_H);
     lv_obj_align(action_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    lv_obj_set_style_bg_color(action_bar, lv_color_make(15, 15, 25), 0);
-    lv_obj_set_style_bg_opa(action_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(action_bar, 0, 0);
-    lv_obj_set_style_radius(action_bar, 0, 0);
-    lv_obj_set_scrollbar_mode(action_bar, LV_SCROLLBAR_MODE_OFF);
+    style_container(action_bar, bar_bg);
+    lv_obj_add_flag(action_bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(action_bar, font_cycle_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_action = lv_label_create(action_bar);
     lv_label_set_text(lbl_action, "");
-    lv_obj_set_style_text_color(lbl_action, lv_color_white(), 0);
-#if LV_FONT_MONTSERRAT_20
-    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_20, 0);
-#elif LV_FONT_MONTSERRAT_18
-    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_18, 0);
-#else
-    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_14, 0);
-#endif
+    lv_obj_set_style_text_color(lbl_action, lv_color_make(0xEE, 0xEE, 0xEE), 0);
+    if (FONT_COUNT > 0) {
+        lv_obj_set_style_text_font(lbl_action, font_sizes[font_idx], 0);
+    }
     lv_obj_center(lbl_action);
 
     /* ---- Separator above action bar ---- */
     lv_obj_t *sep2 = lv_obj_create(scr);
     lv_obj_set_size(sep2, LCD_H_RES, 1);
     lv_obj_align(sep2, LV_ALIGN_BOTTOM_LEFT, 0, -ACTION_BAR_H);
-    lv_obj_set_style_bg_color(sep2, lv_color_make(50, 50, 50), 0);
-    lv_obj_set_style_bg_opa(sep2, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sep2, 0, 0);
-    lv_obj_set_style_radius(sep2, 0, 0);
-    lv_obj_set_style_pad_all(sep2, 0, 0);
+    style_container(sep2, lv_color_make(50, 50, 50));
 
-    /* ---- Conversation area (middle, scrollable, max space) ---- */
-    int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;  /* 382px */
+    /* ---- Conversation area (middle, scrollable) ---- */
+    int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
     convo_area = lv_obj_create(scr);
     lv_obj_set_size(convo_area, LCD_H_RES, convo_h);
     lv_obj_align(convo_area, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
-    lv_obj_set_style_bg_color(convo_area, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(convo_area, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(convo_area, 0, 0);
-    lv_obj_set_style_radius(convo_area, 0, 0);
+    style_container(convo_area, lv_color_black());
     lv_obj_set_style_pad_left(convo_area, 8, 0);
     lv_obj_set_style_pad_right(convo_area, 8, 0);
     lv_obj_set_style_pad_top(convo_area, 4, 0);
     lv_obj_set_style_pad_bottom(convo_area, 4, 0);
     lv_obj_set_flex_flow(convo_area, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(convo_area, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_flex_align(convo_area, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
 }
 
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
-    /* ---- SH8601 panel init (preserved from bitmap version) ---- */
+    /* ---- SH8601 panel init ---- */
 
     /* Reset display via TCA9554 IO expander (same I2C bus as ES8311) */
     esp_io_expander_handle_t expander = NULL;
@@ -260,8 +310,6 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
     ESP_LOGI(TAG, "SH8601 AMOLED ready (%dx%d)", LCD_H_RES, LCD_V_RES);
 
     /* ---- LVGL port init ---- */
-    /* Pin LVGL task to core 0 (where SPI ISR runs), lower priority than
-       audio (5) and WiFi (23), above IDLE (0). */
     const lvgl_port_cfg_t lvgl_cfg = {
         .task_priority = 3,
         .task_stack = 6144,
@@ -271,10 +319,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
     };
     ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "LVGL port init failed");
 
-    /* Register display with LVGL port.
-     * Buffer in internal DMA RAM (not PSRAM) — PSRAM DMA has cache alignment
-     * constraints that cause spi_device_queue_trans failures on flush.
-     * 20 rows × 368px × 2 bytes = ~14.4KB, well within DMA-capable heap. */
+    /* Buffer in internal DMA RAM (not PSRAM) to avoid SPI flush failures. */
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = panel_io,
         .panel_handle = panel,
@@ -298,10 +343,9 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
 #ifdef PIN_TOUCH_INT
     esp_lcd_touch_handle_t touch_handle = NULL;
     esp_lcd_panel_io_i2c_config_t touch_io_cfg = ESP_LCD_TOUCH_IO_I2C_FT5x06_CONFIG();
-    touch_io_cfg.scl_speed_hz = 400000;  /* must set explicitly — macro leaves it 0 */
+    touch_io_cfg.scl_speed_hz = 400000;
     esp_lcd_panel_io_handle_t touch_io = NULL;
 
-    /* Create I2C IO for touch (on same bus as ES8311) */
     ret = esp_lcd_new_panel_io_i2c(i2c_bus, &touch_io_cfg, &touch_io);
     if (ret == ESP_OK) {
         esp_lcd_touch_config_t touch_cfg = {
@@ -332,10 +376,10 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
             ESP_LOGI(TAG, "Touch input registered (FT3168 @ 0x%02X, INT=GPIO%d)",
                      TOUCH_I2C_ADDR, PIN_TOUCH_INT);
         } else {
-            ESP_LOGW(TAG, "Touch LVGL registration failed — continuing without touch");
+            ESP_LOGW(TAG, "Touch LVGL registration failed");
         }
     } else {
-        ESP_LOGW(TAG, "Touch init failed (%s) — continuing without touch", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Touch init failed (%s)", esp_err_to_name(ret));
     }
 #endif
 
@@ -345,7 +389,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         lvgl_port_unlock();
     }
 
-    ESP_LOGI(TAG, "LVGL UI ready");
+    ESP_LOGI(TAG, "LVGL UI ready (%d font sizes available)", (int)FONT_COUNT);
     return ESP_OK;
 }
 
@@ -353,26 +397,33 @@ void display_status(int slot, const char *text, uint16_t color) {
     if (!status_bar) return;
 
     if (lvgl_port_lock(0)) {
-        lv_color_t c = to_lv_color(color);
+        lv_color_t c = map_color(color);
         switch (slot) {
-        case 2:  /* WiFi → icon color */
+        case 2:
             if (lbl_icon_wifi) lv_obj_set_style_text_color(lbl_icon_wifi, c, 0);
             break;
-        case 3:  /* IP address → ignored on display (in serial log) */
+        case 3:  /* IP — serial log only */
             break;
-        case 4:  /* Auth → icon color */
+        case 4:
             if (lbl_icon_auth) lv_obj_set_style_text_color(lbl_icon_auth, c, 0);
             break;
-        case 5:  /* WebSocket → icon color */
+        case 5:
             if (lbl_icon_ws) lv_obj_set_style_text_color(lbl_icon_ws, c, 0);
             break;
-        case 6:  /* Action hint → text in action bar */
+        case 6:
             if (lbl_action) {
-                lv_label_set_text(lbl_action, text ? text : "");
+                /* Prepend audio icon to action bar text */
+                if (text && text[0]) {
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), LV_SYMBOL_AUDIO "  %s", text);
+                    lv_label_set_text(lbl_action, buf);
+                } else {
+                    lv_label_set_text(lbl_action, "");
+                }
                 lv_obj_set_style_text_color(lbl_action, c, 0);
             }
             break;
-        default:  /* 0-1 (Audio/Opus) — boot-only, ignored */
+        default:
             break;
         }
         lvgl_port_unlock();
@@ -385,14 +436,12 @@ void display_conversation(const char *text, uint16_t color) {
     if (lvgl_port_lock(0)) {
         lv_obj_t *lbl = lv_label_create(convo_area);
         lv_label_set_text(lbl, text);
-        lv_obj_set_width(lbl, LCD_H_RES - 24);  /* account for padding */
+        lv_obj_set_width(lbl, LCD_H_RES - 24);
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_color(lbl, to_lv_color(color), 0);
-#if LV_FONT_MONTSERRAT_20
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
-#else
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-#endif
+        lv_obj_set_style_text_color(lbl, map_color(color), 0);
+        if (FONT_COUNT > 0) {
+            lv_obj_set_style_text_font(lbl, font_sizes[font_idx], 0);
+        }
         lv_obj_set_style_pad_bottom(lbl, 6, 0);
 
         /* Force layout recalc then scroll new label into view */
@@ -407,7 +456,6 @@ void display_clear(void) {
     if (!convo_area) return;
 
     if (lvgl_port_lock(0)) {
-        /* Delete all children of conversation area */
         lv_obj_clean(convo_area);
         lvgl_port_unlock();
     }
