@@ -367,8 +367,9 @@ static esp_err_t setup_i2s(void) {
 // ======== Amplifier enable ========
 
 static void amp_enable(bool on) {
-#if PIN_AMP_ENABLE != GPIO_NUM_NC
-    gpio_reset_pin(PIN_AMP_ENABLE);  // Release from any peripheral assignment
+    if ((int)PIN_AMP_ENABLE < 0) return;  // GPIO_NUM_NC = -1
+
+    gpio_reset_pin(PIN_AMP_ENABLE);
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << PIN_AMP_ENABLE),
         .mode = GPIO_MODE_OUTPUT,
@@ -384,7 +385,6 @@ static void amp_enable(bool on) {
     int readback = gpio_get_level(PIN_AMP_ENABLE);
     ESP_LOGI(TAG, "Amplifier %s (GPIO%d set=%d read=%d)",
              on ? "ON" : "OFF", PIN_AMP_ENABLE, on ? 1 : 0, readback);
-#endif
 }
 
 // ======== WiFi ========
