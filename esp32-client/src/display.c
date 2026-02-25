@@ -249,11 +249,13 @@ static void build_ui(void) {
     convo_area = lv_obj_create(scr);
     style_container(convo_area, lv_color_make(10, 10, 15),
                     LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, convo_y);
+    /* Lock the height so LVGL can't collapse it to fit content */
+    lv_obj_set_style_min_height(convo_area, convo_h, 0);
+    lv_obj_set_style_max_height(convo_area, convo_h, 0);
     /* Enable vertical scroll so text scrolls up and is clipped by parent */
     lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(convo_area, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_style_clip_corner(convo_area, true, 0);  /* force clip children */
     lv_obj_set_style_pad_all(convo_area, 8, 0);
     /* DEBUG: bright border to see container bounds */
     lv_obj_set_style_border_width(convo_area, 2, 0);
