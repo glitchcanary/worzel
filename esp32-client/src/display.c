@@ -272,7 +272,6 @@ static void build_ui(void) {
         ESP_LOGW(TAG, "No large fonts! FONT_COUNT=%d, falling back to montserrat_14", (int)FONT_COUNT);
         lv_obj_set_style_text_font(convo_label, &lv_font_montserrat_14, 0);
     }
-    lv_label_set_text(convo_label, "Font test OK");
 
     /* ---- Status bar (top, high z — covers any convo overflow at top) ---- */
     status_bar = lv_obj_create(scr);
@@ -672,9 +671,17 @@ void display_conversation(const char *text, uint16_t color) {
         lv_label_set_text(convo_label, convo_buf);
         lv_obj_invalidate(convo_label);
 
-        /* Auto-scroll convo_area to bottom so latest text is visible */
+        /* Auto-scroll convo_area so latest text is at the bottom.
+         * Must update layout first so label height reflects new text. */
         if (convo_area) {
-            lv_obj_scroll_to_y(convo_area, LV_COORD_MAX, LV_ANIM_OFF);
+            lv_obj_update_layout(convo_area);
+            int32_t label_h = lv_obj_get_height(convo_label);
+            int32_t area_h = lv_obj_get_content_height(convo_area);
+            if (label_h > area_h) {
+                lv_obj_scroll_to_y(convo_area, label_h - area_h, LV_ANIM_OFF);
+            } else {
+                lv_obj_scroll_to_y(convo_area, 0, LV_ANIM_OFF);
+            }
         }
 
         ESP_LOGI(TAG, "convo: label updated, w=%ld h=%ld",
