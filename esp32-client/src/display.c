@@ -6,9 +6,9 @@
  * Thread-safe: all LVGL calls wrapped in lvgl_port_lock/unlock.
  *
  * Layout:
- *   Status bar (32px top): "Worzel" + spaced WiFi/Auth/WS icons
- *   Conversation (376px middle): scrollable, touch-scrollable, auto-scroll
- *   Action bar (38px bottom): icon + "Push to talk", tap to cycle font size
+ *   Status bar (48px top): datetime left, WiFi/Auth/WS icons right
+ *   Conversation (middle): clipped text area, single label updated at runtime
+ *   Action bar (76px bottom): Talk | Toggle | More
  */
 
 #include "display.h"
@@ -40,7 +40,6 @@ static esp_lcd_panel_io_handle_t panel_io = NULL;
 
 /* LVGL UI elements */
 static lv_obj_t *status_bar = NULL;
-static lv_obj_t *lbl_title = NULL;
 static lv_obj_t *lbl_time = NULL;
 static lv_obj_t *lbl_icon_wifi = NULL;
 static lv_obj_t *lbl_icon_auth = NULL;
@@ -49,7 +48,14 @@ static lv_obj_t *convo_area = NULL;
 static lv_obj_t *convo_label = NULL;   /* single label for all conversation text */
 static char convo_buf[4096] = "";      /* accumulated conversation text */
 static lv_obj_t *action_bar = NULL;
-static lv_obj_t *lbl_action = NULL;
+static lv_obj_t *btn_talk = NULL;
+static lv_obj_t *btn_toggle = NULL;
+static lv_obj_t *btn_more = NULL;
+
+/* UI state */
+typedef enum { UI_NORMAL, UI_MENU } ui_state_t;
+static ui_state_t ui_state = UI_NORMAL;
+static volatile bool hot_mic = false;
 
 /*
  * Status slot mapping (same slots as bitmap version for API compat):
@@ -58,10 +64,10 @@ static lv_obj_t *lbl_action = NULL;
  *   3   = IP address     → ignored (serial log only)
  *   4   = Auth status    → Auth icon color
  *   5   = WebSocket      → WS icon color
- *   6   = Ready/hint     → action bar text
+ *   6   = Ready/hint     → ignored (action bar has own layout now)
  */
 
-#define STATUS_BAR_H  64
+#define STATUS_BAR_H  48
 #define ACTION_BAR_H  76
 
 /* ---- Font size cycling (tap action bar to toggle) ---- */
@@ -98,16 +104,53 @@ static lv_color_t map_color(uint16_t color) {
     return lv_color_make(0xDD, 0xDD, 0xDD);
 }
 
-/* Callback: tap action bar to cycle conversation font size */
-static void font_cycle_cb(lv_event_t *e) {
+/* Callback: "Talk" button — same as hardware PTT (placeholder, wired in main.c) */
+static void btn_talk_cb(lv_event_t *e) {
     (void)e;
-    if (FONT_COUNT <= 1) return;
-    font_idx = (font_idx + 1) % (int)FONT_COUNT;
-    ESP_LOGI(TAG, "Font size cycled to index %d", font_idx);
+    ESP_LOGI(TAG, "Talk button pressed");
+    /* TODO: wire to recording start/stop via event group or queue */
+}
 
-    /* Update conversation label font */
+/* Callback: "Toggle" button — hot mic on/off */
+static void btn_toggle_cb(lv_event_t *e) {
+    (void)e;
+    hot_mic = !hot_mic;
+    ESP_LOGI(TAG, "Hot mic %s", hot_mic ? "ON" : "OFF");
+    if (action_bar) {
+        lv_obj_set_style_bg_color(action_bar,
+            hot_mic ? lv_color_make(0x80, 0x20, 0x20) : lv_color_make(20, 20, 30), 0);
+    }
+}
+
+/* Font size helpers for More menu */
+static void font_increase(void) {
+    if (FONT_COUNT <= 1) return;
+    if (font_idx < (int)FONT_COUNT - 1) font_idx++;
+    ESP_LOGI(TAG, "Font size increased to index %d", font_idx);
     if (convo_label) {
         lv_obj_set_style_text_font(convo_label, font_sizes[font_idx], 0);
+    }
+}
+
+static void font_decrease(void) {
+    if (FONT_COUNT <= 1) return;
+    if (font_idx > 0) font_idx--;
+    ESP_LOGI(TAG, "Font size decreased to index %d", font_idx);
+    if (convo_label) {
+        lv_obj_set_style_text_font(convo_label, font_sizes[font_idx], 0);
+    }
+}
+
+/* Show/hide More menu in conversation area */
+static void show_menu(void);
+static void hide_menu(void);
+
+static void btn_more_cb(lv_event_t *e) {
+    (void)e;
+    if (ui_state == UI_NORMAL) {
+        show_menu();
+    } else {
+        hide_menu();
     }
 }
 
@@ -189,9 +232,9 @@ static void style_container(lv_obj_t *obj, lv_color_t bg,
 
 /* Build the LVGL UI layout.
  *
- * Creation order matters for z-order: later children draw on top.
- * convo_label is created FIRST (lowest z-order) so header/footer
- * always render on top if they overlap. */
+ * Z-order (creation order): convo_area (lowest) → convo_label → bars (highest).
+ * convo_label MUST be created AFTER convo_area so it draws on top of the
+ * opaque background. Status/action bars are highest z to cover any overflow. */
 static void build_ui(void) {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
@@ -199,83 +242,63 @@ static void build_ui(void) {
 
     lv_color_t bar_bg = lv_color_make(20, 20, 30);
 
-    /* ---- Conversation area (80% of middle zone, centered) ---- */
-    /* Background container — visual boundary only, no functional children.
-     * Dark background with thin grey border so we can see its extent. */
-    int middle_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
-    int convo_w = (LCD_H_RES * 80) / 100;          /* 80% width */
-    int convo_h = (middle_h * 80) / 100;            /* 80% height */
-    int convo_x = (LCD_H_RES - convo_w) / 2;       /* center horizontally */
-    int convo_y = STATUS_BAR_H + 1 + (middle_h - convo_h) / 2;  /* center vertically */
+    /* ---- Conversation area background (child 0 — lowest z) ---- */
+    int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
+    int convo_y = STATUS_BAR_H + 1;
 
     convo_area = lv_obj_create(scr);
-    style_container(convo_area, lv_color_make(15, 15, 25),
-                    convo_w, convo_h, LV_ALIGN_TOP_LEFT, convo_x, convo_y);
+    style_container(convo_area, lv_color_make(10, 10, 15),
+                    LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, convo_y);
     lv_obj_remove_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
-    /* Thin grey border to see the container boundary */
-    lv_obj_set_style_border_width(convo_area, 1, 0);
-    lv_obj_set_style_border_color(convo_area, lv_color_make(80, 80, 80), 0);
 
-    ESP_LOGI(TAG, "Convo area: %dx%d at (%d,%d), middle_h=%d",
-             convo_w, convo_h, convo_x, convo_y, middle_h);
-
-    /* Conversation label — direct child of screen, positioned over the
-     * convo_area background. Keeping it as a screen child (not convo_area
-     * child) because LVGL was not redrawing container children reliably. */
+    /* ---- Conversation label (child 1 — draws ON TOP of convo_area bg) ---- */
     convo_label = lv_label_create(scr);
-    lv_label_set_text(convo_label, "Listening...");
-    lv_obj_set_width(convo_label, convo_w - 16);
+    lv_label_set_text(convo_label, "");
+    lv_obj_set_width(convo_label, LCD_H_RES - 16);
     lv_label_set_long_mode(convo_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(convo_label, lv_color_make(0x70, 0xD0, 0x70), 0);
     lv_obj_set_style_bg_opa(convo_label, LV_OPA_TRANSP, 0);
-    lv_obj_align(convo_label, LV_ALIGN_TOP_LEFT, convo_x + 8, convo_y + 8);
+    lv_obj_align(convo_label, LV_ALIGN_TOP_LEFT, 8, convo_y + 4);
     if (FONT_COUNT > 0 && font_idx < (int)FONT_COUNT) {
         lv_obj_set_style_text_font(convo_label, font_sizes[font_idx], 0);
     }
 
-    /* ---- Status bar (top) ---- */
+    /* ---- Status bar (top, high z — covers any convo overflow at top) ---- */
     status_bar = lv_obj_create(scr);
     style_container(status_bar, bar_bg,
                     LCD_H_RES, STATUS_BAR_H, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_remove_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_left(status_bar, 16, 0);
-    lv_obj_set_style_pad_right(status_bar, 16, 0);
+    lv_obj_set_style_pad_left(status_bar, 8, 0);
+    lv_obj_set_style_pad_right(status_bar, 8, 0);
     lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    /* Title "Worzel" — left (montserrat_28, 2x) */
-    lbl_title = lv_label_create(status_bar);
-    lv_label_set_text(lbl_title, "Worzel");
-    lv_obj_set_style_text_color(lbl_title, lv_color_make(0x50, 0xC8, 0x50), 0);
-    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_28, 0);
-
-    /* Clock (montserrat_28, 2x) */
+    /* DateTime — top left (montserrat_20) */
     lbl_time = lv_label_create(status_bar);
     lv_label_set_text(lbl_time, "--:--");
     lv_obj_set_style_text_color(lbl_time, lv_color_make(0x99, 0x99, 0x99), 0);
-    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_20, 0);
 
-    /* Status icons — montserrat_36 (approx 3x original 14).
-     * Start dim grey; display_status() colors them. */
+    /* Status icons — top right (montserrat_28, ~80% of 36) */
     lv_color_t icon_off = lv_color_make(0x55, 0x55, 0x55);
 
     lbl_icon_wifi = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_wifi, LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(lbl_icon_wifi, icon_off, 0);
-    lv_obj_set_style_text_font(lbl_icon_wifi, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_font(lbl_icon_wifi, &lv_font_montserrat_28, 0);
 
     lbl_icon_auth = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_auth, LV_SYMBOL_EYE_OPEN);
     lv_obj_set_style_text_color(lbl_icon_auth, icon_off, 0);
-    lv_obj_set_style_text_font(lbl_icon_auth, &lv_font_montserrat_36, 0);
-    lv_obj_set_style_pad_left(lbl_icon_auth, 4, 0);
+    lv_obj_set_style_text_font(lbl_icon_auth, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_pad_left(lbl_icon_auth, 6, 0);
 
     lbl_icon_ws = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_ws, LV_SYMBOL_CALL);
     lv_obj_set_style_text_color(lbl_icon_ws, icon_off, 0);
-    lv_obj_set_style_text_font(lbl_icon_ws, &lv_font_montserrat_36, 0);
-    lv_obj_set_style_pad_left(lbl_icon_ws, 4, 0);
+    lv_obj_set_style_text_font(lbl_icon_ws, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_pad_left(lbl_icon_ws, 6, 0);
 
     /* ---- Thin separator ---- */
     lv_obj_t *sep1 = lv_obj_create(scr);
@@ -283,25 +306,126 @@ static void build_ui(void) {
                     LCD_H_RES, 1, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H);
     lv_obj_remove_flag(sep1, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* ---- Action bar (bottom) — tap to cycle font size ---- */
-    action_bar = lv_obj_create(scr);
-    style_container(action_bar, bar_bg,
-                    LCD_H_RES, ACTION_BAR_H, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    lv_obj_remove_flag(action_bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(action_bar, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(action_bar, font_cycle_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_action = lv_label_create(action_bar);
-    lv_label_set_text(lbl_action, "");
-    lv_obj_set_style_text_color(lbl_action, lv_color_make(0xEE, 0xEE, 0xEE), 0);
-    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_28, 0);
-    lv_obj_center(lbl_action);
-
     /* ---- Separator above action bar ---- */
     lv_obj_t *sep2 = lv_obj_create(scr);
     style_container(sep2, lv_color_make(50, 50, 50),
                     LCD_H_RES, 1, LV_ALIGN_BOTTOM_LEFT, 0, -ACTION_BAR_H);
     lv_obj_remove_flag(sep2, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* ---- Action bar (bottom, highest z — covers any convo overflow) ---- */
+    action_bar = lv_obj_create(scr);
+    style_container(action_bar, bar_bg,
+                    LCD_H_RES, ACTION_BAR_H, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_remove_flag(action_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(action_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(action_bar, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    /* Three action buttons */
+    lv_color_t btn_text = lv_color_make(0xEE, 0xEE, 0xEE);
+
+    btn_talk = lv_label_create(action_bar);
+    lv_label_set_text(btn_talk, "Talk");
+    lv_obj_set_style_text_color(btn_talk, btn_text, 0);
+    lv_obj_set_style_text_font(btn_talk, &lv_font_montserrat_20, 0);
+    lv_obj_add_flag(btn_talk, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(btn_talk, btn_talk_cb, LV_EVENT_CLICKED, NULL);
+
+    btn_toggle = lv_label_create(action_bar);
+    lv_label_set_text(btn_toggle, "Toggle");
+    lv_obj_set_style_text_color(btn_toggle, btn_text, 0);
+    lv_obj_set_style_text_font(btn_toggle, &lv_font_montserrat_20, 0);
+    lv_obj_add_flag(btn_toggle, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(btn_toggle, btn_toggle_cb, LV_EVENT_CLICKED, NULL);
+
+    btn_more = lv_label_create(action_bar);
+    lv_label_set_text(btn_more, "More");
+    lv_obj_set_style_text_color(btn_more, btn_text, 0);
+    lv_obj_set_style_text_font(btn_more, &lv_font_montserrat_20, 0);
+    lv_obj_add_flag(btn_more, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(btn_more, btn_more_cb, LV_EVENT_CLICKED, NULL);
+}
+
+/* ---- More menu (shown in conversation area) ---- */
+
+static lv_obj_t *menu_panel = NULL;
+
+static void menu_item_cb(lv_event_t *e) {
+    const char *item = (const char *)lv_event_get_user_data(e);
+    if (!item) return;
+
+    if (strcmp(item, "font+") == 0) {
+        font_increase();
+    } else if (strcmp(item, "font-") == 0) {
+        font_decrease();
+    } else if (strcmp(item, "about") == 0) {
+        ESP_LOGI(TAG, "About: Worzel voice assistant");
+    } else if (strncmp(item, "back", 4) == 0) {
+        hide_menu();
+    }
+}
+
+static void show_menu(void) {
+    if (!convo_label) return;
+    ui_state = UI_MENU;
+
+    if (lvgl_port_lock(200)) {
+        /* Hide conversation text */
+        lv_obj_add_flag(convo_label, LV_OBJ_FLAG_HIDDEN);
+
+        /* Create menu panel over conversation area */
+        lv_obj_t *scr = lv_screen_active();
+        int menu_y = STATUS_BAR_H + 1;
+        int menu_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
+
+        menu_panel = lv_obj_create(scr);
+        lv_obj_remove_style_all(menu_panel);
+        lv_obj_set_size(menu_panel, LCD_H_RES, menu_h);
+        lv_obj_align(menu_panel, LV_ALIGN_TOP_LEFT, 0, menu_y);
+        lv_obj_set_style_bg_color(menu_panel, lv_color_make(10, 10, 15), 0);
+        lv_obj_set_style_bg_opa(menu_panel, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(menu_panel, 16, 0);
+        lv_obj_remove_flag(menu_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(menu_panel, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(menu_panel, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+        static const char *items[] = {"about", "font+", "font-", "back " LV_SYMBOL_LEFT};
+        for (int i = 0; i < 4; i++) {
+            lv_obj_t *lbl = lv_label_create(menu_panel);
+            lv_label_set_text(lbl, items[i]);
+            lv_obj_set_style_text_color(lbl, lv_color_make(0xEE, 0xEE, 0xEE), 0);
+            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+            lv_obj_set_style_pad_bottom(lbl, 20, 0);
+            lv_obj_add_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+            /* Use the static string pointer directly — safe because items[] is static */
+            lv_obj_add_event_cb(lbl, menu_item_cb, LV_EVENT_CLICKED,
+                                (void*)(items[i]));
+        }
+
+        /* Update More button text */
+        if (btn_more) lv_label_set_text(btn_more, "Back");
+
+        lvgl_port_unlock();
+    }
+}
+
+static void hide_menu(void) {
+    ui_state = UI_NORMAL;
+
+    if (lvgl_port_lock(200)) {
+        if (menu_panel) {
+            lv_obj_delete(menu_panel);
+            menu_panel = NULL;
+        }
+        /* Show conversation text again */
+        if (convo_label) {
+            lv_obj_remove_flag(convo_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_invalidate(convo_label);
+        }
+        if (btn_more) lv_label_set_text(btn_more, "More");
+        lvgl_port_unlock();
+    }
 }
 
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
@@ -494,18 +618,8 @@ void display_status(int slot, const char *text, uint16_t color) {
         case 5:
             if (lbl_icon_ws) lv_obj_set_style_text_color(lbl_icon_ws, c, 0);
             break;
-        case 6:
-            if (lbl_action) {
-                /* Prepend audio icon to action bar text */
-                if (text && text[0]) {
-                    char buf[128];
-                    snprintf(buf, sizeof(buf), LV_SYMBOL_AUDIO "  %s", text);
-                    lv_label_set_text(lbl_action, buf);
-                } else {
-                    lv_label_set_text(lbl_action, "");
-                }
-                lv_obj_set_style_text_color(lbl_action, c, 0);
-            }
+        case 6:  /* Ready/hint — action bar has own layout now, log only */
+            ESP_LOGD(TAG, "status[6]: %s", text ? text : "");
             break;
         default:
             break;
@@ -547,6 +661,8 @@ void display_conversation(const char *text, uint16_t color) {
 
     if (lvgl_port_lock(500)) {
         lv_label_set_text(convo_label, convo_buf);
+        /* Update text color to match latest message (green=TTS, blue=STT) */
+        lv_obj_set_style_text_color(convo_label, map_color(color), 0);
         lv_obj_invalidate(convo_label);  /* force LVGL to redraw this label */
 
         ESP_LOGI(TAG, "convo: label updated, w=%ld h=%ld",

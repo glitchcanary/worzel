@@ -36,7 +36,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus);
  *   3 = IP address
  *   4 = Auth status
  *   5 = WebSocket status
- *   6 = Ready/hint text (LVGL: action bar; bitmap: status row)
+ *   6 = Ready/hint text (LVGL: ignored, log only; bitmap: status row)
  */
 void display_status(int slot, const char *text, uint16_t color);
 
