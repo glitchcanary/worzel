@@ -265,7 +265,14 @@ static void build_ui(void) {
     lv_obj_align(convo_label, LV_ALIGN_TOP_LEFT, 0, 0);
     if (FONT_COUNT > 0 && font_idx < (int)FONT_COUNT) {
         lv_obj_set_style_text_font(convo_label, font_sizes[font_idx], 0);
+        ESP_LOGI(TAG, "convo_label font set to index %d (line_h=%d)",
+                 font_idx, (int)lv_font_get_line_height(font_sizes[font_idx]));
+    } else {
+        /* Large fonts not compiled in — fall back to montserrat_14 (always available) */
+        ESP_LOGW(TAG, "No large fonts! FONT_COUNT=%d, falling back to montserrat_14", (int)FONT_COUNT);
+        lv_obj_set_style_text_font(convo_label, &lv_font_montserrat_14, 0);
     }
+    lv_label_set_text(convo_label, "Font test OK");
 
     /* ---- Status bar (top, high z — covers any convo overflow at top) ---- */
     status_bar = lv_obj_create(scr);
@@ -597,7 +604,9 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         lvgl_port_unlock();
     }
 
-    ESP_LOGI(TAG, "LVGL UI ready (%d font sizes available)", (int)FONT_COUNT);
+    ESP_LOGI(TAG, "LVGL UI ready: FONT_COUNT=%d, font_idx=%d, default_line_h=%d",
+             (int)FONT_COUNT, font_idx,
+             (int)lv_font_get_line_height(LV_FONT_DEFAULT));
     return ESP_OK;
 }
 
