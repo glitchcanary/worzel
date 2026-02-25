@@ -242,42 +242,30 @@ static void build_ui(void) {
 
     lv_color_t bar_bg = lv_color_make(20, 20, 30);
 
-    /* ---- Conversation area (scrollable container — clips children) ---- */
-    int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
-    int convo_y = STATUS_BAR_H + 1;
+    /* ---- Conversation label (direct screen child, no container) ----
+     * Previous attempts to use a scrollable lv_obj container all failed:
+     * LVGL 9 collapsed the container height, broke scroll positions, or
+     * refused to clip children properly with our 20px draw buffer.
+     *
+     * Simple approach: label is a screen child positioned in the middle zone.
+     * Status bar + action bar have higher z-order and cover any overflow.
+     * display_conversation() keeps only the last N lines that fit. */
+    convo_area = NULL;  /* not used in this approach */
 
-    convo_area = lv_obj_create(scr);
-    style_container(convo_area, lv_color_make(10, 10, 15),
-                    LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, convo_y);
-    /* Lock the height so LVGL can't collapse it to fit content */
-    lv_obj_set_style_min_height(convo_area, convo_h, 0);
-    lv_obj_set_style_max_height(convo_area, convo_h, 0);
-    /* Enable vertical scroll so text scrolls up and is clipped by parent */
-    lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(convo_area, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_style_pad_all(convo_area, 8, 0);
-    /* DEBUG: bright border to see container bounds */
-    lv_obj_set_style_border_width(convo_area, 2, 0);
-    lv_obj_set_style_border_color(convo_area, lv_color_make(0xFF, 0x00, 0x00), 0);
+    int convo_y = STATUS_BAR_H + 1 + 4;  /* below separator + 4px padding */
 
-    ESP_LOGI(TAG, "convo_area: y=%d h=%d (screen %dx%d, bar=%d+%d)",
-             convo_y, convo_h, LCD_H_RES, LCD_V_RES, STATUS_BAR_H, ACTION_BAR_H);
-
-    /* ---- Conversation label (child of convo_area — clipped + scrolled) ---- */
-    convo_label = lv_label_create(convo_area);
+    convo_label = lv_label_create(scr);
     lv_label_set_text(convo_label, "");
-    lv_obj_set_width(convo_label, LCD_H_RES - 24);  /* area width minus padding*2 + margin */
+    lv_obj_set_width(convo_label, LCD_H_RES - 16);
     lv_label_set_long_mode(convo_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(convo_label, lv_color_make(0xDD, 0xDD, 0xDD), 0);
     lv_obj_set_style_bg_opa(convo_label, LV_OPA_TRANSP, 0);
-    lv_obj_align(convo_label, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_align(convo_label, LV_ALIGN_TOP_LEFT, 8, convo_y);
     if (FONT_COUNT > 0 && font_idx < (int)FONT_COUNT) {
         lv_obj_set_style_text_font(convo_label, font_sizes[font_idx], 0);
         ESP_LOGI(TAG, "convo_label font set to index %d (line_h=%d)",
                  font_idx, (int)lv_font_get_line_height(font_sizes[font_idx]));
     } else {
-        /* Large fonts not compiled in — fall back to montserrat_14 (always available) */
         ESP_LOGW(TAG, "No large fonts! FONT_COUNT=%d, falling back to montserrat_14", (int)FONT_COUNT);
         lv_obj_set_style_text_font(convo_label, &lv_font_montserrat_14, 0);
     }
@@ -385,18 +373,21 @@ static void menu_item_cb(lv_event_t *e) {
 }
 
 static void show_menu(void) {
-    if (!convo_area) return;
+    if (!convo_label) return;
     ui_state = UI_MENU;
 
     if (lvgl_port_lock(200)) {
         /* Hide conversation text */
-        if (convo_label) lv_obj_add_flag(convo_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(convo_label, LV_OBJ_FLAG_HIDDEN);
 
-        /* Create menu panel inside convo_area (clipped by parent) */
-        menu_panel = lv_obj_create(convo_area);
+        /* Create menu panel as screen child (same z-zone as convo_label) */
+        lv_obj_t *scr = lv_screen_active();
+        int menu_y = STATUS_BAR_H + 1 + 4;
+
+        menu_panel = lv_obj_create(scr);
         lv_obj_remove_style_all(menu_panel);
-        lv_obj_set_size(menu_panel, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_align(menu_panel, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_size(menu_panel, LCD_H_RES, LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H);
+        lv_obj_align(menu_panel, LV_ALIGN_TOP_LEFT, 0, menu_y);
         lv_obj_set_style_bg_color(menu_panel, lv_color_make(10, 10, 15), 0);
         lv_obj_set_style_bg_opa(menu_panel, LV_OPA_COVER, 0);
         lv_obj_set_style_pad_all(menu_panel, 16, 0);
@@ -645,19 +636,17 @@ void display_status(int slot, const char *text, uint16_t color) {
     }
 }
 
+/* Max visible height for conversation text (between bars, with padding) */
+#define CONVO_MAX_H  (LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H - 8)
+
 void display_conversation(const char *text, uint16_t color) {
     if (!convo_label || !text || !text[0]) return;
 
-    /* Append new text to the conversation buffer with a newline separator. */
+    /* Append new text to buffer */
     size_t cur_len = strlen(convo_buf);
     size_t add_len = strlen(text);
-    if (cur_len + add_len + 2 < sizeof(convo_buf)) {
-        if (cur_len > 0) {
-            convo_buf[cur_len++] = '\n';
-        }
-        memcpy(convo_buf + cur_len, text, add_len + 1);
-    } else {
-        /* Buffer full — drop oldest half to make room */
+    if (cur_len + add_len + 2 >= sizeof(convo_buf)) {
+        /* Buffer full — drop oldest half */
         size_t half = sizeof(convo_buf) / 2;
         char *nl = strchr(convo_buf + half, '\n');
         if (nl) {
@@ -667,52 +656,38 @@ void display_conversation(const char *text, uint16_t color) {
             convo_buf[0] = '\0';
         }
         cur_len = strlen(convo_buf);
-        if (cur_len > 0) {
-            convo_buf[cur_len++] = '\n';
-        }
-        memcpy(convo_buf + cur_len, text, add_len + 1);
     }
+    if (cur_len > 0) {
+        convo_buf[cur_len++] = '\n';
+    }
+    memcpy(convo_buf + cur_len, text, add_len + 1);
 
-    ESP_LOGI(TAG, "convo: updating label=%p [%.40s] buflen=%d",
-             (void*)convo_label, text, (int)strlen(convo_buf));
+    ESP_LOGI(TAG, "convo: [%.40s] buflen=%d", text, (int)strlen(convo_buf));
 
     if (lvgl_port_lock(500)) {
+        /* Set full text, measure, then trim from front until it fits */
         lv_label_set_text(convo_label, convo_buf);
+        lv_obj_update_layout(convo_label);
+        int32_t label_h = lv_obj_get_height(convo_label);
 
-        /* Auto-scroll convo_area so latest text is at the bottom.
-         * update_layout() forces LVGL to recalc label height from new text.
-         * scroll_to_view() on the label scrolls parent to show it —
-         * using LV_ANIM_OFF so it's instant.
-         * invalidate() AFTER scroll to avoid layout pass resetting scroll. */
-        if (convo_area) {
-            lv_obj_update_layout(convo_area);
+        /* If text is taller than visible area, drop oldest lines */
+        const char *visible = convo_buf;
+        while (label_h > CONVO_MAX_H) {
+            char *nl = strchr(visible, '\n');
+            if (!nl) break;
+            visible = nl + 1;
+            lv_label_set_text(convo_label, visible);
+            lv_obj_update_layout(convo_label);
+            label_h = lv_obj_get_height(convo_label);
+        }
 
-            int32_t label_h = lv_obj_get_height(convo_label);
-            int32_t area_h = lv_obj_get_content_height(convo_area);
-
-            if (label_h > area_h) {
-                /* Scroll by directly setting the scroll position on the content.
-                 * lv_obj_scroll_to_y can be reset by subsequent layout passes,
-                 * so use lv_obj_scroll_to_view on a dummy point or set scroll
-                 * position after all layout is done. */
-                lv_obj_scroll_to_y(convo_area, label_h - area_h, LV_ANIM_OFF);
-
-                /* If LVGL reset the scroll (layout pass interference),
-                 * force it by scrolling the label into view */
-                int32_t actual = lv_obj_get_scroll_y(convo_area);
-                if (actual == 0 && label_h > area_h) {
-                    ESP_LOGW(TAG, "convo: scroll reset detected, using scroll_to_view");
-                    lv_obj_scroll_to_view(convo_label, LV_ANIM_OFF);
-                    actual = lv_obj_get_scroll_y(convo_area);
-                }
-
-                ESP_LOGI(TAG, "convo: label_h=%ld area_h=%ld scroll=%ld",
-                         (long)label_h, (long)area_h, (long)actual);
-            }
+        /* Compact the buffer if we trimmed lines */
+        if (visible != convo_buf) {
+            size_t keep = strlen(visible);
+            memmove(convo_buf, visible, keep + 1);
         }
 
         lv_obj_invalidate(convo_label);
-
         lvgl_port_unlock();
     } else {
         ESP_LOGW(TAG, "convo: LVGL lock timeout!");
