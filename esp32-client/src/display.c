@@ -678,16 +678,14 @@ void display_conversation(const char *text, uint16_t color) {
             lv_obj_update_layout(convo_area);
             int32_t label_h = lv_obj_get_height(convo_label);
             int32_t area_h = lv_obj_get_content_height(convo_area);
-            if (label_h > area_h) {
-                lv_obj_scroll_to_y(convo_area, label_h - area_h, LV_ANIM_OFF);
-            } else {
-                lv_obj_scroll_to_y(convo_area, 0, LV_ANIM_OFF);
-            }
-        }
+            int32_t scroll_to = (label_h > area_h) ? (label_h - area_h) : 0;
+            lv_obj_scroll_to_y(convo_area, scroll_to, LV_ANIM_OFF);
 
-        ESP_LOGI(TAG, "convo: label updated, w=%ld h=%ld",
-                 (long)lv_obj_get_width(convo_label),
-                 (long)lv_obj_get_height(convo_label));
+            int32_t actual_scroll = lv_obj_get_scroll_y(convo_area);
+            ESP_LOGI(TAG, "convo: label_h=%ld area_h=%ld scroll_to=%ld actual=%ld label_y=%ld",
+                     (long)label_h, (long)area_h, (long)scroll_to,
+                     (long)actual_scroll, (long)lv_obj_get_y(convo_label));
+        }
 
         lvgl_port_unlock();
     } else {
