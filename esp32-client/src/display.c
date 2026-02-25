@@ -61,8 +61,8 @@ static lv_obj_t *lbl_action = NULL;
  *   6   = Ready/hint     → action bar text
  */
 
-#define STATUS_BAR_H  32
-#define ACTION_BAR_H  38
+#define STATUS_BAR_H  64
+#define ACTION_BAR_H  76
 
 /* ---- Font size cycling (tap action bar to toggle) ---- */
 
@@ -190,8 +190,8 @@ static void style_container(lv_obj_t *obj, lv_color_t bg,
 /* Build the LVGL UI layout.
  *
  * Creation order matters for z-order: later children draw on top.
- * convo_area is created FIRST (lowest z-order) so its background
- * can never cover status_bar or action_bar content. */
+ * convo_label is created FIRST (lowest z-order) so header/footer
+ * always render on top if they overlap. */
 static void build_ui(void) {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
@@ -199,26 +199,36 @@ static void build_ui(void) {
 
     lv_color_t bar_bg = lv_color_make(20, 20, 30);
 
-    /* ---- Conversation area (middle, scrollable) — created FIRST (lowest z) ---- */
-    int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
-    convo_area = lv_obj_create(scr);
-    style_container(convo_area, lv_color_make(10, 10, 15),  /* near-black */
-                    LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
-    lv_obj_set_style_pad_left(convo_area, 8, 0);
-    lv_obj_set_style_pad_right(convo_area, 8, 0);
-    lv_obj_set_style_pad_top(convo_area, 4, 0);
-    lv_obj_set_style_pad_bottom(convo_area, 4, 0);
-    lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
+    /* ---- Conversation area (80% of middle zone, centered) ---- */
+    /* Background container — visual boundary only, no functional children.
+     * Dark background with thin grey border so we can see its extent. */
+    int middle_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
+    int convo_w = (LCD_H_RES * 80) / 100;          /* 80% width */
+    int convo_h = (middle_h * 80) / 100;            /* 80% height */
+    int convo_x = (LCD_H_RES - convo_w) / 2;       /* center horizontally */
+    int convo_y = STATUS_BAR_H + 1 + (middle_h - convo_h) / 2;  /* center vertically */
 
-    /* Single pre-created label for all conversation text.
-     * Updating existing label text triggers LVGL redraw reliably,
-     * unlike creating new child objects from a separate FreeRTOS task. */
-    convo_label = lv_label_create(convo_area);
-    lv_label_set_text(convo_label, "");
-    lv_obj_set_width(convo_label, LCD_H_RES - 24);
+    convo_area = lv_obj_create(scr);
+    style_container(convo_area, lv_color_make(15, 15, 25),
+                    convo_w, convo_h, LV_ALIGN_TOP_LEFT, convo_x, convo_y);
+    lv_obj_remove_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
+    /* Thin grey border to see the container boundary */
+    lv_obj_set_style_border_width(convo_area, 1, 0);
+    lv_obj_set_style_border_color(convo_area, lv_color_make(80, 80, 80), 0);
+
+    ESP_LOGI(TAG, "Convo area: %dx%d at (%d,%d), middle_h=%d",
+             convo_w, convo_h, convo_x, convo_y, middle_h);
+
+    /* Conversation label — direct child of screen, positioned over the
+     * convo_area background. Keeping it as a screen child (not convo_area
+     * child) because LVGL was not redrawing container children reliably. */
+    convo_label = lv_label_create(scr);
+    lv_label_set_text(convo_label, "Listening...");
+    lv_obj_set_width(convo_label, convo_w - 16);
     lv_label_set_long_mode(convo_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(convo_label, lv_color_make(0x70, 0xD0, 0x70), 0);
+    lv_obj_set_style_bg_opa(convo_label, LV_OPA_TRANSP, 0);
+    lv_obj_align(convo_label, LV_ALIGN_TOP_LEFT, convo_x + 8, convo_y + 8);
     if (FONT_COUNT > 0 && font_idx < (int)FONT_COUNT) {
         lv_obj_set_style_text_font(convo_label, font_sizes[font_idx], 0);
     }
@@ -234,38 +244,38 @@ static void build_ui(void) {
     lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    /* Title "Worzel" — left */
+    /* Title "Worzel" — left (montserrat_28, 2x) */
     lbl_title = lv_label_create(status_bar);
     lv_label_set_text(lbl_title, "Worzel");
     lv_obj_set_style_text_color(lbl_title, lv_color_make(0x50, 0xC8, 0x50), 0);
-    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_28, 0);
 
-    /* Clock — center (ISO 8601 date + time, updated by LVGL timer) */
+    /* Clock (montserrat_28, 2x) */
     lbl_time = lv_label_create(status_bar);
     lv_label_set_text(lbl_time, "--:--");
     lv_obj_set_style_text_color(lbl_time, lv_color_make(0x99, 0x99, 0x99), 0);
-    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_28, 0);
 
-    /* Status icons — right side, montserrat_14, spaced.
+    /* Status icons — montserrat_36 (approx 3x original 14).
      * Start dim grey; display_status() colors them. */
     lv_color_t icon_off = lv_color_make(0x55, 0x55, 0x55);
 
     lbl_icon_wifi = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_wifi, LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(lbl_icon_wifi, icon_off, 0);
-    lv_obj_set_style_text_font(lbl_icon_wifi, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_icon_wifi, &lv_font_montserrat_36, 0);
 
     lbl_icon_auth = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_auth, LV_SYMBOL_EYE_OPEN);
     lv_obj_set_style_text_color(lbl_icon_auth, icon_off, 0);
-    lv_obj_set_style_text_font(lbl_icon_auth, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_pad_left(lbl_icon_auth, 8, 0);
+    lv_obj_set_style_text_font(lbl_icon_auth, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_pad_left(lbl_icon_auth, 4, 0);
 
     lbl_icon_ws = lv_label_create(status_bar);
     lv_label_set_text(lbl_icon_ws, LV_SYMBOL_CALL);
     lv_obj_set_style_text_color(lbl_icon_ws, icon_off, 0);
-    lv_obj_set_style_text_font(lbl_icon_ws, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_pad_left(lbl_icon_ws, 8, 0);
+    lv_obj_set_style_text_font(lbl_icon_ws, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_pad_left(lbl_icon_ws, 4, 0);
 
     /* ---- Thin separator ---- */
     lv_obj_t *sep1 = lv_obj_create(scr);
@@ -284,9 +294,7 @@ static void build_ui(void) {
     lbl_action = lv_label_create(action_bar);
     lv_label_set_text(lbl_action, "");
     lv_obj_set_style_text_color(lbl_action, lv_color_make(0xEE, 0xEE, 0xEE), 0);
-    if (FONT_COUNT > 0 && font_idx < (int)FONT_COUNT) {
-        lv_obj_set_style_text_font(lbl_action, font_sizes[font_idx], 0);
-    }
+    lv_obj_set_style_text_font(lbl_action, &lv_font_montserrat_28, 0);
     lv_obj_center(lbl_action);
 
     /* ---- Separator above action bar ---- */
@@ -509,9 +517,7 @@ void display_status(int slot, const char *text, uint16_t color) {
 void display_conversation(const char *text, uint16_t color) {
     if (!convo_label || !text || !text[0]) return;
 
-    /* Append new text to the conversation buffer with a newline separator.
-     * Uses a single pre-created label — updating its text triggers LVGL
-     * redraw reliably (unlike creating new child objects at runtime). */
+    /* Append new text to the conversation buffer with a newline separator. */
     size_t cur_len = strlen(convo_buf);
     size_t add_len = strlen(text);
     if (cur_len + add_len + 2 < sizeof(convo_buf)) {
@@ -536,15 +542,20 @@ void display_conversation(const char *text, uint16_t color) {
         memcpy(convo_buf + cur_len, text, add_len + 1);
     }
 
+    ESP_LOGI(TAG, "convo: updating label=%p [%.40s] buflen=%d",
+             (void*)convo_label, text, (int)strlen(convo_buf));
+
     if (lvgl_port_lock(500)) {
         lv_label_set_text(convo_label, convo_buf);
+        lv_obj_invalidate(convo_label);  /* force LVGL to redraw this label */
 
-        /* Scroll to bottom to show latest text */
-        lv_obj_scroll_to_y(convo_area, lv_obj_get_scroll_bottom(convo_area), LV_ANIM_OFF);
-
-        ESP_LOGI(TAG, "convo: [%.40s] buflen=%d", text, (int)strlen(convo_buf));
+        ESP_LOGI(TAG, "convo: label updated, w=%ld h=%ld",
+                 (long)lv_obj_get_width(convo_label),
+                 (long)lv_obj_get_height(convo_label));
 
         lvgl_port_unlock();
+    } else {
+        ESP_LOGW(TAG, "convo: LVGL lock timeout!");
     }
 }
 
