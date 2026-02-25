@@ -277,16 +277,6 @@ static void build_ui(void) {
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
-
-    /* Placeholder text so the conversation area is visibly present */
-    lv_obj_t *hint = lv_label_create(convo_area);
-    lv_label_set_text(hint, "Ready...");
-    lv_obj_set_width(hint, LCD_H_RES - 24);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(hint, lv_color_make(0x55, 0x55, 0x55), 0);
-    if (FONT_COUNT > 0) {
-        lv_obj_set_style_text_font(hint, font_sizes[font_idx], 0);
-    }
 }
 
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
@@ -499,8 +489,6 @@ void display_status(int slot, const char *text, uint16_t color) {
     }
 }
 
-static bool convo_has_content = false;
-
 void display_conversation(const char *text, uint16_t color) {
     if (!convo_area || !text || !text[0]) return;
 
@@ -509,12 +497,6 @@ void display_conversation(const char *text, uint16_t color) {
      * to survive touch-scroll events (touch processing holds the LVGL
      * mutex longer than usual). */
     if (lvgl_port_lock(500)) {
-        /* Remove "Ready..." placeholder on first real message */
-        if (!convo_has_content) {
-            lv_obj_clean(convo_area);
-            convo_has_content = true;
-        }
-
         lv_obj_t *lbl = lv_label_create(convo_area);
         lv_label_set_text(lbl, text);
         lv_obj_set_width(lbl, LCD_H_RES - 24);
