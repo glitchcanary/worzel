@@ -128,6 +128,32 @@ static void clock_update_cb(lv_timer_t *timer) {
     }
 }
 
+/* LVGL flush callback: send pixels to panel and ALWAYS signal flush_ready.
+ *
+ * We cannot rely on the SPI on_color_trans_done ISR to call
+ * lv_display_flush_ready(). If a single SPI error corrupts the driver
+ * state, subsequent calls may start DMA but the ISR never fires — LVGL
+ * hangs forever in wait_for_flushing() and the watchdog triggers.
+ *
+ * With swap_bytes=true in the display config, esp_lvgl_port already handles
+ * RGB565 byte-swapping before we get the pixel data, so we just forward
+ * to the panel and unconditionally signal completion.
+ *
+ * At 40MHz QSPI, a 368x20 partial buffer (14.7KB) transfers in ~0.3ms,
+ * while LVGL rendering takes several ms — any theoretical tearing from
+ * not waiting for DMA completion is invisible for a text UI. */
+static void safe_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
+    esp_err_t ret = esp_lcd_panel_draw_bitmap(panel,
+        area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Display flush failed (%s), skipping frame", esp_err_to_name(ret));
+    }
+
+    /* Always signal completion — never let LVGL spin in wait_for_flushing.
+     * Double-calling flush_ready (if the ISR also fires) is harmless in
+     * LVGL 9 — it just sets a flag. */
+    lv_display_flush_ready(disp);
+}
 
 /* SH8601 vendor init commands */
 static const sh8601_lcd_init_cmd_t init_cmds[] = {
@@ -248,6 +274,16 @@ static void build_ui(void) {
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
+
+    /* Placeholder text so the conversation area is visibly present */
+    lv_obj_t *hint = lv_label_create(convo_area);
+    lv_label_set_text(hint, "Ready...");
+    lv_obj_set_width(hint, LCD_H_RES - 24);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(hint, lv_color_make(0x55, 0x55, 0x55), 0);
+    if (FONT_COUNT > 0) {
+        lv_obj_set_style_text_font(hint, font_sizes[font_idx], 0);
+    }
 }
 
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
@@ -360,9 +396,13 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
     }
     ESP_LOGI(TAG, "LVGL display registered");
 
-    /* Use esp_lvgl_port's default flush callback + ISR.
-     * swap_bytes=true handles RGB565 byte-swap for SH8601.
-     * The ISR calls lv_display_flush_ready() on DMA completion. */
+    /* Replace the default flush callback with our safe wrapper.
+     * esp_lvgl_port's default relies on the SPI ISR to call flush_ready,
+     * but if a single SPI error corrupts driver state, the ISR may never
+     * fire and LVGL hangs forever in wait_for_flushing() (watchdog crash).
+     * Our wrapper always signals completion. swap_bytes=true in disp_cfg
+     * means byte-swapping is already done before our callback runs. */
+    lv_display_set_flush_cb(lvgl_disp, safe_flush_cb);
 
     /* ---- Touch init (FT3168 / FT5x06-compatible) ---- */
 #ifdef PIN_TOUCH_INT
