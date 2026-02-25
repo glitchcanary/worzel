@@ -255,6 +255,12 @@ static void build_ui(void) {
     lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_style_clip_corner(convo_area, true, 0);  /* force clip children */
     lv_obj_set_style_pad_all(convo_area, 8, 0);
+    /* DEBUG: bright border to see container bounds */
+    lv_obj_set_style_border_width(convo_area, 2, 0);
+    lv_obj_set_style_border_color(convo_area, lv_color_make(0xFF, 0x00, 0x00), 0);
+
+    ESP_LOGI(TAG, "convo_area: y=%d h=%d (screen %dx%d, bar=%d+%d)",
+             convo_y, convo_h, LCD_H_RES, LCD_V_RES, STATUS_BAR_H, ACTION_BAR_H);
 
     /* ---- Conversation label (child of convo_area — clipped + scrolled) ---- */
     convo_label = lv_label_create(convo_area);
