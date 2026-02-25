@@ -100,7 +100,7 @@ static lv_color_t map_color(uint16_t color) {
 static void font_cycle_cb(lv_event_t *e) {
     (void)e;
     if (FONT_COUNT <= 1) return;
-    font_idx = (font_idx + 1) % FONT_COUNT;
+    font_idx = (font_idx + 1) % (int)FONT_COUNT;
     ESP_LOGI(TAG, "Font size cycled to index %d", font_idx);
 
     /* Update all existing conversation labels */
@@ -187,7 +187,11 @@ static void style_container(lv_obj_t *obj, lv_color_t bg,
     lv_obj_set_scrollbar_mode(obj, LV_SCROLLBAR_MODE_OFF);
 }
 
-/* Build the LVGL UI layout */
+/* Build the LVGL UI layout.
+ *
+ * Creation order matters for z-order: later children draw on top.
+ * convo_area is created FIRST (lowest z-order) so its background
+ * can never cover status_bar or action_bar content. */
 static void build_ui(void) {
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
@@ -195,10 +199,30 @@ static void build_ui(void) {
 
     lv_color_t bar_bg = lv_color_make(20, 20, 30);
 
+    /* ---- Conversation area (middle, scrollable) — created FIRST (lowest z) ---- */
+    int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
+    convo_area = lv_obj_create(scr);
+    style_container(convo_area, lv_color_black(),
+                    LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
+    /* Transparent background — screen is already black, so text renders
+     * directly over the black screen. Avoids opaque bg covering children
+     * during partial LVGL redraws with small draw buffer. */
+    lv_obj_set_style_bg_opa(convo_area, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_left(convo_area, 8, 0);
+    lv_obj_set_style_pad_right(convo_area, 8, 0);
+    lv_obj_set_style_pad_top(convo_area, 4, 0);
+    lv_obj_set_style_pad_bottom(convo_area, 4, 0);
+    lv_obj_set_flex_flow(convo_area, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(convo_area, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
+
     /* ---- Status bar (top) ---- */
     status_bar = lv_obj_create(scr);
     style_container(status_bar, bar_bg,
                     LCD_H_RES, STATUS_BAR_H, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_remove_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_left(status_bar, 16, 0);
     lv_obj_set_style_pad_right(status_bar, 16, 0);
     lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
@@ -242,18 +266,20 @@ static void build_ui(void) {
     lv_obj_t *sep1 = lv_obj_create(scr);
     style_container(sep1, lv_color_make(50, 50, 50),
                     LCD_H_RES, 1, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H);
+    lv_obj_remove_flag(sep1, LV_OBJ_FLAG_SCROLLABLE);
 
     /* ---- Action bar (bottom) — tap to cycle font size ---- */
     action_bar = lv_obj_create(scr);
     style_container(action_bar, bar_bg,
                     LCD_H_RES, ACTION_BAR_H, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_remove_flag(action_bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(action_bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(action_bar, font_cycle_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_action = lv_label_create(action_bar);
     lv_label_set_text(lbl_action, "");
     lv_obj_set_style_text_color(lbl_action, lv_color_make(0xEE, 0xEE, 0xEE), 0);
-    if (FONT_COUNT > 0) {
+    if (FONT_COUNT > 0 && font_idx < (int)FONT_COUNT) {
         lv_obj_set_style_text_font(lbl_action, font_sizes[font_idx], 0);
     }
     lv_obj_center(lbl_action);
@@ -262,21 +288,7 @@ static void build_ui(void) {
     lv_obj_t *sep2 = lv_obj_create(scr);
     style_container(sep2, lv_color_make(50, 50, 50),
                     LCD_H_RES, 1, LV_ALIGN_BOTTOM_LEFT, 0, -ACTION_BAR_H);
-
-    /* ---- Conversation area (middle, scrollable) ---- */
-    int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
-    convo_area = lv_obj_create(scr);
-    style_container(convo_area, lv_color_make(10, 10, 15),  /* very dark, not pure black */
-                    LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
-    lv_obj_set_style_pad_left(convo_area, 8, 0);
-    lv_obj_set_style_pad_right(convo_area, 8, 0);
-    lv_obj_set_style_pad_top(convo_area, 4, 0);
-    lv_obj_set_style_pad_bottom(convo_area, 4, 0);
-    lv_obj_set_flex_flow(convo_area, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(convo_area, LV_FLEX_ALIGN_START,
-                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_remove_flag(sep2, LV_OBJ_FLAG_SCROLLABLE);
 }
 
 esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
@@ -502,10 +514,13 @@ void display_conversation(const char *text, uint16_t color) {
         lv_obj_set_width(lbl, LCD_H_RES - 24);
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(lbl, map_color(color), 0);
-        if (FONT_COUNT > 0) {
+        if (FONT_COUNT > 0 && font_idx < (int)FONT_COUNT) {
             lv_obj_set_style_text_font(lbl, font_sizes[font_idx], 0);
         }
         lv_obj_set_style_pad_bottom(lbl, 6, 0);
+
+        uint32_t count = lv_obj_get_child_count(convo_area);
+        ESP_LOGI(TAG, "convo: label #%lu [%.30s] color=0x%04X", (unsigned long)count, text, color);
 
         /* Always scroll to bottom. lv_obj_scroll_to_view() stops working
          * after the user manually touch-scrolls (LVGL thinks the user is
