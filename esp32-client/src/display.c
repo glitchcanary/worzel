@@ -202,12 +202,8 @@ static void build_ui(void) {
     /* ---- Conversation area (middle, scrollable) — created FIRST (lowest z) ---- */
     int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
     convo_area = lv_obj_create(scr);
-    style_container(convo_area, lv_color_black(),
+    style_container(convo_area, lv_color_make(0x80, 0x00, 0x00),  /* DEBUG: red bg to verify area renders */
                     LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, STATUS_BAR_H + 1);
-    /* Transparent background — screen is already black, so text renders
-     * directly over the black screen. Avoids opaque bg covering children
-     * during partial LVGL redraws with small draw buffer. */
-    lv_obj_set_style_bg_opa(convo_area, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_left(convo_area, 8, 0);
     lv_obj_set_style_pad_right(convo_area, 8, 0);
     lv_obj_set_style_pad_top(convo_area, 4, 0);
@@ -217,6 +213,12 @@ static void build_ui(void) {
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
+
+    /* DEBUG: static test label — if this appears, convo_area children render OK */
+    lv_obj_t *dbg_lbl = lv_label_create(convo_area);
+    lv_label_set_text(dbg_lbl, "HELLO WORLD TEST");
+    lv_obj_set_style_text_color(dbg_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(dbg_lbl, &lv_font_montserrat_28, 0);
 
     /* ---- Status bar (top) ---- */
     status_bar = lv_obj_create(scr);
