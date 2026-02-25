@@ -1,10 +1,12 @@
 # Flash Worzel firmware to ESP32 and open serial monitor
-# Usage: .\flash.ps1 [-Clean] [-Env esp32s3-amoled]
+# Usage: .\flash.ps1 [-Clean] [-Env esp32s3-amoled] [-Log [path]]
 #
 # WiFi and server settings are prompted if not configured, saved to sdkconfig.local (gitignored).
+# -Log captures build output and serial monitor to a log file (default: .\esp32-log.txt).
 param(
     [switch]$Clean,
-    [string]$Env = "esp32s3-amoled"
+    [string]$Env = "esp32s3-amoled",
+    [string]$Log
 )
 
 if ($Clean) {
@@ -89,11 +91,27 @@ $tls_ = if ($localConfig["CONFIG_WORZEL_USE_TLS"] -eq "y") { "https" } else { "h
 Write-Host "  WiFi: $($localConfig["CONFIG_WORZEL_WIFI_SSID"])" -ForegroundColor Cyan
 Write-Host "  Server: ${tls_}://${host_}:${port_}" -ForegroundColor Cyan
 
+# Resolve log file path
+$logFile = $null
+if ($PSBoundParameters.ContainsKey('Log')) {
+    $logFile = if ($Log) { $Log } else { ".\esp32-log.txt" }
+    $logFile = [System.IO.Path]::GetFullPath($logFile)
+    Write-Host "Logging to: $logFile" -ForegroundColor Yellow
+}
+
 Write-Host "Building and flashing $Env..." -ForegroundColor Cyan
-pio run -e $Env -t upload
+if ($logFile) {
+    pio run -e $Env -t upload 2>&1 | Tee-Object -FilePath $logFile
+} else {
+    pio run -e $Env -t upload
+}
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Flashed OK. Starting monitor..." -ForegroundColor Green
-    pio device monitor -e $Env
+    if ($logFile) {
+        pio device monitor -e $Env 2>&1 | Tee-Object -Append -FilePath $logFile
+    } else {
+        pio device monitor -e $Env
+    }
 } else {
     Write-Host "Build/flash failed." -ForegroundColor Red
 }
