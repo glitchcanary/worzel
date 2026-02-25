@@ -253,6 +253,7 @@ static void build_ui(void) {
     lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(convo_area, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_clip_corner(convo_area, true, 0);  /* force clip children */
     lv_obj_set_style_pad_all(convo_area, 8, 0);
 
     /* ---- Conversation label (child of convo_area — clipped + scrolled) ---- */
