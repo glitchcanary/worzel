@@ -519,13 +519,19 @@ void display_conversation(const char *text, uint16_t color) {
         }
         lv_obj_set_style_pad_bottom(lbl, 6, 0);
 
-        uint32_t count = lv_obj_get_child_count(convo_area);
-        ESP_LOGI(TAG, "convo: label #%lu [%.30s] color=0x%04X", (unsigned long)count, text, color);
+        /* Force layout update so LVGL knows the new child's position */
+        lv_obj_update_layout(convo_area);
 
-        /* Always scroll to bottom. lv_obj_scroll_to_view() stops working
-         * after the user manually touch-scrolls (LVGL thinks the user is
-         * controlling scroll position). Scrolling to max Y always works. */
-        lv_obj_scroll_to_y(convo_area, LV_COORD_MAX, LV_ANIM_ON);
+        uint32_t count = lv_obj_get_child_count(convo_area);
+        int32_t cont_h = lv_obj_get_content_height(convo_area);
+        int32_t scroll_y = lv_obj_get_scroll_y(convo_area);
+        ESP_LOGI(TAG, "convo: label #%lu [%.30s] color=0x%04X cont_h=%ld scroll_y=%ld",
+                 (unsigned long)count, text, color, (long)cont_h, (long)scroll_y);
+
+        /* Scroll to make the newly added label visible.
+         * Previous approach used lv_obj_scroll_to_y(LV_COORD_MAX) which
+         * can overshoot when LVGL doesn't clamp the extreme value. */
+        lv_obj_scroll_to_view(lbl, LV_ANIM_OFF);
 
         lvgl_port_unlock();
     }
