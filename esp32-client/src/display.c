@@ -90,7 +90,7 @@ static const lv_font_t *font_sizes[] = {
 #endif
 };
 #define FONT_COUNT (sizeof(font_sizes) / sizeof(font_sizes[0]))
-static int font_idx = 1;  /* start at montserrat_30 (bearable) */
+static int font_idx = 0;  /* start at montserrat_28 (~12-13 chars/line on 368px) */
 
 /* Map our RGB565 color codes to pleasant lv_color_t directly.
  * Bypasses bit-manipulation to avoid byte-swap / theme issues. */
@@ -242,23 +242,27 @@ static void build_ui(void) {
 
     lv_color_t bar_bg = lv_color_make(20, 20, 30);
 
-    /* ---- Conversation area background (child 0 — lowest z) ---- */
+    /* ---- Conversation area (scrollable container — clips children) ---- */
     int convo_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
     int convo_y = STATUS_BAR_H + 1;
 
     convo_area = lv_obj_create(scr);
     style_container(convo_area, lv_color_make(10, 10, 15),
                     LCD_H_RES, convo_h, LV_ALIGN_TOP_LEFT, 0, convo_y);
-    lv_obj_remove_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
+    /* Enable vertical scroll so text scrolls up and is clipped by parent */
+    lv_obj_add_flag(convo_area, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(convo_area, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(convo_area, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_pad_all(convo_area, 8, 0);
 
-    /* ---- Conversation label (child 1 — draws ON TOP of convo_area bg) ---- */
-    convo_label = lv_label_create(scr);
+    /* ---- Conversation label (child of convo_area — clipped + scrolled) ---- */
+    convo_label = lv_label_create(convo_area);
     lv_label_set_text(convo_label, "");
-    lv_obj_set_width(convo_label, LCD_H_RES - 16);
+    lv_obj_set_width(convo_label, LCD_H_RES - 24);  /* area width minus padding*2 + margin */
     lv_label_set_long_mode(convo_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(convo_label, lv_color_make(0x70, 0xD0, 0x70), 0);
+    lv_obj_set_style_text_color(convo_label, lv_color_make(0xDD, 0xDD, 0xDD), 0);
     lv_obj_set_style_bg_opa(convo_label, LV_OPA_TRANSP, 0);
-    lv_obj_align(convo_label, LV_ALIGN_TOP_LEFT, 8, convo_y + 4);
+    lv_obj_align(convo_label, LV_ALIGN_TOP_LEFT, 0, 0);
     if (FONT_COUNT > 0 && font_idx < (int)FONT_COUNT) {
         lv_obj_set_style_text_font(convo_label, font_sizes[font_idx], 0);
     }
@@ -366,22 +370,18 @@ static void menu_item_cb(lv_event_t *e) {
 }
 
 static void show_menu(void) {
-    if (!convo_label) return;
+    if (!convo_area) return;
     ui_state = UI_MENU;
 
     if (lvgl_port_lock(200)) {
         /* Hide conversation text */
-        lv_obj_add_flag(convo_label, LV_OBJ_FLAG_HIDDEN);
+        if (convo_label) lv_obj_add_flag(convo_label, LV_OBJ_FLAG_HIDDEN);
 
-        /* Create menu panel over conversation area */
-        lv_obj_t *scr = lv_screen_active();
-        int menu_y = STATUS_BAR_H + 1;
-        int menu_h = LCD_V_RES - STATUS_BAR_H - 1 - 1 - ACTION_BAR_H;
-
-        menu_panel = lv_obj_create(scr);
+        /* Create menu panel inside convo_area (clipped by parent) */
+        menu_panel = lv_obj_create(convo_area);
         lv_obj_remove_style_all(menu_panel);
-        lv_obj_set_size(menu_panel, LCD_H_RES, menu_h);
-        lv_obj_align(menu_panel, LV_ALIGN_TOP_LEFT, 0, menu_y);
+        lv_obj_set_size(menu_panel, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_align(menu_panel, LV_ALIGN_TOP_LEFT, 0, 0);
         lv_obj_set_style_bg_color(menu_panel, lv_color_make(10, 10, 15), 0);
         lv_obj_set_style_bg_opa(menu_panel, LV_OPA_COVER, 0);
         lv_obj_set_style_pad_all(menu_panel, 16, 0);
@@ -661,9 +661,12 @@ void display_conversation(const char *text, uint16_t color) {
 
     if (lvgl_port_lock(500)) {
         lv_label_set_text(convo_label, convo_buf);
-        /* Update text color to match latest message (green=TTS, blue=STT) */
-        lv_obj_set_style_text_color(convo_label, map_color(color), 0);
-        lv_obj_invalidate(convo_label);  /* force LVGL to redraw this label */
+        lv_obj_invalidate(convo_label);
+
+        /* Auto-scroll convo_area to bottom so latest text is visible */
+        if (convo_area) {
+            lv_obj_scroll_to_y(convo_area, LV_COORD_MAX, LV_ANIM_OFF);
+        }
 
         ESP_LOGI(TAG, "convo: label updated, w=%ld h=%ld",
                  (long)lv_obj_get_width(convo_label),
