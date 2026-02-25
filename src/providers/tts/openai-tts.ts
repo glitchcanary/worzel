@@ -52,9 +52,12 @@ export class OpenAITTS implements TTSProvider {
     const arrayBuffer = await response.arrayBuffer();
     const audio = Buffer.from(arrayBuffer);
 
+    // OpenAI TTS with response_format='pcm' always returns 24kHz 16-bit mono,
+    // regardless of any user config. Report the actual rate so the pipeline
+    // resamples correctly (e.g. 24kHz → 16kHz for ESP32 Opus).
     return {
       audio,
-      sampleRate: options?.sampleRate ?? this.options.sampleRate,
+      sampleRate: 24000,
       format: 'pcm',
     };
   }

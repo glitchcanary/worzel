@@ -128,30 +128,33 @@ static void clock_update_cb(lv_timer_t *timer) {
     }
 }
 
-/* LVGL flush callback: send pixels to panel and ALWAYS signal flush_ready.
+/* LVGL flush callback: byte-swap, send to panel, ALWAYS signal flush_ready.
  *
- * We cannot rely on the SPI on_color_trans_done ISR to call
- * lv_display_flush_ready(). If a single SPI error corrupts the driver
- * state, subsequent calls may start DMA but the ISR never fires — LVGL
- * hangs forever in wait_for_flushing() and the watchdog triggers.
+ * Three things this does that the esp_lvgl_port default doesn't handle:
  *
- * With swap_bytes=true in the display config, esp_lvgl_port already handles
- * RGB565 byte-swapping before we get the pixel data, so we just forward
- * to the panel and unconditionally signal completion.
+ * 1. Byte-swap RGB565: ESP32 is little-endian, SH8601 QSPI expects big-endian.
+ *    Although swap_bytes=true is set in the display config, replacing the flush
+ *    callback loses esp_lvgl_port's swap logic, so we must do it ourselves.
  *
- * At 40MHz QSPI, a 368x20 partial buffer (14.7KB) transfers in ~0.3ms,
- * while LVGL rendering takes several ms — any theoretical tearing from
- * not waiting for DMA completion is invisible for a text UI. */
+ * 2. Error resilience: if SPI fails, we log and skip rather than hanging.
+ *
+ * 3. Unconditional flush_ready: the SPI ISR may never fire after an error,
+ *    causing LVGL to spin forever in wait_for_flushing() (watchdog crash).
+ *    We always signal completion. Double-calling is harmless in LVGL 9. */
 static void safe_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
+    /* Swap bytes of each RGB565 pixel for big-endian SH8601 */
+    int pixel_count = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
+    uint16_t *p = (uint16_t *)px_map;
+    for (int i = 0; i < pixel_count; i++) {
+        p[i] = (p[i] >> 8) | (p[i] << 8);
+    }
+
     esp_err_t ret = esp_lcd_panel_draw_bitmap(panel,
         area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Display flush failed (%s), skipping frame", esp_err_to_name(ret));
     }
 
-    /* Always signal completion — never let LVGL spin in wait_for_flushing.
-     * Double-calling flush_ready (if the ISR also fires) is harmless in
-     * LVGL 9 — it just sets a flag. */
     lv_display_flush_ready(disp);
 }
 
@@ -386,7 +389,7 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
         .vres = LCD_V_RES,
         .flags = {
             .buff_spiram = false,
-            .swap_bytes = true,   /* SH8601 QSPI expects big-endian RGB565 */
+            .swap_bytes = false,  /* safe_flush_cb does manual byte-swap */
         },
     };
     lv_display_t *lvgl_disp = lvgl_port_add_disp(&disp_cfg);
@@ -496,6 +499,8 @@ void display_status(int slot, const char *text, uint16_t color) {
     }
 }
 
+static bool convo_has_content = false;
+
 void display_conversation(const char *text, uint16_t color) {
     if (!convo_area || !text || !text[0]) return;
 
@@ -504,6 +509,12 @@ void display_conversation(const char *text, uint16_t color) {
      * to survive touch-scroll events (touch processing holds the LVGL
      * mutex longer than usual). */
     if (lvgl_port_lock(500)) {
+        /* Remove "Ready..." placeholder on first real message */
+        if (!convo_has_content) {
+            lv_obj_clean(convo_area);
+            convo_has_content = true;
+        }
+
         lv_obj_t *lbl = lv_label_create(convo_area);
         lv_label_set_text(lbl, text);
         lv_obj_set_width(lbl, LCD_H_RES - 24);
