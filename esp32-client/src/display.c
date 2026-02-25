@@ -676,22 +676,40 @@ void display_conversation(const char *text, uint16_t color) {
 
     if (lvgl_port_lock(500)) {
         lv_label_set_text(convo_label, convo_buf);
-        lv_obj_invalidate(convo_label);
 
         /* Auto-scroll convo_area so latest text is at the bottom.
-         * Must update layout first so label height reflects new text. */
+         * update_layout() forces LVGL to recalc label height from new text.
+         * scroll_to_view() on the label scrolls parent to show it —
+         * using LV_ANIM_OFF so it's instant.
+         * invalidate() AFTER scroll to avoid layout pass resetting scroll. */
         if (convo_area) {
             lv_obj_update_layout(convo_area);
+
             int32_t label_h = lv_obj_get_height(convo_label);
             int32_t area_h = lv_obj_get_content_height(convo_area);
-            int32_t scroll_to = (label_h > area_h) ? (label_h - area_h) : 0;
-            lv_obj_scroll_to_y(convo_area, scroll_to, LV_ANIM_OFF);
 
-            int32_t actual_scroll = lv_obj_get_scroll_y(convo_area);
-            ESP_LOGI(TAG, "convo: label_h=%ld area_h=%ld scroll_to=%ld actual=%ld label_y=%ld",
-                     (long)label_h, (long)area_h, (long)scroll_to,
-                     (long)actual_scroll, (long)lv_obj_get_y(convo_label));
+            if (label_h > area_h) {
+                /* Scroll by directly setting the scroll position on the content.
+                 * lv_obj_scroll_to_y can be reset by subsequent layout passes,
+                 * so use lv_obj_scroll_to_view on a dummy point or set scroll
+                 * position after all layout is done. */
+                lv_obj_scroll_to_y(convo_area, label_h - area_h, LV_ANIM_OFF);
+
+                /* If LVGL reset the scroll (layout pass interference),
+                 * force it by scrolling the label into view */
+                int32_t actual = lv_obj_get_scroll_y(convo_area);
+                if (actual == 0 && label_h > area_h) {
+                    ESP_LOGW(TAG, "convo: scroll reset detected, using scroll_to_view");
+                    lv_obj_scroll_to_view(convo_label, LV_ANIM_OFF);
+                    actual = lv_obj_get_scroll_y(convo_area);
+                }
+
+                ESP_LOGI(TAG, "convo: label_h=%ld area_h=%ld scroll=%ld",
+                         (long)label_h, (long)area_h, (long)actual);
+            }
         }
+
+        lv_obj_invalidate(convo_label);
 
         lvgl_port_unlock();
     } else {
