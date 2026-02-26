@@ -776,6 +776,8 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         ws_connected = true;
         display_status(5, "WebSocket: connected", COLOR_GREEN);
         send_hello();
+        queue_display_text("Worzel ready.", COLOR_GREEN);
+        queue_display_text("Press button to talk.", COLOR_GREY);
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:

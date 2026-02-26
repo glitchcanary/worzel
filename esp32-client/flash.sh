@@ -1,29 +1,36 @@
 #!/usr/bin/env bash
-# Flash Worzel firmware to ESP32 and open serial monitor (WSL2/Linux version)
+# Flash Worzel firmware to ESP32 from WSL2
 #
-# Usage: ./flash.sh [--clean] [--env esp32s3-amoled] [--log [path]]
+# Build happens in WSL2 (fast, native Linux filesystem).
+# Flash + monitor happen via Windows esptool/serial (no usbipd needed).
+# WSL2 can call Windows .exe directly — the USB device stays on the Windows side.
 #
-# Prerequisites (one-time setup):
-#   pip install platformio
-#   sudo usermod -aG dialout $USER  (then re-login)
-#   Windows side: winget install usbipd
-#   WSL2 side: sudo apt install linux-tools-generic hwdata
+# Usage: ./flash.sh [--clean] [--env esp32s3-amoled] [--no-log] [--build-only]
 #
-# USB passthrough (each time device is plugged in, from admin PowerShell):
-#   usbipd list
-#   usbipd bind --busid <BUSID>       # first time only
-#   usbipd attach --wsl --busid <BUSID>
+# Prerequisites:
+#   WSL2:    pip install platformio   (or pipx install platformio)
+#   Windows: pip install esptool      (already installed if you have PlatformIO on Windows)
 #
-# The ESP32-S3 appears as /dev/ttyACM0 in WSL2 after attach.
+# No usbipd, no USB passthrough, no dialout group needed.
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Log directory (outside git repo, shared with server logs)
+LOGDIR="$(cd "$(dirname "$0")/../.." && pwd)/logs"
+
 # Defaults
 ENV="esp32s3-amoled"
 CLEAN=0
-LOG=""
-LOG_SET=0
+NO_LOG=0
+BUILD_ONLY=0
+WIN_PORT=""
+
+# Flash offsets per board (from partition tables + ESP-IDF defaults for ESP32-S3)
+# bootloader @ 0x0, partitions @ 0x8000, app @ 0x10000
+BOOTLOADER_OFFSET="0x0"
+PARTITION_OFFSET="0x8000"
+APP_OFFSET="0x10000"
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -32,37 +39,46 @@ while [[ $# -gt 0 ]]; do
             CLEAN=1; shift ;;
         --env|-e)
             ENV="$2"; shift 2 ;;
-        --log|-l)
-            LOG_SET=1
-            if [[ $# -gt 1 && ! "$2" =~ ^- ]]; then
-                LOG="$2"; shift 2
-            else
-                LOG="./esp32-log.txt"; shift
-            fi
-            ;;
+        --no-log)
+            NO_LOG=1; shift ;;
+        --build-only|-b)
+            BUILD_ONLY=1; shift ;;
+        --port|-p)
+            WIN_PORT="$2"; shift 2 ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: ./flash.sh [--clean] [--env name] [--log [path]]" >&2
+            echo "Usage: ./flash.sh [--clean] [--env name] [--no-log] [--build-only] [--port COMx]" >&2
             exit 1 ;;
     esac
 done
 
-# Check pio is available
+# Check pio is available (WSL2 side, for building)
 if ! command -v pio &>/dev/null; then
-    echo "ERROR: PlatformIO not found. Install with: pip install platformio" >&2
+    echo "ERROR: PlatformIO not found. Install with: pipx install platformio" >&2
     exit 1
 fi
 
-# Check USB device is available
-if ! ls /dev/ttyACM* /dev/ttyUSB* &>/dev/null; then
-    echo "WARNING: No serial device found (/dev/ttyACM* or /dev/ttyUSB*)." >&2
-    echo "  Have you attached the ESP32 via usbipd?" >&2
-    echo "  From admin PowerShell: usbipd attach --wsl --busid <BUSID>" >&2
-    echo ""
-    read -rp "Continue with build only (no flash)? [y/N] " ans
-    if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
+# Detect Windows esptool (needed for flash, not for build-only)
+WIN_ESPTOOL=""
+if [[ $BUILD_ONLY -eq 0 ]]; then
+    # Try standalone esptool first, then PlatformIO's bundled one
+    for candidate in \
+        "esptool.exe" \
+        "/mnt/c/Users/$(cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')/anaconda3/Scripts/esptool.exe" \
+        "/mnt/c/Users/$(cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')/.platformio/packages/tool-esptoolpy/esptool.py"; do
+        if [[ -x "$(command -v "$candidate" 2>/dev/null || echo "$candidate")" ]] || [[ -f "$candidate" ]]; then
+            WIN_ESPTOOL="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$WIN_ESPTOOL" ]]; then
+        echo -e "\033[31mERROR: Windows esptool not found.\033[0m" >&2
+        echo "  Install with: pip install esptool (from Windows/PowerShell)" >&2
+        echo "  Or use --build-only to just compile without flashing." >&2
         exit 1
     fi
+    echo -e "\033[90mUsing esptool: $WIN_ESPTOOL\033[0m"
 fi
 
 # Clean
@@ -85,13 +101,15 @@ fi
 # Check WiFi
 has_wifi=0
 if [[ -n "${localConfig[CONFIG_WORZEL_WIFI_SSID]:-}" && \
-      "${localConfig[CONFIG_WORZEL_WIFI_SSID]:-}" != '"myssid"' ]]; then
+      "${localConfig[CONFIG_WORZEL_WIFI_SSID]:-}" != '"myssid"' && \
+      "${localConfig[CONFIG_WORZEL_WIFI_SSID]:-}" != '"placeholder"' ]]; then
     has_wifi=1
 fi
 
 # Check server
 has_server=0
-if [[ -n "${localConfig[CONFIG_WORZEL_SERVER_HOST]:-}" ]]; then
+if [[ -n "${localConfig[CONFIG_WORZEL_SERVER_HOST]:-}" && \
+      "${localConfig[CONFIG_WORZEL_SERVER_HOST]:-}" != '"myserver.example.com"' ]]; then
     has_server=1
 fi
 
@@ -149,30 +167,117 @@ tls_="http"
 echo -e "\033[36m  WiFi: ${localConfig[CONFIG_WORZEL_WIFI_SSID]}\033[0m"
 echo -e "\033[36m  Server: ${tls_}://${host_}:${port_}\033[0m"
 
-# Log setup
+# Log setup (default: on, to shared logs directory)
+LOG=""
 log_cmd=""
-if [[ $LOG_SET -eq 1 ]]; then
-    LOG="$(realpath "$LOG")"
+if [[ $NO_LOG -eq 0 ]]; then
+    mkdir -p "$LOGDIR"
+    LOG="$LOGDIR/flash-$(date +%Y%m%d-%H%M%S).log"
     echo -e "\033[33mLogging to: $LOG\033[0m"
     log_cmd="tee $LOG"
 fi
 
-# Build and flash
-echo -e "\033[36mBuilding and flashing $ENV...\033[0m"
+# ── Build (WSL2 PlatformIO) ──────────────────────────────────────────────────
+echo ""
+echo -e "\033[36mBuilding $ENV (WSL2)...\033[0m"
 if [[ -n "$log_cmd" ]]; then
-    pio run -e "$ENV" -t upload 2>&1 | $log_cmd
+    pio run -e "$ENV" 2>&1 | $log_cmd
 else
-    pio run -e "$ENV" -t upload
+    pio run -e "$ENV"
 fi
 
-if [[ $? -eq 0 ]]; then
-    echo -e "\033[32mFlashed OK. Starting monitor...\033[0m"
-    if [[ -n "$log_cmd" ]]; then
-        pio device monitor -e "$ENV" 2>&1 | tee -a "$LOG"
+BUILD_DIR=".pio/build/$ENV"
+if [[ ! -f "$BUILD_DIR/firmware.bin" ]]; then
+    echo -e "\033[31mBuild failed — no firmware.bin found.\033[0m" >&2
+    exit 1
+fi
+
+echo -e "\033[32mBuild OK.\033[0m"
+echo -e "\033[90m  $(ls -lh "$BUILD_DIR/firmware.bin" | awk '{print $5}') firmware.bin\033[0m"
+
+if [[ $BUILD_ONLY -eq 1 ]]; then
+    echo -e "\033[32mDone (build only).\033[0m"
+    exit 0
+fi
+
+# ── Flash (Windows esptool via WSL2→exe bridge) ──────────────────────────────
+echo ""
+
+# Auto-detect COM port on Windows if not specified
+if [[ -z "$WIN_PORT" ]]; then
+    echo -e "\033[90mDetecting COM port...\033[0m"
+    # Ask PowerShell to list serial ports
+    detected=$(powershell.exe -Command "[System.IO.Ports.SerialPort]::GetPortNames()" 2>/dev/null | tr -d '\r' | head -1)
+    if [[ -n "$detected" ]]; then
+        WIN_PORT="$detected"
+        echo -e "\033[90mFound: $WIN_PORT\033[0m"
     else
-        pio device monitor -e "$ENV"
+        echo -e "\033[33mNo COM port detected. Is the ESP32 plugged in?\033[0m"
+        read -rp "  Enter COM port (e.g. COM3): " WIN_PORT
+        if [[ -z "$WIN_PORT" ]]; then
+            echo -e "\033[31mCOM port required for flashing.\033[0m" >&2
+            exit 1
+        fi
+    fi
+fi
+
+# Convert WSL paths to Windows paths for esptool
+win_path() {
+    wslpath -w "$1"
+}
+
+BOOTLOADER_WIN=$(win_path "$BUILD_DIR/bootloader.bin")
+PARTITIONS_WIN=$(win_path "$BUILD_DIR/partitions.bin")
+FIRMWARE_WIN=$(win_path "$BUILD_DIR/firmware.bin")
+
+# Determine chip type from env name
+case "$ENV" in
+    *s3*) CHIP="esp32s3" ;;
+    *c3*) CHIP="esp32c3" ;;
+    *c6*) CHIP="esp32c6" ;;
+    *)    CHIP="esp32s3" ;;
+esac
+
+echo -e "\033[36mFlashing $CHIP on $WIN_PORT...\033[0m"
+
+FLASH_CMD="$WIN_ESPTOOL --chip $CHIP --port $WIN_PORT --baud 460800 write-flash \
+    $BOOTLOADER_OFFSET $BOOTLOADER_WIN \
+    $PARTITION_OFFSET $PARTITIONS_WIN \
+    $APP_OFFSET $FIRMWARE_WIN"
+
+if [[ -n "$log_cmd" ]]; then
+    $FLASH_CMD 2>&1 | $log_cmd
+else
+    $FLASH_CMD
+fi
+
+if [[ $? -ne 0 ]]; then
+    echo -e "\033[31mFlash failed.\033[0m" >&2
+    exit 1
+fi
+
+echo -e "\033[32mFlashed OK.\033[0m"
+
+# ── Serial monitor (Windows mode.com or PlatformIO) ──────────────────────────
+echo ""
+echo -e "\033[36mStarting serial monitor on $WIN_PORT (115200 baud)...\033[0m"
+echo -e "\033[90mPress Ctrl+C to exit.\033[0m"
+
+# Use PlatformIO monitor if available on Windows, otherwise python serial
+if command -v /mnt/c/Users/*/anaconda3/Scripts/pyserial-miniterm.exe &>/dev/null 2>&1; then
+    MINITERM=$(ls /mnt/c/Users/*/anaconda3/Scripts/pyserial-miniterm.exe 2>/dev/null | head -1)
+    if [[ -n "$log_cmd" ]]; then
+        "$MINITERM" "$WIN_PORT" 115200 2>&1 | tee -a "$LOG"
+    else
+        "$MINITERM" "$WIN_PORT" 115200
     fi
 else
-    echo -e "\033[31mBuild/flash failed.\033[0m"
-    exit 1
+    # Fallback: use PowerShell to read serial
+    echo -e "\033[90mUsing PowerShell serial reader (install pyserial for better experience)\033[0m"
+    powershell.exe -Command "
+        \$port = New-Object System.IO.Ports.SerialPort('$WIN_PORT', 115200)
+        \$port.Open()
+        try { while (\$true) { Write-Host \$port.ReadLine() } }
+        finally { \$port.Close() }
+    " 2>&1 | if [[ -n "$log_cmd" ]]; then tee -a "$LOG"; else cat; fi
 fi

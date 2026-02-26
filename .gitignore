@@ -12,3 +12,4 @@ sdkconfig.esp32*
 managed_components/
 opus-staged/
 esp32-client/CMakeLists.txt
+esp32-client/simulator/build/
