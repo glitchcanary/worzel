@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>City 311 — INK Voice Demo</title>
+<script src="https://cdn.jsdelivr.net/npm/inkjs@2.3.2/dist/ink-full.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0a0f0d;
+    --surface: #111a16;
+    --border: #1e3028;
+    --green: #00e87a;
+    --green-dim: #007a40;
+    --green-faint: #00e87a18;
+    --amber: #ffb800;
+    --amber-dim: #7a5800;
+    --red: #ff4444;
+    --text: #c8dfd4;
+    --text-dim: #567060;
+    --text-faint: #2a3e34;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-weight: 300;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  header {
+    width: 100%;
+    max-width: 800px;
+    padding: 28px 24px 0;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+    margin-bottom: 0;
+  }
+
+  .logo {
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    color: var(--green);
+    text-transform: uppercase;
+  }
+
+  .logo-badge {
+    background: var(--green);
+    color: var(--bg);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    letter-spacing: 0.1em;
+  }
+
+  .status-bar {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+  }
+
+  .status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .main {
+    width: 100%;
+    max-width: 800px;
+    padding: 0 24px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+  }
+
+  /* Transcript */
+  #transcript {
+    flex: 1;
+    padding: 24px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 320px;
+    max-height: 480px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .line {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    display: flex;
+    gap: 12px;
+    opacity: 0;
+    transform: translateY(4px);
+    animation: lineIn 0.2s ease forwards;
+  }
+
+  @keyframes lineIn {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .line.system { color: var(--text-dim); }
+  .line.system .prefix { color: var(--text-faint); }
+
+  .line.prompt { color: var(--text); }
+  .line.prompt .prefix { color: var(--green); }
+
+  .line.user { color: var(--amber); }
+  .line.user .prefix { color: var(--amber-dim); }
+
+  .line.tag-line { color: var(--text-faint); font-size: 11px; }
+  .line.tag-line .prefix { color: var(--text-faint); }
+
+  .line.error-line { color: var(--red); }
+  .line.error-line .prefix { color: var(--red); }
+
+  .line.transfer-line {
+    color: var(--amber);
+    border-left: 2px solid var(--amber-dim);
+    padding-left: 10px;
+  }
+
+  .prefix {
+    min-width: 60px;
+    text-align: right;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    padding-top: 2px;
+    flex-shrink: 0;
+  }
+
+  .content { flex: 1; }
+
+  /* Choices */
+  #choices-area {
+    border-top: 1px solid var(--border);
+    padding: 16px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 80px;
+  }
+
+  .choice-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--text-faint);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+  }
+
+  .choices-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .choice-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    padding: 7px 14px;
+    cursor: pointer;
+    transition: all 0.1s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .choice-btn:hover {
+    border-color: var(--green);
+    color: var(--green);
+    background: var(--green-faint);
+  }
+
+  .choice-btn .key-hint {
+    font-size: 10px;
+    color: var(--text-faint);
+    border: 1px solid var(--text-faint);
+    padding: 0 4px;
+    border-radius: 2px;
+  }
+
+  .choice-btn:hover .key-hint {
+    border-color: var(--green-dim);
+    color: var(--green-dim);
+  }
+
+  /* ASR stub indicator */
+  #asr-stub {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    display: none;
+  }
+
+  #asr-stub.active { display: flex; }
+  .asr-bar {
+    display: flex;
+    gap: 2px;
+    align-items: flex-end;
+  }
+  .asr-bar span {
+    width: 3px;
+    background: var(--green-dim);
+    animation: bar 0.8s ease-in-out infinite;
+  }
+  .asr-bar span:nth-child(1) { height: 6px; animation-delay: 0s; }
+  .asr-bar span:nth-child(2) { height: 12px; animation-delay: 0.15s; }
+  .asr-bar span:nth-child(3) { height: 8px; animation-delay: 0.3s; }
+  .asr-bar span:nth-child(4) { height: 14px; animation-delay: 0.1s; }
+  .asr-bar span:nth-child(5) { height: 5px; animation-delay: 0.25s; }
+  @keyframes bar {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  /* Collect input */
+  #collect-area {
+    display: none;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 0;
+  }
+  #collect-area.active { display: flex; }
+  #collect-input {
+    flex: 1;
+    background: transparent;
+    border: 1px solid var(--green-dim);
+    color: var(--green);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    padding: 8px 12px;
+    outline: none;
+  }
+  #collect-input::placeholder { color: var(--text-faint); }
+  #collect-input:focus { border-color: var(--green); }
+  #collect-submit {
+    background: var(--green);
+    color: var(--bg);
+    border: none;
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 9px 16px;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  #collect-submit:hover { background: #00ff88; }
+
+  footer {
+    width: 100%;
+    max-width: 800px;
+    padding: 12px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .footer-info {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: 0.05em;
+  }
+
+  .help-hint {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+  }
+  .help-hint kbd {
+    border: 1px solid var(--text-faint);
+    padding: 1px 4px;
+    border-radius: 2px;
+    font-family: inherit;
+  }
+
+  .ended-msg {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    padding: 16px 0;
+    text-align: center;
+  }
+
+  /* Restart button */
+  #restart-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    padding: 6px 14px;
+    cursor: pointer;
+    letter-spacing: 0.1em;
+    transition: all 0.1s;
+    text-transform: uppercase;
+  }
+  #restart-btn:hover {
+    border-color: var(--text-dim);
+    color: var(--text);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo-badge">311</span>
+  <span class="logo">City Services — INK Runtime Demo</span>
+  <div class="status-bar">
+    <div class="status-dot"></div>
+    <span id="state-label">READY</span>
+  </div>
+</header>
+
+<div class="main">
+  <div id="transcript"></div>
+
+  <div id="choices-area">
+    <div class="choice-label">Input</div>
+    <div class="choices-grid" id="choices-grid"></div>
+    <div id="asr-stub">
+      <div class="asr-bar">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      ASR LISTENING — (speech stub active, click a choice)
+    </div>
+    <div id="collect-area">
+      <input id="collect-input" type="text" placeholder="Type address or zip code...">
+      <button id="collect-submit">Submit</button>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="footer-info" id="footer-info">inkjs 2.3.2 · keyboard + click</div>
+  <div class="help-hint">
+    Say <kbd>help</kbd> anytime to reach a 311 operator
+  </div>
+</footer>
+
+<script>
+// ─── INK SOURCE ───────────────────────────────────────────────────────────────
+const INK_SOURCE = `
+VAR parkingStatus = "in effect"
+VAR location = ""
+VAR main_menu_visits = 0
+
+-> welcome
+
+=== welcome ===
+# AUDIO audio/311welcome.wav
+Welcome to City 311 Services.
+-> main_menu
+
+=== transfer_to_operator ===
+# TRANSFER tel:+13125551234
+Transferring you to a 311 operator. Please hold.
+-> END
+
+=== main_menu ===
+~ main_menu_visits = main_menu_visits + 1
+{main_menu_visits == 1:
+  For street parking, press 1 or say "street parking". For garbage and recycling, press 2. For water and sewer, press 3. For pothole, press 4. For other services, press 5.
+- else:
+  Please choose an option: street parking, garbage and recycling, water and sewer, pothole, or other services.
+}
+* [street parking]
+  -> parking
+* [garbage and recycling]
+  -> garbage
+* [water and sewer]
+  -> water
+* [report a pothole]
+  -> pothole
+* [other services]
+  -> other_services
++ [noinput]
+  I didn't hear anything.
+  -> main_menu
++ [nomatch]
+  That's not a valid option.
+  -> main_menu
+
+=== parking ===
+Alternate side parking is {parkingStatus} today.
+# BREAK 300ms
+For street cleaning schedule, press 1. To report an abandoned vehicle, press 2.
+* [street cleaning schedule]
+  # SUBMIT /311/cleaning-schedule.py choice=1
+  Connecting you to the street cleaning schedule.
+  -> END
+* [report abandoned vehicle]
+  -> report_vehicle
++ [noinput]
+  I didn't hear a selection.
+  -> parking
+* [back]
+  -> main_menu
+
+=== report_vehicle ===
+Please describe the vehicle location and we will file a report.
+# COLLECT location
+* [location collected]
+  # SUBMIT_POST /311/report-vehicle.py location
+  Thank you. Your abandoned vehicle report has been filed. You will receive a confirmation by text.
+  -> END
++ [noinput]
+  I didn't catch that. Let's try again.
+  -> report_vehicle
+
+=== pothole ===
+Please say the street address of the pothole, or enter the zip code using your keypad.
+# GRAMMAR_VOICE /grammars/street-address.grxml
+# GRAMMAR_DTMF builtin:dtmf/digits
+# COLLECT location
+* [location collected]
+  # SUBMIT_POST /311/report-pothole.py location
+  Thank you. Your pothole report has been submitted. A reference number will be sent by text.
+  -> END
++ [noinput]
+  I didn't catch that. Let's try again.
+  -> pothole
+
+=== garbage ===
+Garbage and recycling pickup in your area runs Monday and Thursday. Recycling goes out on Thursdays only. Is there anything else?
+* [yes, something else]
+  -> main_menu
+* [no, that's all]
+  Thank you for calling 311. Goodbye.
+  -> END
+
+=== water ===
+For water main breaks or sewer emergencies, press 1. For billing questions, press 2.
+* [water main or sewer emergency]
+  # SUBMIT /311/water-emergency.py type=emergency
+  Connecting you to our water emergency team now.
+  # TRANSFER tel:+13125559999
+  -> END
+* [billing questions]
+  # SUBMIT /311/water-billing.py type=billing
+  Our billing department is open Monday through Friday, 8am to 5pm. You can also visit city.gov/water-billing.
+  -> END
+* [back]
+  -> main_menu
+
+=== other_services ===
+# REDIRECT /311/general.vxml
+For other city services, please visit city.gov/311 or stay on the line.
+* [continue]
+  -> main_menu
+`;
+
+// ─── RUNTIME ─────────────────────────────────────────────────────────────────
+
+let story;
+let collectVar = null;
+let collectChoiceIndex = null;
+let visitCounts = {};
+let refCounter = 1000;
+
+const transcript = document.getElementById('transcript');
+const choicesGrid = document.getElementById('choices-grid');
+const asrStub = document.getElementById('asr-stub');
+const collectArea = document.getElementById('collect-area');
+const collectInput = document.getElementById('collect-input');
+const stateLabel = document.getElementById('state-label');
+const footerInfo = document.getElementById('footer-info');
+
+function setState(s) {
+  stateLabel.textContent = s;
+}
+
+// ── Line rendering ────────────────────────────────────────────────────────────
+
+function addLine(type, prefix, content) {
+  const div = document.createElement('div');
+  div.className = `line ${type}`;
+  div.innerHTML = `<span class="prefix">${prefix}</span><span class="content">${content}</span>`;
+  transcript.appendChild(div);
+  transcript.scrollTop = transcript.scrollHeight;
+  return div;
+}
+
+// ── Tag handler ───────────────────────────────────────────────────────────────
+
+function handleTag(tag) {
+  tag = tag.trim();
+
+  if (tag.startsWith('AUDIO ')) {
+    const src = tag.slice(6);
+    addLine('tag-line', '▶ audio', src + ' (TTS fallback active)');
+    // stub: would play audio file here
+    return;
+  }
+  if (tag.startsWith('BREAK ')) {
+    addLine('tag-line', '⏸ break', tag.slice(6));
+    // stub: runtime would pause TTS here
+    return;
+  }
+  if (tag.startsWith('TRANSFER ')) {
+    const dest = tag.slice(9);
+    addLine('transfer-line', '↗ xfer', dest);
+    setState('TRANSFERRING');
+    // stub: SIP transfer would happen here
+    return;
+  }
+  if (tag.startsWith('SUBMIT_POST ')) {
+    const parts = tag.slice(12).split(' ');
+    const url = parts[0];
+    const namelist = parts.slice(1);
+    const params = {};
+    namelist.forEach(v => { params[v] = story.variablesState[v] || ''; });
+    addLine('tag-line', '→ post', `${url} ${JSON.stringify(params)}`);
+    // stub: would fetch(url, {method:'POST', body: JSON.stringify(params)})
+    return;
+  }
+  if (tag.startsWith('SUBMIT ')) {
+    addLine('tag-line', '→ get', tag.slice(7));
+    return;
+  }
+  if (tag.startsWith('COLLECT ')) {
+    collectVar = tag.slice(8).trim();
+    return; // handled in renderChoices
+  }
+  if (tag.startsWith('GRAMMAR_VOICE ')) {
+    addLine('tag-line', '◎ gram', tag.slice(14) + ' (stub: intent map)');
+    return;
+  }
+  if (tag.startsWith('GRAMMAR_DTMF ')) {
+    addLine('tag-line', '# dtmf', tag.slice(13));
+    return;
+  }
+  if (tag.startsWith('REDIRECT ')) {
+    addLine('tag-line', '⤴ redir', tag.slice(9));
+    return;
+  }
+}
+
+// ── Main advance loop ─────────────────────────────────────────────────────────
+
+function advance() {
+  collectVar = null;
+  collectChoiceIndex = null;
+
+  while (story.canContinue) {
+    const text = story.Continue().trim();
+    const tags = story.currentTags;
+
+    tags.forEach(handleTag);
+
+    if (text) {
+      addLine('prompt', '311', text);
+    }
+  }
+
+  renderChoices();
+}
+
+function renderChoices() {
+  choicesGrid.innerHTML = '';
+  asrStub.classList.remove('active');
+  collectArea.classList.remove('active');
+
+  const choices = story.currentChoices;
+
+  if (choices.length === 0) {
+    if (story.currentErrors && story.currentErrors.length) {
+      addLine('error-line', '! err', story.currentErrors.join('; '));
+    }
+    addLine('system', '—', 'Session ended.');
+    setState('ENDED');
+
+    const restartBtn = document.createElement('button');
+    restartBtn.id = 'restart-btn';
+    restartBtn.textContent = 'New session';
+    restartBtn.onclick = init;
+    choicesGrid.appendChild(restartBtn);
+    return;
+  }
+
+  // Show ASR stub indicator
+  asrStub.classList.add('active');
+  setState('LISTENING');
+
+  // Check for COLLECT mode
+  if (collectVar) {
+    // Find the "collected" choice to fire after input
+    collectChoiceIndex = choices.findIndex(c =>
+      c.text.toLowerCase().includes('collected')
+    );
+    showCollect();
+    return;
+  }
+
+  // Render clickable choices (skip noinput/nomatch as buttons—they're injected by runtime)
+  const visible = choices.filter(c =>
+    c.text !== 'noinput' && c.text !== 'nomatch'
+  );
+
+  visible.forEach((choice, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'choice-btn';
+
+    // Key hint: number for first 9
+    const keyNum = i + 1;
+    const hint = keyNum <= 9 ? `<span class="key-hint">${keyNum}</span>` : '';
+
+    btn.innerHTML = `${hint}${choice.text}`;
+    btn.onclick = () => choose(choice.index);
+    choicesGrid.appendChild(btn);
+  });
+
+  footerInfo.textContent = `${choices.length} choices · press 1–${Math.min(visible.length,9)} or click`;
+}
+
+function showCollect() {
+  collectArea.classList.add('active');
+  asrStub.classList.remove('active');
+  collectInput.value = '';
+  collectInput.focus();
+  setState('COLLECTING');
+  footerInfo.textContent = `Collecting: ${collectVar} · type and submit`;
+}
+
+function submitCollect() {
+  const val = collectInput.value.trim();
+  if (!val) return;
+  addLine('user', 'you', `[${collectVar}] "${val}"`);
+  story.variablesState[collectVar] = val;
+  collectArea.classList.remove('active');
+  if (collectChoiceIndex !== null) {
+    story.ChooseChoiceIndex(collectChoiceIndex);
+    advance();
+  }
+}
+
+function choose(index) {
+  const choice = story.currentChoices[index];
+  if (!choice) return;
+  addLine('user', 'you', choice.text);
+  story.ChooseChoiceIndex(index);
+  advance();
+}
+
+// Help interception (global, fired from text input or special button)
+function triggerHelp() {
+  addLine('user', 'you', 'help');
+  story.ChoosePathString('transfer_to_operator');
+  advance();
+}
+
+// Keyboard: number keys select choices
+document.addEventListener('keydown', e => {
+  if (collectArea.classList.contains('active')) return; // let input handle it
+
+  const n = parseInt(e.key);
+  if (!isNaN(n) && n >= 1) {
+    const visible = story.currentChoices.filter(c =>
+      c.text !== 'noinput' && c.text !== 'nomatch'
+    );
+    const target = visible[n - 1];
+    if (target) choose(target.index);
+  }
+  if (e.key === 'h' || e.key === 'H') triggerHelp();
+});
+
+collectInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitCollect();
+});
+document.getElementById('collect-submit').onclick = submitCollect;
+
+// ── Story variable overrides for demo realism ─────────────────────────────────
+
+function patchExternalFunctions() {
+  // Override EXT functions INK would call
+  story.ObserveVariable('location', (_, val) => {
+    // could update UI
+  });
+
+  // Patch parkingStatus from "API" (stub)
+  story.variablesState['parkingStatus'] = 'suspended';
+
+  // INK doesn't support function return values easily in this context;
+  // the reference number we handle via tag SUBMIT response in real impl
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+function init() {
+  transcript.innerHTML = '';
+  choicesGrid.innerHTML = '';
+  asrStub.classList.remove('active');
+  collectArea.classList.remove('active');
+  visitCounts = {};
+  collectVar = null;
+
+  try {
+    const CompilerClass = inkjs.Compiler || (inkjs.compiler && inkjs.compiler.Compiler);
+    if (!CompilerClass) throw new Error('inkjs.Compiler not found in bundle - check CDN URL');
+    const compiler = new CompilerClass(INK_SOURCE);
+    story = compiler.Compile();
+  } catch (e) {
+    addLine('error-line', '! compile', e.message || String(e));
+    setState('ERROR');
+    return;
+  }
+
+  patchExternalFunctions();
+
+  addLine('system', 'sys', 'INK runtime ready · session started');
+  setState('RUNNING');
+  advance();
+}
+
+init();
+</script>
+</body>
+</html>

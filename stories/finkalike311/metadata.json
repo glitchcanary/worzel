@@ -1,0 +1,19 @@
+{
+  "title": "VoiceXML/Open311 Example",
+  "author": "Example (F)Ink version by danbri@danbri.org",
+  "description": "Can we do 311?",
+  "defaultVoices": {
+    "narrator": "alloy",
+    "cat": "shimmer"
+  },
+  "finkData": {
+    "@context": "http://xmlns.com/foaf/0.1/",
+    "characters": [
+      {
+        "@type": "foaf:Person",
+        "foaf:name": "Col. Row",
+        "foaf:knows": ["narrator"]
+      }
+    ]
+  }
+}
