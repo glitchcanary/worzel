@@ -1,0 +1,19 @@
+{
+  "title": "WarClaude Episode 1",
+  "author": "WarClaude.tech",
+  "description": "Training materials.",
+  "defaultVoices": {
+    "narrator": "alloy",
+    "cat": "shimmer"
+  },
+  "finkData": {
+    "@context": "http://xmlns.com/foaf/0.1/",
+    "characters": [
+      {
+        "@type": "foaf:Person",
+        "foaf:name": "General Blink (retired)",
+        "foaf:knows": ["narrator"]
+      }
+    ]
+  }
+}
