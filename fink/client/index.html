@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fink — Voice Interactive Fiction</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #1a1a2e;
+      font-family: 'Georgia', 'Times New Roman', serif;
+      padding: 20px;
+    }
+    fink-app {
+      width: 100%;
+      max-width: 520px;
+      height: 700px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      --fink-bg: #16213e;
+      --fink-header-bg: #0f3460;
+      --fink-text: #e8e8e8;
+      --fink-text-secondary: #8b8fa3;
+      --fink-text-muted: #5a5e73;
+      --fink-border: #1a1a3e;
+      --fink-narration-bg: #1a2744;
+      --fink-choice-bg: #1e3a5f;
+      --fink-choice-hover: #264d7a;
+      --fink-choice-active: #2d6aa0;
+      --fink-user-bg: #533483;
+      --fink-accent: #e94560;
+      --fink-primary: #0f3460;
+    }
+  </style>
+</head>
+<body>
+  <fink-app></fink-app>
+  <script type="module" src="fink.js"></script>
+</body>
+</html>

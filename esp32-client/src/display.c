@@ -22,6 +22,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -41,6 +42,11 @@ static const char *TAG = "display";
 
 static esp_lcd_panel_handle_t panel = NULL;
 static esp_lcd_panel_io_handle_t panel_io = NULL;
+
+/* Semaphore signalled by SPI ISR when DMA transfer completes.
+ * The flush callback waits on this before calling flush_ready,
+ * ensuring the buffer isn't reused while DMA is still reading it. */
+static SemaphoreHandle_t flush_sem = NULL;
 
 /* LVGL UI elements */
 static lv_obj_t *status_bar = NULL;
@@ -175,19 +181,27 @@ static void clock_update_cb(lv_timer_t *timer) {
     }
 }
 
-/* LVGL flush callback: byte-swap, send to panel, ALWAYS signal flush_ready.
+/* SPI DMA completion ISR — signals flush_sem so the flush callback
+ * knows the buffer is safe to reuse. Registered AFTER lvgl_port_add_disp
+ * to override its default callback (which calls flush_ready directly,
+ * creating a race with our byte-swapping flush callback). */
+static bool IRAM_ATTR flush_done_isr(esp_lcd_panel_io_handle_t io,
+                                      esp_lcd_panel_io_event_data_t *edata,
+                                      void *user_ctx) {
+    BaseType_t woken = pdFALSE;
+    if (flush_sem) {
+        xSemaphoreGiveFromISR(flush_sem, &woken);
+    }
+    return (woken == pdTRUE);
+}
+
+/* LVGL flush callback: byte-swap RGB565 for SH8601 big-endian QSPI,
+ * then wait for DMA completion before signalling flush_ready.
  *
- * Three things this does that the esp_lvgl_port default doesn't handle:
- *
- * 1. Byte-swap RGB565: ESP32 is little-endian, SH8601 QSPI expects big-endian.
- *    Although swap_bytes=true is set in the display config, replacing the flush
- *    callback loses esp_lvgl_port's swap logic, so we must do it ourselves.
- *
- * 2. Error resilience: if SPI fails, we log and skip rather than hanging.
- *
- * 3. Unconditional flush_ready: the SPI ISR may never fire after an error,
- *    causing LVGL to spin forever in wait_for_flushing() (watchdog crash).
- *    We always signal completion. Double-calling is harmless in LVGL 9. */
+ * Without the wait, LVGL reuses the buffer while SPI DMA is still
+ * reading it — corrupting pixels ("white speckles at top of screen").
+ * A 368×20 partial render at 40MHz QSPI takes ~0.4ms per transfer,
+ * so the wait adds negligible latency. */
 static void safe_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     /* Swap bytes of each RGB565 pixel for big-endian SH8601 */
     int pixel_count = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
@@ -200,6 +214,10 @@ static void safe_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
         area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Display flush failed (%s), skipping frame", esp_err_to_name(ret));
+    } else {
+        /* Wait for SPI DMA to complete — buffer is safe to reuse after this.
+         * 100ms timeout as safety net; actual transfer takes < 1ms. */
+        xSemaphoreTake(flush_sem, pdMS_TO_TICKS(100));
     }
 
     lv_display_flush_ready(disp);
@@ -285,7 +303,7 @@ static void build_ui(void) {
     lv_obj_remove_style_all(convo_container);
     lv_obj_set_pos(convo_container, 0, STATUS_BAR_H);
     lv_obj_set_size(convo_container, LCD_H_RES, CONVO_H);
-    lv_obj_set_style_bg_color(convo_container, lv_color_make(0, 0, 60), 0);  /* dark blue DEBUG */
+    lv_obj_set_style_bg_color(convo_container, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(convo_container, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(convo_container, 8, 0);
     lv_obj_set_style_pad_top(convo_container, 4, 0);
@@ -295,11 +313,11 @@ static void build_ui(void) {
 
     /* Single label for all conversation text */
     convo_label = lv_label_create(convo_container);
-    lv_label_set_text(convo_label, "Hello from Worzel");  /* visible init text */
+    lv_label_set_text(convo_label, "");
     lv_obj_set_width(convo_label, LCD_H_RES - 16);  /* 8px padding each side */
     lv_label_set_long_mode(convo_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(convo_label, lv_color_make(0xFF, 0xFF, 0x00), 0);  /* yellow DEBUG */
-    lv_obj_set_style_text_font(convo_label, &lv_font_montserrat_28, 0);  /* direct, not array */
+    lv_obj_set_style_text_color(convo_label, lv_color_make(0xEE, 0xEE, 0xEE), 0);
+    lv_obj_set_style_text_font(convo_label, font_sizes[font_idx], 0);
 
     /* ---- Action bar (bottom, fixed) ---- */
     action_bar = lv_obj_create(scr);
@@ -555,12 +573,16 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
              (int)lv_display_get_vertical_resolution(lvgl_disp),
              LCD_H_RES, LCD_V_RES);
 
-    /* Replace the default flush callback with our safe wrapper.
-     * esp_lvgl_port's default relies on the SPI ISR to call flush_ready,
-     * but if a single SPI error corrupts driver state, the ISR may never
-     * fire and LVGL hangs forever in wait_for_flushing() (watchdog crash).
-     * Our wrapper always signals completion. swap_bytes=true in disp_cfg
-     * means byte-swapping is already done before our callback runs. */
+    /* Replace the default flush callback with our byte-swapping wrapper.
+     * Also register our own SPI ISR callback (overriding lvgl_port's) so
+     * we can synchronize: flush waits for DMA completion via semaphore
+     * before calling flush_ready, preventing buffer corruption. */
+    flush_sem = xSemaphoreCreateBinary();
+    assert(flush_sem);
+    const esp_lcd_panel_io_callbacks_t flush_cbs = {
+        .on_color_trans_done = flush_done_isr,
+    };
+    esp_lcd_panel_io_register_event_callbacks(panel_io, &flush_cbs, NULL);
     lv_display_set_flush_cb(lvgl_disp, safe_flush_cb);
 
     /* Remove the default theme entirely — it silently applies card styles,
@@ -662,21 +684,9 @@ void display_status(int slot, const char *text, uint16_t color) {
     }
 }
 
-static int convo_call_count = 0;
-
 void display_conversation(const char *text, uint16_t color) {
     if (!convo_label || !convo_container || !text || !text[0]) return;
     (void)color;
-
-    convo_call_count++;
-    if (convo_call_count <= 5) {
-        lv_obj_t *parent = lv_obj_get_parent(convo_label);
-        ESP_LOGI(TAG, "convo[%d]: \"%.*s\" parent=%s label_y=%d scroll_y=%d",
-                 convo_call_count, 30, text,
-                 parent == convo_container ? "OK" : "WRONG!",
-                 (int)lv_obj_get_y(convo_label),
-                 (int)lv_obj_get_scroll_y(convo_container));
-    }
 
     /* Append new text to buffer */
     size_t cur_len = strlen(convo_buf);

@@ -1,0 +1,19 @@
+{
+  "title": "The Enchanted Garden",
+  "author": "Worzel Test Suite",
+  "description": "A short voice-navigable story about a mysterious garden and a talking cat.",
+  "defaultVoices": {
+    "narrator": "alloy",
+    "cat": "shimmer"
+  },
+  "finkData": {
+    "@context": "http://xmlns.com/foaf/0.1/",
+    "characters": [
+      {
+        "@type": "foaf:Person",
+        "foaf:name": "Mr Whiskers",
+        "foaf:knows": ["narrator"]
+      }
+    ]
+  }
+}
