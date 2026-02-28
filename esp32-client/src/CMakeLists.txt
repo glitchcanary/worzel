@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "main.c" "display.c" "display_bitmap.c" "font8x8.c"
     INCLUDE_DIRS "."
-    REQUIRES driver esp_wifi esp_event esp_netif esp_http_client nvs_flash esp_websocket_client micro-opus esp_lcd esp_io_expander_tca9554 esp_lvgl_port esp_lcd_touch_ft5x06
+    REQUIRES driver esp_wifi esp_event esp_netif esp_http_client nvs_flash esp_websocket_client micro-opus esp_lcd esp_io_expander_tca9554 lvgl esp_lcd_touch_ft5x06
 )
 
 # Note: micro-opus hardcodes floating-point for ESP32-S3 (has hardware FPU).

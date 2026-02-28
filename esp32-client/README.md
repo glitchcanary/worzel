@@ -64,12 +64,13 @@ pio run -e esp32c6-lcd -t upload       # Waveshare ESP32-C6 1.69" LCD
 
 ## How It Works
 
-1. **Boot** -- ES8311 codec init (I2C), I2S audio bus, Opus encoder/decoder
+1. **Boot** -- ES8311 codec init (I2C), I2S audio bus, Opus encoder/decoder, LVGL display
 2. **WiFi** -- connects to configured 2.4GHz network
 3. **Auth** -- HTTP(S) POST to `/api/ota` on Worzel server, receives token + WebSocket URL
 4. **WebSocket** -- connects with token, sends `hello` with audio params (Opus 16kHz mono)
 5. **Push-to-talk** -- hold button to record, release to stop. Mic audio is Opus-encoded and streamed.
 6. **Playback** -- server responds with Opus-encoded TTS audio, decoded and played through speaker
+7. **Display** -- status icons update on connect, conversation text scrolls as STT/TTS messages arrive
 
 ## Project Structure
 
@@ -80,19 +81,31 @@ esp32-client/
   sdkconfig.local         # Your WiFi credentials (gitignored)
   partitions_16mb.csv     # Partition table for S3 AMOLED (16MB flash)
   flash.ps1               # Windows build+flash helper
+  flash.sh                # Linux/WSL2 build+flash helper
   src/
-    main.c                # Application code
+    main.c                # Application entry + WiFi/Auth/WS/Audio
+    display.c             # LVGL 9.x display (manual init, no esp_lvgl_port)
+    display.h             # Display abstraction API
+    display_bitmap.c      # Fallback bitmap display (8x8 font, no LVGL)
+    font8x8.c             # 8x8 bitmap font data
     board.h               # Per-board pin definitions
     CMakeLists.txt         # ESP-IDF component config + build workarounds
     Kconfig.projbuild     # Menuconfig options
     idf_component.yml     # ESP-IDF managed component dependencies
 ```
 
+## Display
+
+The S3 AMOLED uses LVGL 9.x with manual initialization (no `esp_lvgl_port`). The `esp_lvgl_port` abstraction was removed because it silently applies themes and registers conflicting SPI ISR callbacks that cause rendering corruption on QSPI displays.
+
+Display layout: status bar (WiFi/Auth/WS icons, clock) | scrollable conversation area | action bar (Talk/Toggle/More buttons). Touch input via FT3168 (FT5x06-compatible).
+
+Boards without LVGL fall back to `display_bitmap.c` (direct framebuffer + 8x8 bitmap font).
+
 ## Known Issues
 
 - **GCC 14 ICE in esp_lcd** -- the RGB LCD panel driver crashes the compiler on ESP32-S3. Worked around with per-file `-O0` in CMakeLists.txt. The QSPI/SPI LCD drivers (used by our boards) are unaffected.
-- **Display not driven yet** -- firmware is audio-only. AMOLED/LCD support planned using LVGL.
-- **Audio untested on hardware** -- Opus encode/decode pipeline is written but awaits hardware validation.
+- **Touch read callback not yet wired** -- touch hardware is initialized but the LVGL input device read callback is a placeholder.
 
 ## More Info
 
