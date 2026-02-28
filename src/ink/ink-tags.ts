@@ -23,6 +23,8 @@ export interface ParsedTags {
   inputMode?: 'freeform';
   pauseMs?: number;
   finkLink?: string;
+  image?: string;
+  basehref?: string;
   foaf: Record<string, string>;
   raw: string[];
 }
@@ -79,6 +81,12 @@ export function parseTags(tags: string[]): ParsedTags {
       case 'fink':
         result.finkLink = value;
         break;
+      case 'image':
+        result.image = value;
+        break;
+      case 'basehref':
+        result.basehref = value;
+        break;
     }
   }
 
@@ -98,6 +106,8 @@ export function mergeTags(existing: ParsedTags, incoming: ParsedTags): ParsedTag
     inputMode: incoming.inputMode ?? existing.inputMode,
     pauseMs: incoming.pauseMs ?? existing.pauseMs,
     finkLink: incoming.finkLink ?? existing.finkLink,
+    image: incoming.image ?? existing.image,
+    basehref: incoming.basehref ?? existing.basehref,
     foaf: { ...existing.foaf, ...incoming.foaf },
     raw: [...existing.raw, ...incoming.raw],
   };

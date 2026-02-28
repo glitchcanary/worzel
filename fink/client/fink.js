@@ -253,6 +253,18 @@ class FinkStory extends HTMLElement {
     this._choices = this.shadowRoot.querySelector('.choices');
   }
 
+  /** Add an image to the narration area. */
+  addImage(src) {
+    this._clearEmpty();
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = '';
+    img.style.cssText = 'max-width:100%;border-radius:8px;margin:8px 0;';
+    img.onerror = () => img.remove();
+    this._narration.appendChild(img);
+    this._scrollToBottom();
+  }
+
   /** Add narration text (from story engine or LLM). */
   addNarration(text, speaker) {
     this._clearEmpty();
@@ -322,8 +334,7 @@ class FinkStory extends HTMLElement {
   showEnded() {
     this._choices.innerHTML = `
       <div class="end-card">
-        The story has ended.
-        <br><button onclick="this.dispatchEvent(new CustomEvent('fink-restart', { bubbles: true, composed: true }))">Start Over</button>
+        <button onclick="this.dispatchEvent(new CustomEvent('fink-restart', { bubbles: true, composed: true }))">Start Over</button>
       </div>`;
   }
 
@@ -657,6 +668,7 @@ class FinkApp extends HTMLElement {
       if (msg.narration && msg.narration.length > 0) {
         inkNarrating = true;
         for (const seg of msg.narration) {
+          if (seg.image) story.addImage(seg.image);
           story.addNarration(seg.text, seg.speaker);
         }
       }

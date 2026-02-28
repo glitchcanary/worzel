@@ -206,10 +206,13 @@ ${choiceList}
 The player said: "${asrText}"
 
 Classify the player's intent:
-- If they want to pick a choice, respond: CHOICE:N (where N is the choice number from the list above)
-- If they're asking about the story world or a character, respond: DISCUSSION
-- If they're asking what they can do or want help, respond: META
+- If they clearly want one of the listed choices, respond: CHOICE:N (the choice number)
+- If they are asking a QUESTION about the story world or a character (e.g. "what is this place?", "who are you?"), respond: DISCUSSION
+- If they are asking what they can do or want help (e.g. "what are my options?"), respond: META
+- If they are trying to perform an ACTION that is not one of the listed choices (e.g. "pet the cat", "eat it", "fly away", "open the door"), respond: NONE
 - If nothing matches, respond: NONE
+
+IMPORTANT: Only use DISCUSSION for genuine questions. Commands, actions, and requests that don't match a choice are NONE.
 
 Respond with ONLY the classification word/code, nothing else.`,
     }];

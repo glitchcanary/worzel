@@ -86,11 +86,14 @@ static volatile bool hot_mic = false;
 #define ACTION_BAR_H  100
 #define CONVO_H       (LCD_V_RES - STATUS_BAR_H - ACTION_BAR_H)
 
-#define LVGL_DRAW_BUF_LINES   10
+/* 50 lines = 11.2% of screen — Espressif recommends 10-25% for good perf.
+   Each buffer: 368 * 50 * 2 = 36,800 bytes. Two buffers = 73.6KB.
+   If internal RAM is too tight (check heap log at boot), reduce to 40. */
+#define LVGL_DRAW_BUF_LINES   50
 #define LVGL_TICK_PERIOD_MS    2
 #define LVGL_TASK_MAX_DELAY_MS 500
 #define LVGL_TASK_MIN_DELAY_MS (1000 / CONFIG_FREERTOS_HZ)
-#define LVGL_TASK_STACK_SIZE   (8 * 1024)
+#define LVGL_TASK_STACK_SIZE   (12 * 1024)
 #define LVGL_TASK_PRIORITY     2
 
 /* ---- Font size cycling ---- */
@@ -231,33 +234,28 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
 }
 #pragma GCC diagnostic pop
 
-/* ---- SPI DMA ISR + flush callback (identical to working lvgl-tests) ---- */
+/* ---- DMA flush with semaphore ----
+ *
+ * flush_cb starts the DMA transfer, then blocks on flush_sem until the
+ * ISR signals completion. This yields the CPU during the transfer (good
+ * for watchdog feeding) while still using double buffers. LVGL renders
+ * into the next buffer after flush_ready is called. */
 
 static bool IRAM_ATTR flush_done_isr(esp_lcd_panel_io_handle_t io,
                                       esp_lcd_panel_io_event_data_t *edata,
                                       void *user_ctx) {
     BaseType_t woken = pdFALSE;
-    if (flush_sem) {
-        xSemaphoreGiveFromISR(flush_sem, &woken);
-    }
-    return (woken == pdTRUE);
+    xSemaphoreGiveFromISR(flush_sem, &woken);
+    return woken;
 }
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
-    int pixel_count = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
-    uint16_t *p = (uint16_t *)px_map;
-    for (int i = 0; i < pixel_count; i++) {
-        p[i] = (p[i] >> 8) | (p[i] << 8);
-    }
-
-    esp_err_t ret = esp_lcd_panel_draw_bitmap(panel,
+    /* No byte-swap needed — LV_COLOR_FORMAT_RGB565_SWAPPED makes LVGL
+       render directly in the SH8601's big-endian byte order. */
+    esp_lcd_panel_draw_bitmap(panel,
         area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Flush failed: %s", esp_err_to_name(ret));
-    } else {
-        xSemaphoreTake(flush_sem, pdMS_TO_TICKS(100));
-    }
-
+    /* Block until DMA completes — yields CPU, feeds watchdog */
+    xSemaphoreTake(flush_sem, portMAX_DELAY);
     lv_display_flush_ready(disp);
 }
 
@@ -660,27 +658,31 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus) {
 
     lv_display_t *display = lv_display_create(LCD_H_RES, LCD_V_RES);
 
-    /* Both draw buffers must be in DMA-capable internal RAM (SPI DMA
-       can't access PSRAM). Using 10 lines instead of 20 to halve the
-       internal RAM cost (~14KB total vs ~29KB), leaving room for the
-       mbedTLS heap allocation needed by WebSocket TLS. */
+    /* Semaphore for DMA flush synchronization */
+    flush_sem = xSemaphoreCreateBinary();
+
+    /* Draw buffers: 50 lines = 11.2% of screen (Espressif recommends 10-25%).
+       MUST use PSRAM — internal RAM is too scarce (~80KB free, shared with
+       mbedTLS ~50KB, audio tasks, WiFi). ESP32-S3 GDMA can access PSRAM
+       (CONFIG_SOC_PSRAM_DMA_CAPABLE). PSRAM is slower than internal but
+       the larger buffer (fewer flush cycles) more than compensates. */
     size_t draw_buf_sz = LCD_H_RES * LVGL_DRAW_BUF_LINES * sizeof(lv_color16_t);
-    void *buf1 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    assert(buf1);
-    void *buf2 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    assert(buf2);
+    void *buf1 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
+    void *buf2 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
+    assert(buf1 && buf2);
+    ESP_LOGI(TAG, "Draw buffers: %zu bytes x2, %d lines (PSRAM)", draw_buf_sz, LVGL_DRAW_BUF_LINES);
     lv_display_set_buffers(display, buf1, buf2, draw_buf_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
-    lv_display_set_color_format(display, LV_COLOR_FORMAT_RGB565);
+    /* RGB565_SWAPPED: LVGL renders in big-endian byte order matching the
+       SH8601 panel natively — eliminates the per-pixel byte-swap in flush */
+    lv_display_set_color_format(display, LV_COLOR_FORMAT_RGB565_SWAPPED);
     lv_display_set_flush_cb(display, lvgl_flush_cb);
 
-    /* DMA completion semaphore + ISR callback */
-    flush_sem = xSemaphoreCreateBinary();
-    assert(flush_sem);
+    /* DMA completion ISR — signals flush_sem so flush_cb can unblock */
     const esp_lcd_panel_io_callbacks_t cbs = {
         .on_color_trans_done = flush_done_isr,
     };
-    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(panel_io, &cbs, display));
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(panel_io, &cbs, NULL));
 
     /* LVGL tick timer */
     const esp_timer_create_args_t tick_args = {

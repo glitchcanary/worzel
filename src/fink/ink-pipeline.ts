@@ -163,19 +163,10 @@ export class InkPipeline {
 
         case 'no_match':
           this.noMatchCount++;
-          if (this.noMatchCount >= 3 && state.choices.length > 0) {
-            // After 3 consecutive no_match, auto-read choices
-            this.noMatchCount = 0;
-            await this.handleLlmResponse(
-              session, transport, inkSession, opusEncoder,
-              asrText, 'meta', abortController.signal,
-            );
-          } else {
-            await this.handleLlmResponse(
-              session, transport, inkSession, opusEncoder,
-              asrText, 'no_match', abortController.signal,
-            );
-          }
+          // Don't trust the LLM to list choices — use template + real choice list
+          await this.handleNoMatch(
+            session, transport, inkSession, opusEncoder, abortController.signal,
+          );
           break;
       }
 
@@ -328,6 +319,49 @@ export class InkPipeline {
         session, transport, opusEncoder, result.narration, signal,
       );
     }
+  }
+
+  /** Short phrases for no_match responses — spoken before reading real choices. */
+  private static readonly NO_MATCH_PHRASES = [
+    "That's not one of the options right now.",
+    "I don't think that's available.",
+    "That's not something you can do here.",
+    "Hmm, that's not an option.",
+  ];
+
+  /**
+   * Handle no_match: speak a short template phrase, then read the real choices aloud.
+   * Does NOT use the LLM — prevents fabrication of choices or narrative events.
+   */
+  private async handleNoMatch(
+    session: Session,
+    transport: Transport,
+    inkSession: InkSession,
+    opusEncoder: OpusEncoder,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const phrase = InkPipeline.NO_MATCH_PHRASES[
+      Math.floor(Math.random() * InkPipeline.NO_MATCH_PHRASES.length)
+    ]!;
+
+    await transport.sendText(JSON.stringify({
+      type: 'tts', state: 'start', session_id: session.id,
+    }));
+
+    const rateController = new AudioRateController();
+    await this.speakSegment(session, transport, opusEncoder, rateController, phrase, signal);
+
+    await transport.sendText(JSON.stringify({
+      type: 'tts', state: 'stop', session_id: session.id,
+    }));
+
+    // Read the actual choices from the Ink engine
+    const state = inkSession.getState();
+    if (state.choices.length > 0 && !signal.aborted) {
+      await this.readChoicesAloud(session, transport, opusEncoder, state.choices, signal);
+    }
+
+    session.addDialogue('assistant', phrase);
   }
 
   /**
@@ -583,6 +617,7 @@ export class InkPipeline {
         speaker: n.speaker,
         voice: n.voice,
         mood: n.mood,
+        ...(n.tags.image ? { image: n.tags.image } : {}),
       })),
       choices: state.choices.map(c => ({
         index: c.index,

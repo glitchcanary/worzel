@@ -39,6 +39,7 @@ import { RateLimiter } from '../server/middleware/rate-limit.js';
 import { validateMessage } from '../protocol/validator.js';
 import { routeMessage } from '../protocol/router.js';
 import { StoryManager } from '../ink/story-manager.js';
+import { ExternalStoryLoader } from '../ink/external-story-loader.js';
 import { InkSession } from '../ink/ink-session.js';
 import { InkPipeline } from './ink-pipeline.js';
 
@@ -66,10 +67,19 @@ async function handleInkChoose(
   const choices = inkSession.getChoices();
   const choice = choices.find(c => c.index === choiceIndex);
   if (choice?.tags.finkLink) {
-    const targetId = choice.tags.finkLink;
-    const storyJson = storyManager.getStoryJson(targetId);
+    let targetId = choice.tags.finkLink;
+
+    // Try local lookup first, then external resolution
+    let storyJson = storyManager.getStoryJson(targetId);
     if (!storyJson) {
-      logger.warn({ targetId }, 'FINK: link target story not found');
+      const resolved = await storyManager.resolveExternalLink(targetId, inkSession.storyId);
+      if (resolved) {
+        targetId = resolved;
+        storyJson = storyManager.getStoryJson(resolved);
+      }
+    }
+    if (!storyJson) {
+      logger.warn({ targetId }, 'FINK: link target story not found (local + external)');
       await pipeline.processDirectChoice(session, transport, inkSession, choiceIndex);
       return inkSession;
     }
@@ -141,6 +151,17 @@ async function main(): Promise<void> {
   const projectRoot = join(dirname(currentFile), '..', '..');
   const storiesDir = process.env['FINK_STORIES_DIR'] ?? join(projectRoot, 'stories');
   await storyManager.loadFromDirectory(storiesDir);
+
+  // Configure external .fink.js loading (if allowed hosts specified)
+  const externalHosts = process.env['FINK_EXTERNAL_HOSTS'];
+  if (externalHosts) {
+    const hosts = externalHosts.split(',').map(h => h.trim()).filter(Boolean);
+    if (hosts.length > 0) {
+      const loader = new ExternalStoryLoader({ allowedHosts: hosts, logger });
+      storyManager.setExternalLoader(loader);
+      logger.info({ hosts }, 'External .fink.js loading enabled');
+    }
+  }
 
   const stories = storyManager.listStories();
   if (stories.length === 0) {
@@ -253,16 +274,28 @@ async function main(): Promise<void> {
       tts: providers.tts,
       logger: sessionLogger,
       onFinkLink: async (targetId, sess, trans) => {
-        const json = storyManager.getStoryJson(targetId);
+        // Try local lookup first, then external resolution
+        let resolvedId = targetId;
+        let json = storyManager.getStoryJson(resolvedId);
         if (!json) {
-          sessionLogger.warn({ targetId }, 'FINK: link target not found');
+          const currentInk = inkSessions.get(sess.id);
+          const resolved = await storyManager.resolveExternalLink(
+            targetId, currentInk?.storyId ?? '',
+          );
+          if (resolved) {
+            resolvedId = resolved;
+            json = storyManager.getStoryJson(resolved);
+          }
+        }
+        if (!json) {
+          sessionLogger.warn({ targetId }, 'FINK: link target not found (local + external)');
           return null;
         }
-        const meta = storyManager.getMetadata(targetId);
-        const newInk = new InkSession(targetId, json, meta?.defaultVoices?.['narrator']);
+        const meta = storyManager.getMetadata(resolvedId);
+        const newInk = new InkSession(resolvedId, json, meta?.defaultVoices?.['narrator']);
         inkSessions.set(sess.id, newInk);
         inkSession = newInk;
-        sessionLogger.info({ to: targetId }, 'Voice FINK: link switch');
+        sessionLogger.info({ to: resolvedId }, 'Voice FINK: link switch');
 
         const initial = newInk.continue();
         const openingText = initial.narration.map(n => n.text).join('\n');
@@ -282,7 +315,7 @@ async function main(): Promise<void> {
           choices: initial.choices.map(c => ({ index: c.index, text: c.text })),
           isEnded: newInk.isEnded,
           turnCount: 0,
-          storyId: targetId,
+          storyId: resolvedId,
         }));
 
         await pipeline.narrateAndReadChoices(sess, trans, initial.narration, initial.choices);
@@ -360,14 +393,19 @@ async function main(): Promise<void> {
       try { raw = JSON.parse(data); } catch { /* invalid JSON handled below by validator */ }
 
       // Handle ink messages (Fink extension — not in Worzel's InboundMessageSchema)
-      if (raw?.type === 'ink' && inkSession) {
+      if (raw?.type === 'ink') {
+        // Always read the CURRENT InkSession from the map (not stale closure variable)
+        // to avoid race conditions when taps arrive during narration playback.
+        const currentInk = inkSessions.get(session.id);
+        if (!currentInk) return;
+
         sessionLogger.info({ action: raw.action, choiceIndex: raw.choice_index }, 'Ink message');
         if (raw.action === 'choose' && typeof raw.choice_index === 'number') {
           // Abort any in-flight narration/TTS before starting the new choice
           session.abortController?.abort();
           pipeline.clearAudio();
           inkSession = await handleInkChoose(
-            raw.choice_index, session, transport, inkSession, pipeline, sessionLogger,
+            raw.choice_index, session, transport, currentInk, pipeline, sessionLogger,
             storyManager, inkSessions,
           );
         }
@@ -400,8 +438,10 @@ async function main(): Promise<void> {
       if (msg.type === 'listen' && msg.state === 'stop') {
         await routeMessage(msg, { session, transport, logger: sessionLogger });
 
-        if (inkSession) {
-          pipeline.process(session, transport, inkSession).catch(err => {
+        // Always read current InkSession from map (not stale closure)
+        const currentInk = inkSessions.get(session.id);
+        if (currentInk) {
+          pipeline.process(session, transport, currentInk).catch(err => {
             sessionLogger.error({ err }, 'Ink pipeline error');
           });
         }
