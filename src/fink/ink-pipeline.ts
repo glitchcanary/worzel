@@ -17,7 +17,7 @@ import type { Transport } from '../transport/interface.js';
 import type { ASRProvider, LLMProvider, TTSProvider, ChatMessage } from '../providers/interface.js';
 import type { Session } from '../session/session.js';
 import { InkSession } from '../ink/ink-session.js';
-import type { NarrationSegment } from '../ink/ink-session.js';
+import type { NarrationSegment, InkChoice } from '../ink/ink-session.js';
 import { InkRouter } from '../ink/ink-router.js';
 import type { Classification } from '../ink/ink-router.js';
 import { buildDiscussionPrompt, buildMetaPrompt, buildNoMatchPrompt } from '../ink/ink-prompt-builder.js';
@@ -29,11 +29,17 @@ import { stripThinkTags } from '../utils/sanitize.js';
 import { TextSegmenter } from '../pipeline/text-segmenter.js';
 import { AudioRateController } from '../pipeline/audio-rate-controller.js';
 
+/** Callback for when a choice with a FINK: link is selected by voice. */
+export type FinkLinkHandler = (
+  storyId: string, session: Session, transport: Transport,
+) => Promise<InkSession | null>;
+
 export interface InkPipelineOptions {
   asr: ASRProvider;
   llm: LLMProvider;
   tts: TTSProvider;
   logger: pino.Logger;
+  onFinkLink?: FinkLinkHandler;
 }
 
 export class InkPipeline {
@@ -42,6 +48,7 @@ export class InkPipeline {
   private readonly tts: TTSProvider;
   private readonly logger: pino.Logger;
   private readonly router: InkRouter;
+  private readonly onFinkLink?: FinkLinkHandler;
   private audioBuffer: Buffer[] = [];
 
   /** Track consecutive no_match results to auto-read choices */
@@ -53,6 +60,7 @@ export class InkPipeline {
     this.tts = options.tts;
     this.logger = options.logger;
     this.router = new InkRouter({ llm: options.llm });
+    this.onFinkLink = options.onFinkLink;
   }
 
   pushAudio(chunk: Buffer): void {
@@ -99,6 +107,9 @@ export class InkPipeline {
 
       const asrText = asrResult.text.trim();
       this.logger.info({ text: asrText }, 'ASR result');
+
+      // Record user utterance in dialogue history
+      session.addDialogue('user', asrText);
 
       // Send STT to client
       await transport.sendText(JSON.stringify({
@@ -178,6 +189,33 @@ export class InkPipeline {
   }
 
   /**
+   * Narrate story segments + read choices aloud.
+   * Used for the initial opening after hello handshake.
+   */
+  async narrateAndReadChoices(
+    session: Session,
+    transport: Transport,
+    narration: NarrationSegment[],
+    choices: InkChoice[],
+  ): Promise<void> {
+    const opusEncoder = new OpusEncoder({ sampleRate: 16000, channels: 1 });
+    const abortController = new AbortController();
+    session.abortController = abortController;
+
+    if (narration.length > 0) {
+      await this.narrateSegments(
+        session, transport, opusEncoder, narration, abortController.signal,
+      );
+    }
+
+    if (choices.length > 0 && !abortController.signal.aborted) {
+      await this.readChoicesAloud(
+        session, transport, opusEncoder, choices, abortController.signal,
+      );
+    }
+  }
+
+  /**
    * Handle a direct choice selection (from UI tap, not voice).
    * Public method for use by the server when the client sends ink:choose.
    */
@@ -202,6 +240,9 @@ export class InkPipeline {
     }
   }
 
+  /** Voice used to read choices aloud (distinct from narrator). */
+  private readonly choiceVoice = 'nova';
+
   /**
    * Handle a matched choice: advance the story and narrate the result.
    */
@@ -216,7 +257,25 @@ export class InkPipeline {
     const choiceIndex = classification.choiceIndex!;
     this.logger.info({ choiceIndex }, 'Advancing story');
 
+    // Check for FINK: link before advancing
+    const choices = inkSession.getChoices();
+    const selected = choices.find(c => c.index === choiceIndex);
+    if (selected?.tags.finkLink && this.onFinkLink) {
+      const newSession = await this.onFinkLink(selected.tags.finkLink, session, transport);
+      if (newSession) return; // Story switch handled by callback
+    }
+
     const result = inkSession.choose(choiceIndex);
+
+    // Record story output in dialogue history
+    const narrationText = result.narration.map(n => n.text).join('\n');
+    const newState = inkSession.getState();
+    const choicesText = newState.choices.length > 0
+      ? '\n\nAvailable options: ' + newState.choices.map(c => c.text).join(', ')
+      : '';
+    if (narrationText) {
+      session.addDialogue('assistant', `[Story] ${narrationText}${choicesText}`);
+    }
 
     // Send ink_state to client (narration + new choices)
     await this.sendInkState(transport, session, inkSession, result.narration);
@@ -225,6 +284,14 @@ export class InkPipeline {
     if (result.narration.length > 0) {
       await this.narrateSegments(
         session, transport, opusEncoder, result.narration, signal,
+      );
+    }
+
+    // Read choices aloud in a different voice
+    const state = inkSession.getState();
+    if (state.choices.length > 0 && !signal.aborted) {
+      await this.readChoicesAloud(
+        session, transport, opusEncoder, state.choices, signal,
       );
     }
 
@@ -298,8 +365,15 @@ export class InkPipeline {
         break;
     }
 
+    // Build messages with dialogue history for conversational continuity
+    const history = session.getDialogueForLlm(10);
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
+      // Include recent dialogue (excluding the current utterance which is last)
+      ...history.slice(0, -1).map(d => ({
+        role: d.role as 'user' | 'assistant',
+        content: d.content,
+      })),
       { role: 'user', content: asrText },
     ];
 
@@ -386,6 +460,54 @@ export class InkPipeline {
 
     await transport.sendText(JSON.stringify({
       type: 'tts', state: 'stop', session_id: session.id,
+    }));
+  }
+
+  /**
+   * Read the available choices aloud in a distinct voice.
+   */
+  private async readChoicesAloud(
+    session: Session,
+    transport: Transport,
+    opusEncoder: OpusEncoder,
+    choices: InkChoice[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (choices.length === 0) return;
+
+    const rateController = new AudioRateController();
+
+    // Build a natural sentence listing the choices
+    let choiceText: string;
+    if (choices.length === 1) {
+      choiceText = `You can: ${choices[0]!.text}.`;
+    } else {
+      const items = choices.map(c => c.text);
+      const last = items.pop()!;
+      choiceText = `You can: ${items.join(', ')}, or ${last}.`;
+    }
+
+    await transport.sendText(JSON.stringify({
+      type: 'tts', state: 'sentence_start',
+      text: choiceText, speaker: 'choices',
+      session_id: session.id,
+    }));
+
+    try {
+      const ttsResult = await this.tts.synthesize(choiceText, {
+        voice: this.choiceVoice,
+      });
+      rateController.reset();
+      await this.sendOpusAudio(
+        ttsResult.audio, opusEncoder, transport, rateController, signal,
+        ttsResult.sampleRate,
+      );
+    } catch (err) {
+      this.logger.error({ err }, 'TTS error reading choices');
+    }
+
+    await transport.sendText(JSON.stringify({
+      type: 'tts', state: 'sentence_end', session_id: session.id,
     }));
   }
 

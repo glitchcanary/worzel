@@ -46,8 +46,11 @@ const FINK_PORT = parseInt(process.env['FINK_PORT'] ?? '3001', 10);
 
 /**
  * Handle a tapped choice from the Fink UI.
- * Delegates to InkPipeline.processDirectChoice() which advances the story,
- * sends ink_state, and narrates the result via TTS.
+ *
+ * If the choice has a FINK: tag, switch to that story instead of advancing.
+ * Otherwise delegates to InkPipeline.processDirectChoice().
+ *
+ * Returns the (possibly new) InkSession.
  */
 async function handleInkChoose(
   choiceIndex: number,
@@ -55,9 +58,59 @@ async function handleInkChoose(
   transport: Transport,
   inkSession: InkSession,
   pipeline: InkPipeline,
-  _logger: pino.Logger,
-): Promise<void> {
+  logger: pino.Logger,
+  storyManager: StoryManager,
+  inkSessions: Map<string, InkSession>,
+): Promise<InkSession> {
+  // Check if this choice links to another story
+  const choices = inkSession.getChoices();
+  const choice = choices.find(c => c.index === choiceIndex);
+  if (choice?.tags.finkLink) {
+    const targetId = choice.tags.finkLink;
+    const storyJson = storyManager.getStoryJson(targetId);
+    if (!storyJson) {
+      logger.warn({ targetId }, 'FINK: link target story not found');
+      await pipeline.processDirectChoice(session, transport, inkSession, choiceIndex);
+      return inkSession;
+    }
+
+    // Switch to the new story
+    const metadata = storyManager.getMetadata(targetId);
+    const newSession = new InkSession(targetId, storyJson, metadata?.defaultVoices?.['narrator']);
+    inkSessions.set(session.id, newSession);
+    logger.info({ from: inkSession.storyId, to: targetId }, 'Switching story via FINK: link');
+
+    // Continue from start
+    const initial = newSession.continue();
+
+    // Seed dialogue history
+    const openingText = initial.narration.map(n => n.text).join('\n');
+    const openingChoices = initial.choices.length > 0
+      ? '\n\nAvailable options: ' + initial.choices.map(c => c.text).join(', ')
+      : '';
+    if (openingText) {
+      session.addDialogue('assistant', `[Story] ${openingText}${openingChoices}`);
+    }
+
+    // Send ink_state and narrate
+    await transport.sendText(JSON.stringify({
+      type: 'ink_state',
+      session_id: session.id,
+      narration: initial.narration.map(n => ({
+        text: n.text, speaker: n.speaker, voice: n.voice, mood: n.mood,
+      })),
+      choices: initial.choices.map(c => ({ index: c.index, text: c.text })),
+      isEnded: newSession.isEnded,
+      turnCount: 0,
+      storyId: targetId,
+    }));
+
+    await pipeline.narrateAndReadChoices(session, transport, initial.narration, initial.choices);
+    return newSession;
+  }
+
   await pipeline.processDirectChoice(session, transport, inkSession, choiceIndex);
+  return inkSession;
 }
 
 async function main(): Promise<void> {
@@ -96,8 +149,9 @@ async function main(): Promise<void> {
     logger.info({ stories: stories.map(s => s.id) }, 'Stories available');
   }
 
-  // Default story (first available, or from env)
-  const defaultStoryId = process.env['FINK_DEFAULT_STORY'] ?? stories[0]?.id;
+  // Default story: menu if available, else first, else from env
+  const menuStory = stories.find(s => s.id === 'menu');
+  const defaultStoryId = process.env['FINK_DEFAULT_STORY'] ?? menuStory?.id ?? stories[0]?.id;
 
   // Session manager
   const sessionManager = new SessionManager(config.session, logger);
@@ -198,6 +252,42 @@ async function main(): Promise<void> {
       llm: providers.llm,
       tts: providers.tts,
       logger: sessionLogger,
+      onFinkLink: async (targetId, sess, trans) => {
+        const json = storyManager.getStoryJson(targetId);
+        if (!json) {
+          sessionLogger.warn({ targetId }, 'FINK: link target not found');
+          return null;
+        }
+        const meta = storyManager.getMetadata(targetId);
+        const newInk = new InkSession(targetId, json, meta?.defaultVoices?.['narrator']);
+        inkSessions.set(sess.id, newInk);
+        inkSession = newInk;
+        sessionLogger.info({ to: targetId }, 'Voice FINK: link switch');
+
+        const initial = newInk.continue();
+        const openingText = initial.narration.map(n => n.text).join('\n');
+        const openingChoices = initial.choices.length > 0
+          ? '\n\nAvailable options: ' + initial.choices.map(c => c.text).join(', ')
+          : '';
+        if (openingText) {
+          sess.addDialogue('assistant', `[Story] ${openingText}${openingChoices}`);
+        }
+
+        await trans.sendText(JSON.stringify({
+          type: 'ink_state',
+          session_id: sess.id,
+          narration: initial.narration.map(n => ({
+            text: n.text, speaker: n.speaker, voice: n.voice, mood: n.mood,
+          })),
+          choices: initial.choices.map(c => ({ index: c.index, text: c.text })),
+          isEnded: newInk.isEnded,
+          turnCount: 0,
+          storyId: targetId,
+        }));
+
+        await pipeline.narrateAndReadChoices(sess, trans, initial.narration, initial.choices);
+        return newInk;
+      },
     });
 
     // Start an Ink session with the default story
@@ -217,7 +307,16 @@ async function main(): Promise<void> {
           choiceCount: initial.choices.length,
         }, 'Story started');
 
-        // Defer sending initial state until after hello handshake
+        // Seed dialogue history with initial story state
+        const openingText = initial.narration.map(n => n.text).join('\n');
+        const openingChoices = initial.choices.length > 0
+          ? '\n\nAvailable options: ' + initial.choices.map(c => c.text).join(', ')
+          : '';
+        if (openingText) {
+          session.addDialogue('assistant', `[Story] ${openingText}${openingChoices}`);
+        }
+
+        // Defer sending initial state + TTS until after hello handshake
         const sendInitialState = async () => {
           await transport.sendText(JSON.stringify({
             type: 'ink_state',
@@ -236,6 +335,13 @@ async function main(): Promise<void> {
             turnCount: 0,
             storyId: defaultStoryId,
           }));
+
+          // Narrate the opening + read choices aloud
+          pipeline.narrateAndReadChoices(
+            session, transport, initial.narration, initial.choices,
+          ).catch(err => {
+            sessionLogger.error({ err }, 'Initial narration error');
+          });
         };
 
         // Queue initial state send after hello
@@ -257,8 +363,12 @@ async function main(): Promise<void> {
       if (raw?.type === 'ink' && inkSession) {
         sessionLogger.info({ action: raw.action, choiceIndex: raw.choice_index }, 'Ink message');
         if (raw.action === 'choose' && typeof raw.choice_index === 'number') {
-          await handleInkChoose(
+          // Abort any in-flight narration/TTS before starting the new choice
+          session.abortController?.abort();
+          pipeline.clearAudio();
+          inkSession = await handleInkChoose(
             raw.choice_index, session, transport, inkSession, pipeline, sessionLogger,
+            storyManager, inkSessions,
           );
         }
         return;

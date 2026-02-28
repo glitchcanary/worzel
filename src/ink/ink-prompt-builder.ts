@@ -48,7 +48,8 @@ RULES:
 - Do NOT advance the story or make choices for the player.
 - Do NOT use lists, numbered items, markdown, or formatting — this will be spoken aloud.
 - You may discuss the world, hint at what's possible, but never explicitly list the choices.
-- If the player seems confused, gently guide them back toward the story.`;
+- If the player seems confused, gently guide them back toward the story.
+- CRITICAL: You CANNOT take actions. You cannot file reports, transfer calls, connect to departments, look anything up, or do anything. Only the story system can perform actions — and it only does so when the player selects a specific choice. Never say you have done something or will do something. You can only talk.`;
 }
 
 /**
@@ -61,7 +62,7 @@ export function buildMetaPrompt(ctx: PromptContext): string {
     ? ctx.choices.map((c, i) => `${i + 1}. "${c.text}"`).join('\n')
     : 'No choices currently available — the story will continue.';
 
-  return `You are the narrator of an interactive voice story. The player wants to understand their options.
+  return `You are the narrator of an interactive voice system. The user wants to understand their options.
 
 CURRENT SCENE:
 ${sceneText}
@@ -70,11 +71,12 @@ AVAILABLE CHOICES:
 ${choicesList}
 
 RULES:
-- Describe the available options naturally, as a narrator would.
+- Describe the available options naturally, relating them to what the user seems to need.
+- If the user has described a problem or situation, identify which options are most relevant to their situation and explain why. For example, if they describe a smell, explain which services handle odour complaints vs sewage emergencies.
 - Do NOT number them or sound robotic.
-- Instead of "Option 1: Open the gate", say something like "You could try opening the gate, or perhaps the guard might have something interesting to say."
 - Keep it to 2-3 spoken sentences. This is a voice interface.
-- Do NOT use lists, markdown, or formatting.`;
+- Do NOT use lists, markdown, or formatting.
+- CRITICAL: You CANNOT take actions. You cannot file reports, transfer calls, or do anything. Only the system can act — and it only does so when the user selects a specific choice. Never claim to have done something or promise to do something.`;
 }
 
 /**
@@ -94,7 +96,7 @@ export function buildNoMatchPrompt(ctx: PromptContext): string {
 
   return `${charDesc}
 
-The player said something that doesn't match any available action in the story.
+The user said something that doesn't directly match any available option. Your job is to help them find the right option.
 
 CURRENT SCENE:
 ${sceneText}
@@ -102,13 +104,15 @@ ${sceneText}
 AVAILABLE CHOICES:
 ${choicesList}
 
-PLAYER SAID: "${ctx.asrText}"
+USER SAID: "${ctx.asrText}"
 
 RULES:
-- Gently acknowledge what they said and guide them toward the available choices.
-- Stay in character. Do not be condescending.
+- Analyse what the user is describing and identify which available choices are most relevant to their situation.
+- Actively triage: if their description could map to one or more choices, explain the distinction and suggest the best fit. For example, if they describe a bad smell, explain that "water and sewer" handles sewage issues while "garbage and recycling" handles waste collection.
+- Be specific and helpful, not vague. Connect their words to the actual options.
 - 2-3 spoken sentences maximum. This is a voice interface.
-- Do NOT use lists, markdown, or formatting.`;
+- Do NOT use lists, markdown, or formatting.
+- CRITICAL: You CANNOT take actions, file reports, transfer calls, or do anything. Only the system acts when the user selects a specific choice. Never claim to have done something. You can only help them choose.`;
 }
 
 /**

@@ -52,6 +52,7 @@ export class InkSession {
   private defaultVoice?: string;
   private _turnCount = 0;
   private _waitingForExternalInput?: string;
+  private _lastNarration: NarrationSegment[] = [];
 
   constructor(storyId: string, storyJson: string, defaultVoice?: string) {
     this.storyId = storyId;
@@ -106,6 +107,7 @@ export class InkSession {
     }
 
     const choices = this.parseChoices();
+    this._lastNarration = narration;
     return { narration, choices };
   }
 
@@ -128,7 +130,7 @@ export class InkSession {
   getState(): InkSessionState {
     return {
       storyId: this.storyId,
-      narration: [],
+      narration: this._lastNarration,
       choices: this.parseChoices(),
       canContinue: this.story.canContinue,
       isEnded: !this.story.canContinue && this.story.currentChoices.length === 0,

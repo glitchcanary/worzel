@@ -25,6 +25,9 @@ export interface Classification {
   confidence: number;
 }
 
+/** IVR sentinel choice texts that should be excluded from voice matching. */
+const IVR_SENTINELS = new Set(['noinput', 'nomatch']);
+
 /** Words that signal the user wants to know their options. */
 const META_KEYWORDS = new Set([
   'options', 'choices', 'help', 'what can i do', 'what are my options',
@@ -68,17 +71,23 @@ export class InkRouter {
       return { type: 'freeform_input', confidence: 1.0 };
     }
 
+    // Filter out IVR sentinel choices (noinput/nomatch) before classification
+    const filtered = {
+      ...state,
+      choices: state.choices.filter(c => !IVR_SENTINELS.has(normalize(c.text))),
+    };
+
     // --- Tier 1: Instant keyword/exact matching ---
-    const tier1 = this.tier1(asrText, state);
+    const tier1 = this.tier1(asrText, filtered);
     if (tier1) return tier1;
 
     // --- Tier 2: Token overlap scoring ---
-    const tier2 = this.tier2(asrText, state);
+    const tier2 = this.tier2(asrText, filtered);
     if (tier2) return tier2;
 
     // --- Tier 3: LLM-based classification ---
-    if (this.llm && state.choices.length > 0) {
-      const tier3 = await this.tier3(asrText, state, signal);
+    if (this.llm && filtered.choices.length > 0) {
+      const tier3 = await this.tier3(asrText, filtered, signal);
       if (tier3) return tier3;
     }
 

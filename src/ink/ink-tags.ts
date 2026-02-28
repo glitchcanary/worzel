@@ -12,6 +12,7 @@
  *   # voice_hint:open the gate, push the gate
  *   # input:freeform
  *   # pause:2000
+ *   # FINK:story-id          (link to another story)
  */
 
 export interface ParsedTags {
@@ -21,6 +22,7 @@ export interface ParsedTags {
   voiceHints?: string[];
   inputMode?: 'freeform';
   pauseMs?: number;
+  finkLink?: string;
   foaf: Record<string, string>;
   raw: string[];
 }
@@ -74,6 +76,9 @@ export function parseTags(tags: string[]): ParsedTags {
       case 'pause':
         result.pauseMs = parseInt(value, 10) || undefined;
         break;
+      case 'fink':
+        result.finkLink = value;
+        break;
     }
   }
 
@@ -92,6 +97,7 @@ export function mergeTags(existing: ParsedTags, incoming: ParsedTags): ParsedTag
     voiceHints: incoming.voiceHints ?? existing.voiceHints,
     inputMode: incoming.inputMode ?? existing.inputMode,
     pauseMs: incoming.pauseMs ?? existing.pauseMs,
+    finkLink: incoming.finkLink ?? existing.finkLink,
     foaf: { ...existing.foaf, ...incoming.foaf },
     raw: [...existing.raw, ...incoming.raw],
   };

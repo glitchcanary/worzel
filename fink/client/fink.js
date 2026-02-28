@@ -351,6 +351,10 @@ class FinkMic extends HTMLElement {
     super();
     this.recording = false;
     this._enabled = false;
+    this._hotMic = false; // always-on mic mode
+    this._silenceTimer = null;
+    this._silenceThreshold = 2000; // ms of silence before auto-stop
+    this._lastAudioTime = 0;
     this.attachShadow({ mode: 'open' }).innerHTML = `
       <style>
         :host { display: flex; justify-content: center; padding: 12px; }
@@ -365,19 +369,25 @@ class FinkMic extends HTMLElement {
         }
         button.mic:hover { background: #1e2a4a; }
         button.mic.rec { background: var(--fink-accent, #e94560); }
+        button.mic.hot { border-color: #22c55e; }
+        button.mic.hot.rec { background: #16a34a; }
         button.mic:disabled { opacity: 0.3; cursor: default; }
         .icon { width: 24px; height: 24px; fill: var(--fink-accent, #e94560); }
         button.mic.rec .icon { fill: white; }
+        button.mic.hot .icon { fill: #22c55e; }
+        button.mic.hot.rec .icon { fill: white; }
         .hint {
           font-size: 0.8rem; color: var(--fink-text-muted, #5a5e73);
-          font-family: system-ui, sans-serif;
+          font-family: system-ui, sans-serif; cursor: pointer;
         }
+        .hint:hover { color: var(--fink-text-secondary, #8b8fa3); }
         .state-label {
           font-size: 0.75rem; font-family: system-ui, sans-serif;
           color: var(--fink-text-secondary); min-width: 80px;
         }
         .state-label.thinking { color: #f59e0b; }
         .state-label.speaking { color: #22c55e; }
+        .state-label.listening { color: #e94560; }
       </style>
       <div class="wrap">
         <button class="mic" disabled>
@@ -389,13 +399,44 @@ class FinkMic extends HTMLElement {
         </div>
       </div>`;
     const btn = this.shadowRoot.querySelector('button.mic');
-    btn.addEventListener('pointerdown', e => { e.preventDefault(); btn.setPointerCapture(e.pointerId); this.startRec(); });
-    btn.addEventListener('pointerup', e => { btn.releasePointerCapture(e.pointerId); this.stopRec(); });
-    btn.addEventListener('lostpointercapture', () => { if (this.recording) this.stopRec(); });
-    btn.addEventListener('touchstart', e => { e.preventDefault(); this.startRec(); }, { passive: false });
-    btn.addEventListener('touchend', e => { e.preventDefault(); this.stopRec(); }, { passive: false });
-    btn.addEventListener('touchcancel', () => { if (this.recording) this.stopRec(); });
+    const hint = this.shadowRoot.querySelector('.hint');
+
+    // Push-to-talk handlers
+    btn.addEventListener('pointerdown', e => {
+      if (this._hotMic) return; // hot mic uses click toggle
+      e.preventDefault(); btn.setPointerCapture(e.pointerId); this.startRec();
+    });
+    btn.addEventListener('pointerup', e => {
+      if (this._hotMic) return;
+      btn.releasePointerCapture(e.pointerId); this.stopRec();
+    });
+    btn.addEventListener('lostpointercapture', () => { if (!this._hotMic && this.recording) this.stopRec(); });
+    btn.addEventListener('touchstart', e => { if (this._hotMic) return; e.preventDefault(); this.startRec(); }, { passive: false });
+    btn.addEventListener('touchend', e => { if (this._hotMic) return; e.preventDefault(); this.stopRec(); }, { passive: false });
+    btn.addEventListener('touchcancel', () => { if (!this._hotMic && this.recording) this.stopRec(); });
+
+    // Hot mic click toggle
+    btn.addEventListener('click', () => {
+      if (!this._hotMic) return;
+      if (this.recording) this.stopRec();
+      else this.startRec();
+    });
+
+    // Toggle mode by clicking the hint text
+    hint.addEventListener('click', () => this.toggleHotMic());
   }
+
+  toggleHotMic() {
+    this._hotMic = !this._hotMic;
+    const btn = this.shadowRoot.querySelector('button.mic');
+    const hint = this.shadowRoot.querySelector('.hint');
+    btn.classList.toggle('hot', this._hotMic);
+    hint.textContent = this._hotMic ? 'Hot mic (click to toggle)' : 'Hold to speak';
+    if (this.recording && !this._hotMic) this.stopRec();
+  }
+
+  get hotMic() { return this._hotMic; }
+
   enable() { this._enabled = true; this.shadowRoot.querySelector('button.mic').disabled = false; }
   disable() { this._enabled = false; this.shadowRoot.querySelector('button.mic').disabled = true; if (this.recording) this.stopRec(); }
   setPipelineState(state) {
@@ -403,12 +444,23 @@ class FinkMic extends HTMLElement {
     label.className = 'state-label';
     if (state === 'thinking') { label.classList.add('thinking'); label.textContent = 'Thinking...'; }
     else if (state === 'speaking') { label.classList.add('speaking'); label.textContent = 'Narrating...'; }
+    else if (state === 'listening') { label.classList.add('listening'); label.textContent = 'Listening...'; }
     else { label.textContent = ''; }
   }
+
+  /** Auto-restart recording in hot mic mode (called after TTS finishes). */
+  autoRestart() {
+    if (this._hotMic && this._enabled && !this.recording) {
+      this.startRec();
+    }
+  }
+
   async startRec() {
     if (this.recording || !this._enabled) return;
     this.recording = true;
-    this.shadowRoot.querySelector('button.mic').classList.add('rec');
+    const btn = this.shadowRoot.querySelector('button.mic');
+    btn.classList.add('rec');
+    if (this._hotMic) this.setPipelineState('listening');
     try {
       if (!this._encoder) {
         this._encoder = new OpusBrowserEncoder();
@@ -536,10 +588,12 @@ class FinkApp extends HTMLElement {
     });
     mic.addEventListener('fink-audio-data', e => this.client?.sendAudio(e.detail.audio));
 
-    // Choice card tapped — send ink:choose to server
+    // Choice card tapped — abort current audio, then send ink:choose to server
     story.addEventListener('fink-choice', e => {
       console.log('[fink] Choice tapped:', e.detail.choiceIndex);
       if (this.client?.currentState === 'connected') {
+        this.player?.stop();
+        this.client.abort();
         this.client.send({
           type: 'ink',
           action: 'choose',
@@ -575,33 +629,37 @@ class FinkApp extends HTMLElement {
       mic.setPipelineState('thinking');
     });
 
+    // Track whether current TTS is narrating ink content (already displayed)
+    // vs LLM discussion content (needs streaming display)
+    let inkNarrating = false;
+
     this.client.on('tts', ev => {
       if (ev.state === 'start') {
-        story.startStreaming();
+        if (!inkNarrating) story.startStreaming();
         if (!this.player) this.player = new AudioPlayer(16000);
         mic.setPipelineState('speaking');
       }
       else if (ev.state === 'sentence_start' && ev.text) {
-        story.appendStreaming(ev.text + ' ');
+        if (!inkNarrating) story.appendStreaming(ev.text + ' ');
       }
       else if (ev.state === 'stop') {
-        story.endStreaming();
+        if (!inkNarrating) story.endStreaming();
+        inkNarrating = false;
         mic.setPipelineState('idle');
       }
     });
 
     this.client.on('audio', data => this.player?.enqueueOpus(data));
 
-    // Ink state updates (when server supports them)
+    // Ink state updates — text already displayed here, suppress TTS streaming display
     this.client.on('inkState', msg => {
       console.log('[fink] Ink state:', msg);
-      // Update story display with narration segments
-      if (msg.narration) {
+      if (msg.narration && msg.narration.length > 0) {
+        inkNarrating = true;
         for (const seg of msg.narration) {
           story.addNarration(seg.text, seg.speaker);
         }
       }
-      // Update choice cards
       if (msg.choices) {
         story.setChoices(msg.choices);
       }
