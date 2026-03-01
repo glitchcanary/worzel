@@ -69,6 +69,9 @@ async function main(): Promise<void> {
   logger.info({ path: '/ws' }, 'WebSocket server ready');
   logger.info({ path: '/api/ota' }, 'OTA auth endpoint ready');
   logger.info({ path: '/api/health' }, 'Health check endpoint ready');
+  if (config.twilio.accountSid) {
+    logger.info({ path: '/api/telephony/twiml' }, 'Twilio TwiML webhook ready');
+  }
   logger.info({
     host: config.server.host,
     port: config.server.port,

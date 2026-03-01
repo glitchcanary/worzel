@@ -38,6 +38,8 @@ const ENV_MAP: Record<string, string> = {
   WORZEL_LLM_SMART_PROVIDER: 'llmSmart.provider',
   WORZEL_LLM_SMART_MODEL: 'llmSmart.model',
   WORZEL_LLM_SMART_URL: 'llmSmart.url',
+  WORZEL_TWILIO_ACCOUNT_SID: 'twilio.accountSid',
+  WORZEL_TWILIO_AUTH_TOKEN: 'twilio.authToken',
   WORZEL_LOG_LEVEL: 'logLevel',
 };
 

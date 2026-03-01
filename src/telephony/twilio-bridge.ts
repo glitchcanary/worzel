@@ -23,9 +23,11 @@
  * @module
  */
 
+import { createHmac } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import type pino from 'pino';
 import type { Transport } from '../transport/interface.js';
+import { decodeOpusFrames } from '../utils/opus-decode.js';
 
 // ---- Twilio Media Streams message types ----
 
@@ -347,13 +349,10 @@ export function isLikelySpeech(noSpeechProb: number, threshold = DEFAULT_VAD_CON
  * another transport — it doesn't know the audio came from a phone call.
  *
  * Audio flow:
- *   Twilio mulaw → decode → resample 8k→16k → Opus encode → pipeline (binary)
- *   Pipeline (binary) → Opus decode → resample 24k→8k → mulaw encode → Twilio
+ *   Twilio mulaw → decode → resample 8k→16k → pipeline (PCM binary)
+ *   Pipeline (Opus binary) → Opus decode → resample 16k→8k → mulaw encode → Twilio
  *
- * TODO: This is a stub. Full implementation needs:
- *   - Opus encode/decode (reuse opusscript from voice pipeline)
- *   - Proper Twilio WebSocket lifecycle (connected/start/media/stop/mark)
- *   - TwiML webhook endpoint for Twilio to call when a phone call arrives
+ * Future work:
  *   - Barge-in detection (caller interrupts TTS playback)
  *   - DTMF handling (keypad input)
  *   - Call recording consent / announcement
@@ -363,10 +362,18 @@ export class TwilioTransport implements Transport {
   readonly type = 'twilio' as const;
 
   private _connected = false;
-  private streamSid: string | null = null;
-  private callSid: string | null = null;
+  private _streamSid: string | null = null;
+  private _callSid: string | null = null;
   private readonly vad: EnergyVAD;
   private readonly logger: pino.Logger;
+
+  /**
+   * Called when VAD detects a complete speech segment.
+   * The WebSocket handler sets this to push audio into the pipeline
+   * and trigger processing (replaces the listen.stop mechanism).
+   * Receives 16kHz PCM int16 as a Buffer.
+   */
+  onSpeechSegment: ((pcm: Buffer, durationMs: number) => void) | null = null;
 
   private textHandlers: ((data: string) => void)[] = [];
   private binaryHandlers: ((data: Buffer) => void)[] = [];
@@ -382,16 +389,15 @@ export class TwilioTransport implements Transport {
     this.logger = logger.child({ component: 'twilio-bridge' });
     this.vad = new EnergyVAD(vadConfig);
 
-    // When VAD detects speech, feed it to the pipeline as binary audio
+    // When VAD detects speech, resample and forward to pipeline
     this.vad.onSpeech = (pcm, durationMs) => {
       this.logger.info({ durationMs, samples: pcm.length }, 'VAD speech segment detected');
       // Resample 8kHz → 16kHz to match Worzel pipeline expectation
       const pcm16k = resampleLinear(pcm, 8000, 16000);
-      // TODO: Opus-encode the 16kHz PCM before passing to pipeline,
-      // since the pipeline expects Opus frames. For now, pass as raw PCM
-      // with a synthetic "listen" control message to trigger ASR.
       const pcmBuf = Buffer.from(pcm16k.buffer, pcm16k.byteOffset, pcm16k.byteLength);
-      for (const handler of this.binaryHandlers) handler(pcmBuf);
+      if (this.onSpeechSegment) {
+        this.onSpeechSegment(pcmBuf, durationMs);
+      }
     };
 
     // Wire up Twilio WebSocket messages
@@ -419,15 +425,23 @@ export class TwilioTransport implements Transport {
     return this._connected;
   }
 
+  get streamSid(): string | null {
+    return this._streamSid;
+  }
+
+  get callSid(): string | null {
+    return this._callSid;
+  }
+
   private handleTwilioMessage(msg: TwilioInboundMessage): void {
     switch (msg.event) {
       case 'start':
-        this.streamSid = msg.start.streamSid;
-        this.callSid = msg.start.callSid;
+        this._streamSid = msg.start.streamSid;
+        this._callSid = msg.start.callSid;
         this._connected = true;
         this.logger.info({
-          streamSid: this.streamSid,
-          callSid: this.callSid,
+          streamSid: this._streamSid,
+          callSid: this._callSid,
         }, 'Twilio stream started');
         // Synthesize a hello message for the session manager
         const hello = JSON.stringify({
@@ -454,7 +468,7 @@ export class TwilioTransport implements Transport {
         break;
 
       case 'stop':
-        this.logger.info({ callSid: this.callSid }, 'Twilio stream stopped (caller hung up)');
+        this.logger.info({ callSid: this._callSid }, 'Twilio stream stopped (caller hung up)');
         this._connected = false;
         this.vad.flush();
         for (const handler of this.closeHandlers) handler(1000, 'caller hung up');
@@ -476,18 +490,30 @@ export class TwilioTransport implements Transport {
   /**
    * Send TTS audio back to the caller via Twilio.
    * Pipeline sends Opus frames; we decode → resample → mulaw → base64 → Twilio JSON.
+   *
+   * The voice pipeline's sendOpusAudio() encodes TTS PCM into Opus at 16kHz
+   * and sends each frame via transport.sendBinary(). We decode each Opus frame
+   * back to PCM, resample to 8kHz, and encode as mulaw for Twilio.
    */
   async sendBinary(data: Buffer | Uint8Array): Promise<void> {
-    if (!this._connected || !this.streamSid) return;
+    if (!this._connected || !this._streamSid) return;
 
-    // TODO: Opus decode the incoming data first (pipeline sends Opus frames).
-    // For now, assume raw PCM int16 at 24kHz (TTS output before Opus encode).
-    const pcm24k = new Int16Array(
-      data.buffer, data.byteOffset, data.byteLength / 2
-    );
+    // Decode Opus frame → PCM int16 at 16kHz (pipeline encodes at 16kHz)
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    let pcm: Buffer;
+    try {
+      pcm = decodeOpusFrames([buf]);
+    } catch {
+      // If decode fails, skip this frame (corrupted packet)
+      return;
+    }
+    if (pcm.length === 0) return;
 
-    // Resample 24kHz → 8kHz for PSTN
-    const pcm8k = resampleLinear(pcm24k, 24000, 8000);
+    // Convert Buffer (int16 LE bytes) to Int16Array for resampling
+    const pcm16k = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength / 2);
+
+    // Resample 16kHz → 8kHz for PSTN
+    const pcm8k = resampleLinear(pcm16k, 16000, 8000);
 
     // Encode to mulaw
     const mulaw = encodeMulaw(pcm8k);
@@ -495,7 +521,7 @@ export class TwilioTransport implements Transport {
     // Send as Twilio media message
     const msg = JSON.stringify({
       event: 'media',
-      streamSid: this.streamSid,
+      streamSid: this._streamSid,
       media: {
         payload: Buffer.from(mulaw).toString('base64'),
       },
@@ -518,29 +544,55 @@ export class TwilioTransport implements Transport {
   onError(handler: (error: Error) => void): void { this.errorHandlers.push(handler); }
 }
 
-// ---- TwiML endpoint (Fastify route handler) ----
+// ---- TwiML generation ----
 
 /**
  * TwiML response that tells Twilio to open a Media Stream to our WebSocket.
- *
- * This would be served as the webhook for an incoming call:
- *   POST /api/telephony/twiml → returns TwiML XML
- *
- * Twilio calls this URL when someone dials the Worzel phone number.
- * The TwiML tells Twilio to bi-directionally stream audio to our WS endpoint.
- *
- * TODO: Wire this into Fastify router. Requires:
- *   - WORZEL_TWILIO_ACCOUNT_SID and WORZEL_TWILIO_AUTH_TOKEN in .env
- *   - Twilio request signature validation (prevent spoofed webhooks)
- *   - Public URL for the WebSocket endpoint (Tailscale Funnel works)
+ * Served at POST /api/telephony/twiml — Twilio calls this when someone dials.
  */
 export function generateTwiml(websocketUrl: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="alice">Welcome to Worzel. You can start speaking after the tone.</Say>
-  <Play>https://api.twilio.com/cowbell.mp3</Play>
   <Connect>
     <Stream url="${websocketUrl}" />
   </Connect>
 </Response>`;
+}
+
+// ---- Twilio request signature validation ----
+
+/**
+ * Validate a Twilio webhook request signature.
+ *
+ * Twilio signs every webhook request with HMAC-SHA1 of:
+ *   URL + sorted POST parameters (key + value concatenated)
+ * keyed by your auth token. The signature is in the X-Twilio-Signature header.
+ *
+ * See: https://www.twilio.com/docs/usage/security#validating-requests
+ */
+export function validateTwilioSignature(
+  authToken: string,
+  signature: string,
+  url: string,
+  params: Record<string, string>,
+): boolean {
+  // Build the data string: URL + sorted params (key + value, no separators)
+  const sortedKeys = Object.keys(params).sort();
+  let data = url;
+  for (const key of sortedKeys) {
+    data += key + params[key];
+  }
+
+  const expected = createHmac('sha1', authToken)
+    .update(data, 'utf-8')
+    .digest('base64');
+
+  // Constant-time comparison to prevent timing attacks
+  if (expected.length !== signature.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < expected.length; i++) {
+    mismatch |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  }
+  return mismatch === 0;
 }

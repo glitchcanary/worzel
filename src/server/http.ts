@@ -11,6 +11,7 @@ import { createOtaHandler } from './middleware/auth.js';
 import { buildCorsOptions } from './middleware/cors.js';
 import { cspHook } from './middleware/csp.js';
 import type { FillerCache } from '../pipeline/filler-cache.js';
+import { generateTwiml, validateTwilioSignature } from '../telephony/twilio-bridge.js';
 
 /**
  * Create and configure the Fastify HTTP server.
@@ -93,6 +94,46 @@ export async function createHttpServer(config: AppConfig, logger: pino.Logger) {
   app.post('/api/whip', async (_request, reply) => {
     logger.info('WHIP endpoint called (WebRTC signaling — full implementation in Phase 1+)');
     reply.status(501).send({ error: 'not_implemented', message: 'WebRTC WHIP signaling coming soon' });
+  });
+
+  // Twilio telephony webhook — returns TwiML to open a Media Stream
+  app.post('/api/telephony/twiml', async (request, reply) => {
+    if (!config.twilio.accountSid || !config.twilio.authToken) {
+      reply.status(501).send({ error: 'not_configured', message: 'Telephony not configured' });
+      return;
+    }
+
+    // Validate Twilio request signature
+    const signature = request.headers['x-twilio-signature'] as string | undefined;
+    if (!signature) {
+      logger.warn('Twilio webhook missing X-Twilio-Signature');
+      reply.status(403).send({ error: 'forbidden', message: 'Missing signature' });
+      return;
+    }
+
+    // Reconstruct the full URL Twilio used to call us
+    const host = request.headers.host ?? `localhost:${config.server.port}`;
+    const forwardedProto = request.headers['x-forwarded-proto'];
+    const isTailscale = host.endsWith('.ts.net') || host.endsWith('.ts.net:443');
+    const isTls = config.server.tlsCert || forwardedProto === 'https' || isTailscale;
+    const httpProtocol = isTls ? 'https' : 'http';
+    const fullUrl = `${httpProtocol}://${host}${request.url}`;
+
+    const params = (request.body as Record<string, string>) ?? {};
+    if (!validateTwilioSignature(config.twilio.authToken, signature, fullUrl, params)) {
+      logger.warn({ url: fullUrl }, 'Twilio webhook signature validation failed');
+      reply.status(403).send({ error: 'forbidden', message: 'Invalid signature' });
+      return;
+    }
+
+    // Derive WebSocket URL for the Twilio Media Stream
+    const wsProtocol = isTls ? 'wss' : 'ws';
+    const wsUrl = `${wsProtocol}://${host}/ws/twilio`;
+
+    logger.info({ callSid: params['CallSid'], from: params['From'], wsUrl }, 'Twilio call received');
+
+    const twiml = generateTwiml(wsUrl);
+    reply.header('Content-Type', 'text/xml').send(twiml);
   });
 
   // Serve web client static files

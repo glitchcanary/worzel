@@ -5,6 +5,7 @@ import type { AppConfig } from '../config/schema.js';
 import type { SessionManager } from '../session/manager.js';
 import type { Providers } from '../providers/registry.js';
 import { WebSocketTransport } from '../transport/websocket-transport.js';
+import { TwilioTransport } from '../telephony/twilio-bridge.js';
 import { verifyWsToken } from './middleware/auth.js';
 import { RateLimiter } from './middleware/rate-limit.js';
 import { validateMessage } from '../protocol/validator.js';
@@ -174,6 +175,105 @@ export function createWebSocketServer(
   wss.on('close', () => {
     rateLimiter.stop();
   });
+
+  // ---- Twilio Media Streams WebSocket (PSTN telephony) ----
+
+  if (config.twilio.accountSid) {
+    const twilioWss = new WebSocketServer({
+      server: httpServer,
+      path: '/ws/twilio',
+      maxPayload: 512 * 1024,
+    });
+
+    twilioWss.on('connection', (ws: WebSocket) => {
+      const twilioLogger = logger.child({ transport: 'twilio' });
+      const transport = new TwilioTransport(ws, twilioLogger);
+
+      // Session and pipeline are created lazily when Twilio sends the 'start'
+      // message (which contains the streamSid we use as deviceId).
+      let session: ReturnType<typeof sessionManager.create> | null = null;
+      let pipeline: VoicePipeline | null = null;
+      let processing = false;
+
+      // The TwilioTransport synthesizes a 'hello' text message on Twilio 'start'.
+      // Use it to create the session and pipeline.
+      transport.onText(async (data: string) => {
+        let msg: { type?: string; audio_params?: { format?: string; sample_rate?: number; channels?: number } };
+        try {
+          msg = JSON.parse(data);
+        } catch {
+          return;
+        }
+
+        if (msg.type === 'hello' && !session) {
+          const deviceId = `twilio-${transport.streamSid ?? Date.now()}`;
+          session = sessionManager.create(deviceId);
+          if (!session) {
+            twilioLogger.warn({ deviceId }, 'Max sessions reached for Twilio call');
+            ws.close(1013, 'max_sessions');
+            return;
+          }
+
+          // Set audio params for PCM (no Opus in the telephony path)
+          session.audioParams = {
+            format: 'pcm',
+            sample_rate: 16000,
+            channels: 1,
+            frame_duration: 60,
+          };
+          session.state = 'ready';
+
+          pipeline = new VoicePipeline({
+            asr: providers.asr,
+            llm: providers.llm,
+            tts: providers.tts,
+            llmSmart: providers.llmSmart,
+            fillerCache,
+            logger: twilioLogger.child({ sessionId: session.id }),
+          });
+
+          // Wire VAD speech detection → pipeline processing
+          transport.onSpeechSegment = (pcmBuf: Buffer, durationMs: number) => {
+            if (!session || !pipeline || processing) return;
+            twilioLogger.info({ durationMs, bytes: pcmBuf.length }, 'Speech segment → pipeline');
+            pipeline.pushAudio(pcmBuf);
+            processing = true;
+            pipeline.process(session, transport).catch(err => {
+              twilioLogger.error({ err }, 'Pipeline error');
+            }).finally(() => {
+              processing = false;
+            });
+          };
+
+          twilioLogger.info({
+            sessionId: session.id,
+            deviceId,
+            callSid: transport.callSid,
+            streamSid: transport.streamSid,
+          }, 'Twilio call session created');
+        }
+      });
+
+      transport.onClose(() => {
+        if (pipeline) pipeline.clearAudio();
+        if (session) {
+          twilioLogger.info({ sessionId: session.id }, 'Twilio call ended');
+          sessionManager.destroy(session.id);
+        }
+      });
+
+      transport.onError((err: Error) => {
+        twilioLogger.error({ err }, 'Twilio WebSocket error');
+      });
+    });
+
+    // Clean up Twilio WSS when server closes
+    wss.on('close', () => {
+      twilioWss.close();
+    });
+
+    logger.info({ path: '/ws/twilio' }, 'Twilio telephony WebSocket ready');
+  }
 
   return wss;
 }
