@@ -1,13 +1,13 @@
 /**
  * Transport abstraction for device communication.
- * Implementations: WebSocket (legacy), WebRTC (preferred).
+ * Implementations: WebSocket (legacy), WebRTC (preferred), Twilio (PSTN).
  */
 export interface Transport {
   /** Unique identifier for this transport instance */
   readonly id: string;
 
   /** Transport type */
-  readonly type: 'websocket' | 'webrtc';
+  readonly type: 'websocket' | 'webrtc' | 'twilio';
 
   /** Whether the transport is currently connected */
   readonly connected: boolean;
