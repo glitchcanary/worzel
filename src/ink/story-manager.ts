@@ -233,12 +233,33 @@ export class StoryManager {
     }
   }
 
+  /**
+   * Inject platform-provided knots (e.g. _inventory) if not defined in the source.
+   * See CLAUDE.md "Fink platform-provided knots" for design notes.
+   */
+  private injectPlatformKnots(source: string): string {
+    const knots: string[] = [];
+
+    // _inventory — stub until real inventory tracking is implemented
+    if (!source.includes('=== _inventory') && source.includes('_inventory')) {
+      knots.push(`
+=== _inventory ===
+You take stock of your journey so far. You're traveling light — nothing to speak of yet.
++ [Continue] -> DONE
+`);
+      this.logger?.info('Injected platform _inventory knot');
+    }
+
+    return knots.length > 0 ? source + '\n' + knots.join('\n') : source;
+  }
+
   private async compileInk(source: string): Promise<string> {
     // Dynamic import of the full inkjs module (includes compiler)
     // This is optional — only needed when .ink source files are used
+    const patched = this.injectPlatformKnots(source);
     try {
       const inkjs = await import('inkjs/full');
-      const compiler = new inkjs.Compiler(source);
+      const compiler = new inkjs.Compiler(patched);
       const story = compiler.Compile();
       return story.ToJson();
     } catch (err) {

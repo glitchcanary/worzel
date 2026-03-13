@@ -26,8 +26,10 @@ export class OpenAITTS implements TTSProvider {
     voice?: string;
     sampleRate?: number;
     format?: string;
+    speed?: number;
   }): Promise<TTSResult> {
     const voice = options?.voice ?? this.options.voice;
+    const speed = options?.speed ?? 1.0;
 
     const response = await this.fetch(this.options.url, {
       method: 'POST',
@@ -40,7 +42,7 @@ export class OpenAITTS implements TTSProvider {
         input: text,
         voice,
         response_format: 'pcm',
-        speed: 1.0,
+        speed,
       }),
     });
 

@@ -1,34 +1,13 @@
-import { loadConfig } from '../config/loader.js';
-import { createLogger } from '../utils/logger.js';
 import { createHttpServer, registerFillerRoutes } from '../server/http.js';
 import { createNoServerWebSocketServers } from '../server/websocket.js';
-import { SessionManager } from '../session/manager.js';
-import { createProviders } from '../providers/registry.js';
 import { FillerCache } from '../pipeline/filler-cache.js';
 import { createNoServerFinkWebSocketServer, registerFinkModule } from '../fink/module.js';
+import { createAppRuntime, listenWithPortHandling } from '../server/runtime.js';
 
 async function main(): Promise<void> {
-  const configPath = process.env['WORZEL_CONFIG_FILE'];
-  let config;
-  try {
-    config = loadConfig(configPath);
-  } catch (err) {
-    console.error('Configuration error:', (err as Error).message);
-    process.exit(1);
-  }
-
-  const logger = createLogger(config.logLevel);
-  logger.info('Starting unified worzel server...');
-
-  const providers = createProviders(config);
-  logger.info({
-    asr: config.asr.provider,
-    llm: `${config.llm.provider}/${config.llm.model}`,
-    tts: config.tts.provider,
-  }, 'Providers initialized');
-
-  const sessionManager = new SessionManager(config.session, logger);
-  sessionManager.start();
+  const { config, logger, providers, sessionManager } = createAppRuntime({
+    startupMessage: 'Starting unified worzel server...',
+  });
 
   const app = await createHttpServer(config, logger);
   const fillerCache = new FillerCache();
@@ -42,19 +21,10 @@ async function main(): Promise<void> {
     sessionManager,
   });
 
-  let address: string;
-  try {
-    address = await app.listen({
-      port: config.server.port,
-      host: config.server.host,
-    });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      console.error(`\nERROR: Port ${config.server.port} is already in use.`);
-      process.exit(1);
-    }
-    throw err;
-  }
+  const address = await listenWithPortHandling(app, {
+    port: config.server.port,
+    host: config.server.host,
+  });
 
   const httpServer = app.server;
   const { mainWss, twilioWss } = createNoServerWebSocketServers(

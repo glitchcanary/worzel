@@ -33,6 +33,9 @@ export class Session {
   /** Dialogue history for this session */
   dialogue: DialogueEntry[] = [];
 
+  /** Peak RMS audio energy (0.0–1.0) from the last recording chunk. */
+  lastAudioLevel: number | undefined;
+
   /** Abort controller for interrupting pipeline operations */
   abortController: AbortController | null = null;
 

@@ -29,6 +29,9 @@ export interface FinkModuleOptions {
   providers: Providers;
   logger: pino.Logger;
   sessionManager: SessionManager;
+  routePrefix?: string;
+  wsPath?: string;
+  apiPrefix?: string;
 }
 
 export interface FinkRuntime {
@@ -211,9 +214,9 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
   const { app, logger, sessionManager } = options;
   const config = applyFinkOverrides(options.config);
   const providers = options.providers;
-  const routePrefix = '/fink';
-  const wsPath = '/ws/fink';
-  const apiPrefix = `${routePrefix}/api`;
+  const routePrefix = options.routePrefix ?? '/fink';
+  const wsPath = options.wsPath ?? '/ws/fink';
+  const apiPrefix = options.apiPrefix ?? `${routePrefix}/api`;
   const voiceAliases = parseVoiceAliases(process.env['FINK_TTS_VOICE_MAP']);
   const choiceVoice = process.env['FINK_CHOICE_VOICE']?.trim() || undefined;
 
@@ -250,14 +253,16 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
     default: defaultStoryId,
   }));
 
-  app.get(routePrefix, async (_request, reply) => {
-    reply.redirect(`${routePrefix}/`);
-  });
+  if (routePrefix) {
+    app.get(routePrefix, async (_request, reply) => {
+      reply.redirect(`${routePrefix}/`);
+    });
+  }
 
   const finkClientDir = join(projectRoot, 'fink', 'client');
   await app.register(fastifyStatic, {
     root: finkClientDir,
-    prefix: `${routePrefix}/`,
+    prefix: routePrefix ? `${routePrefix}/` : '/',
     decorateReply: false,
   });
 

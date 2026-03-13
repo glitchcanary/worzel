@@ -95,43 +95,58 @@ ABSOLUTE CONSTRAINTS:
 }
 
 /**
- * Build a system prompt for gently redirecting when no choice matched.
+ * Build a system prompt for creative in-character refusals when no choice matched.
+ *
+ * Unlike `discussion` (which answers questions), this handles player ACTIONS
+ * that aren't available — "eat the flowers", "pet the cat", "fly away".
+ * The response should be a brief, atmospheric, in-character reason why the
+ * action doesn't work, NOT a robotic "that's not an option."
  */
 export function buildNoMatchPrompt(ctx: PromptContext): string {
   const sceneText = ctx.narration.map(n => n.text).join('\n');
   const speaker = ctx.currentSpeaker ?? 'narrator';
   const character = ctx.characters.get(speaker);
   const charDesc = character
-    ? `You are ${character.name}.`
-    : `You are the narrator.`;
+    ? `You are ${character.name}${character.mood ? ` (mood: ${character.mood})` : ''}.`
+    : `You are the narrator of this interactive story.`;
 
+  const foafInfo = buildFoafContext(ctx.characters);
   const choicesList = ctx.choices.length > 0
     ? ctx.choices.map((c, i) => `${i + 1}. "${c.text}"`).join('\n')
     : 'The story will continue.';
 
   return `${charDesc}
 
-The user said something that doesn't directly match any available option. Your job is to help them find the right option.
+The player just tried to do something that isn't one of the available choices. Respond with a CREATIVE, IN-CHARACTER reason why that action doesn't work here.
 
 CURRENT SCENE:
 ${sceneText}
-
-AVAILABLE CHOICES (these are the ONLY options that exist):
+${foafInfo}
+AVAILABLE CHOICES (the only real options):
 ${choicesList}
 
-USER SAID: "${ctx.asrText}"
+THE PLAYER TRIED: "${ctx.asrText}"
+
+YOUR TASK: Refuse this action creatively, as if the story world itself is pushing back. Examples of GOOD refusals:
+- "The flowers seem to recoil at your approach, as if they have a will of their own."
+- "Something about the lamplight makes you hesitate — best not to disturb it."
+- "You consider it, but a strange reluctance holds you back."
+- "The thought crosses your mind, then fades like morning mist."
 
 RULES:
-- Analyse what the user said and identify which available choices are most relevant.
-- Actively triage: connect their words to the actual options. Be specific, not vague.
-- 2-3 spoken sentences maximum. This is a voice interface.
+- 1-2 sentences ONLY. This is a voice interface — be concise.
+- Be atmospheric and in-character with the scene's tone.
+- You MAY describe brief sensory reactions — a feeling, a hesitation, something that dissuades.
+- Vary your style. Don't repeat the same pattern. Be inventive.
+- Do NOT explicitly say "that's not an option" or "you can't do that" — SHOW why it doesn't work, don't TELL.
+- Do NOT list or mention the available choices. The system will read those separately.
 - Do NOT use lists, markdown, or formatting.
 
 ABSOLUTE CONSTRAINTS:
-- ONLY refer to choices from the AVAILABLE CHOICES list above. NEVER invent, fabricate, or suggest options that are not listed. If you mention an option, it must be a verbatim match.
-- NEVER narrate events, outcomes, or actions. Nothing happens. The cat does not move, vanish, or react. No reports get filed. Nothing changes. The story world is frozen until the player selects a real choice.
-- NEVER take actions or claim something has been done or will be done.
-- Your ONLY purpose is to help the player pick from the existing choices. That's it.`;
+- The action DOES NOT SUCCEED. Nothing the player tried actually happens. No objects move, no one reacts in a way that advances the story.
+- NEVER invent new objects, characters, or story elements not already in the scene.
+- NEVER advance the story or change the world state. The scene remains exactly as it was.
+- Keep the tone consistent with the scene — don't inject comedy into a serious moment or gravity into a light one.`;
 }
 
 /**

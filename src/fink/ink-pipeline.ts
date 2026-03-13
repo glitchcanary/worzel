@@ -29,17 +29,32 @@ import { stripThinkTags } from '../utils/sanitize.js';
 import { TextSegmenter } from '../pipeline/text-segmenter.js';
 import { AudioRateController } from '../pipeline/audio-rate-controller.js';
 
+/** Parent story state saved before a FINK link switch. */
+export interface ParentStoryState {
+  storyId: string;
+  serializedState: string;
+}
+
 /** Callback for when a choice with a FINK: link is selected by voice. */
 export type FinkLinkHandler = (
   storyId: string, session: Session, transport: Transport,
+  parentState: ParentStoryState,
 ) => Promise<InkSession | null>;
+
+/** Callback for when a story ends — returns parent session if available. */
+export type StoryEndedHandler = (
+  session: Session, transport: Transport,
+) => Promise<{ inkSession: InkSession; narration: NarrationSegment[]; choices: InkChoice[] } | null>;
 
 export interface InkPipelineOptions {
   asr: ASRProvider;
   llm: LLMProvider;
   tts: TTSProvider;
   logger: pino.Logger;
+  voiceAliases?: Record<string, string>;
+  choiceVoice?: string;
   onFinkLink?: FinkLinkHandler;
+  onStoryEnded?: StoryEndedHandler;
 }
 
 export class InkPipeline {
@@ -48,7 +63,10 @@ export class InkPipeline {
   private readonly tts: TTSProvider;
   private readonly logger: pino.Logger;
   private readonly router: InkRouter;
+  private readonly voiceAliases: Map<string, string>;
+  private readonly choiceVoice: string;
   private readonly onFinkLink?: FinkLinkHandler;
+  private readonly onStoryEnded?: StoryEndedHandler;
   private audioBuffer: Buffer[] = [];
 
   /** Track consecutive no_match results to auto-read choices */
@@ -60,7 +78,12 @@ export class InkPipeline {
     this.tts = options.tts;
     this.logger = options.logger;
     this.router = new InkRouter({ llm: options.llm });
+    this.voiceAliases = new Map(
+      Object.entries(options.voiceAliases ?? {}).map(([key, value]) => [key.toLowerCase(), value]),
+    );
+    this.choiceVoice = options.choiceVoice ?? 'nova';
     this.onFinkLink = options.onFinkLink;
+    this.onStoryEnded = options.onStoryEnded;
   }
 
   pushAudio(chunk: Buffer): void {
@@ -86,6 +109,14 @@ export class InkPipeline {
     const opusEncoder = new OpusEncoder({ sampleRate: 16000, channels: 1 });
 
     try {
+      // 0. Skip ASR if client reports very low audio energy (likely silence/ambient)
+      const audioLevel = session.lastAudioLevel;
+      if (audioLevel !== undefined && audioLevel < 0.01) {
+        this.logger.info({ audioLevel }, 'Audio level below threshold, skipping ASR');
+        this.audioBuffer = [];
+        return;
+      }
+
       // 1. Decode audio
       const frames = this.audioBuffer;
       this.audioBuffer = [];
@@ -106,7 +137,7 @@ export class InkPipeline {
       }
 
       const asrText = asrResult.text.trim();
-      this.logger.info({ text: asrText }, 'ASR result');
+      this.logger.info({ text: asrText, audioLevel }, 'ASR result');
 
       // Record user utterance in dialogue history
       session.addDialogue('user', asrText);
@@ -161,12 +192,29 @@ export class InkPipeline {
           );
           break;
 
-        case 'no_match':
-          this.noMatchCount++;
-          // Don't trust the LLM to list choices — use template + real choice list
-          await this.handleNoMatch(
+        case 'skip_ahead':
+          this.noMatchCount = 0;
+          await this.handleSkipAhead(
             session, transport, inkSession, opusEncoder, abortController.signal,
           );
+          break;
+
+        case 'no_match':
+          this.noMatchCount++;
+          await this.handleLlmResponse(
+            session, transport, inkSession, opusEncoder,
+            asrText, 'no_match', abortController.signal,
+          );
+          // Read the real choices after the creative refusal
+          if (!abortController.signal.aborted) {
+            const noMatchState = inkSession.getState();
+            if (noMatchState.choices.length > 0) {
+              await this.readChoicesAloud(
+                session, transport, opusEncoder,
+                noMatchState.choices, abortController.signal,
+              );
+            }
+          }
           break;
       }
 
@@ -231,8 +279,13 @@ export class InkPipeline {
     }
   }
 
-  /** Voice used to read choices aloud (distinct from narrator). */
-  private readonly choiceVoice = 'nova';
+  /** TTS speed multiplier — configurable per-session via fink_settings. */
+  ttsSpeed = 1.15;
+
+  private resolveVoice(voice?: string): string | undefined {
+    if (!voice) return undefined;
+    return this.voiceAliases.get(voice.toLowerCase()) ?? voice;
+  }
 
   /**
    * Handle a matched choice: advance the story and narrate the result.
@@ -248,15 +301,54 @@ export class InkPipeline {
     const choiceIndex = classification.choiceIndex!;
     this.logger.info({ choiceIndex }, 'Advancing story');
 
+    // Save state before any potential FINK link switch (for parent story stack)
+    const parentState: ParentStoryState = {
+      storyId: inkSession.storyId,
+      serializedState: inkSession.serialize(),
+    };
+
     // Check for FINK: link before advancing
     const choices = inkSession.getChoices();
     const selected = choices.find(c => c.index === choiceIndex);
     if (selected?.tags.finkLink && this.onFinkLink) {
-      const newSession = await this.onFinkLink(selected.tags.finkLink, session, transport);
+      const newSession = await this.onFinkLink(
+        selected.tags.finkLink, session, transport, parentState,
+      );
       if (newSession) return; // Story switch handled by callback
+      // FINK link failed — don't advance the story (choice may lead to -> END or stub).
+      // Stay at the current story position and tell the user.
+      this.logger.warn({ finkLink: selected.tags.finkLink }, 'FINK: link failed, staying at current position');
+      await this.speakText(
+        session, transport, opusEncoder,
+        'Sorry, that story could not be loaded right now.', signal,
+      );
+      // Re-read the current choices so the user knows where they are
+      const currentState = inkSession.getState();
+      if (currentState.choices.length > 0 && !signal.aborted) {
+        await this.readChoicesAloud(
+          session, transport, opusEncoder, currentState.choices, signal,
+        );
+      }
+      return;
     }
 
     const result = inkSession.choose(choiceIndex);
+
+    // Check narration-level FINK: tags (toc.fink.js puts # FINK: on knot lines)
+    if (this.onFinkLink) {
+      for (const seg of result.narration) {
+        if (seg.tags.finkLink) {
+          this.logger.info({ finkLink: seg.tags.finkLink }, 'FINK: link in narration tag');
+          const newSession = await this.onFinkLink(
+            seg.tags.finkLink, session, transport, parentState,
+          );
+          if (newSession) return; // Story switch handled by callback
+          // Narration-level FINK link failed — story already advanced, narrate what we have
+          // but warn the user about the broken link
+          this.logger.warn({ finkLink: seg.tags.finkLink }, 'FINK: narration link failed');
+        }
+      }
+    }
 
     // Record story output in dialogue history
     const narrationText = result.narration.map(n => n.text).join('\n');
@@ -286,8 +378,27 @@ export class InkPipeline {
       );
     }
 
-    // If story ended, narrate that too
+    // If story ended, try returning to parent story
     if (inkSession.isEnded) {
+      if (this.onStoryEnded) {
+        const parent = await this.onStoryEnded(session, transport);
+        if (parent) {
+          // Brief transition, then read parent's choices (don't re-narrate — user already heard it)
+          this.logger.info({ storyId: parent.inkSession.storyId }, 'Returned to parent story');
+          if (!signal.aborted) {
+            await this.speakText(
+              session, transport, opusEncoder,
+              'You find yourself back where you were.', signal,
+            );
+          }
+          if (parent.choices.length > 0 && !signal.aborted) {
+            await this.readChoicesAloud(
+              session, transport, opusEncoder, parent.choices, signal,
+            );
+          }
+          return;
+        }
+      }
       await this.speakText(
         session, transport, opusEncoder,
         'The story has come to an end.', signal,
@@ -321,47 +432,38 @@ export class InkPipeline {
     }
   }
 
-  /** Short phrases for no_match responses — spoken before reading real choices. */
-  private static readonly NO_MATCH_PHRASES = [
-    "That's not one of the options right now.",
-    "I don't think that's available.",
-    "That's not something you can do here.",
-    "Hmm, that's not an option.",
-  ];
-
   /**
-   * Handle no_match: speak a short template phrase, then read the real choices aloud.
-   * Does NOT use the LLM — prevents fabrication of choices or narrative events.
+   * Handle skip/interrupt: speak a brief numbered choice list.
+   * No LLM call — just a quick list of choice names.
    */
-  private async handleNoMatch(
+  private async handleSkipAhead(
     session: Session,
     transport: Transport,
     inkSession: InkSession,
     opusEncoder: OpusEncoder,
     signal: AbortSignal,
   ): Promise<void> {
-    const phrase = InkPipeline.NO_MATCH_PHRASES[
-      Math.floor(Math.random() * InkPipeline.NO_MATCH_PHRASES.length)
-    ]!;
-
-    await transport.sendText(JSON.stringify({
-      type: 'tts', state: 'start', session_id: session.id,
-    }));
-
-    const rateController = new AudioRateController();
-    await this.speakSegment(session, transport, opusEncoder, rateController, phrase, signal);
-
-    await transport.sendText(JSON.stringify({
-      type: 'tts', state: 'stop', session_id: session.id,
-    }));
-
-    // Read the actual choices from the Ink engine
     const state = inkSession.getState();
-    if (state.choices.length > 0 && !signal.aborted) {
-      await this.readChoicesAloud(session, transport, opusEncoder, state.choices, signal);
+
+    if (state.choices.length === 0) {
+      await this.speakText(
+        session, transport, opusEncoder,
+        'There are no choices right now.', signal,
+      );
+      return;
     }
 
-    session.addDialogue('assistant', phrase);
+    // Brief numbered format — terse, no preamble
+    let briefText: string;
+    if (state.choices.length === 1) {
+      briefText = `Your option is: ${state.choices[0]!.text}.`;
+    } else {
+      const names = state.choices.map((c, i) => `${i + 1}, ${c.text}`);
+      briefText = `Your options: ${names.join('. ')}.`;
+    }
+
+    await this.speakText(session, transport, opusEncoder, briefText, signal);
+    session.addDialogue('assistant', `[Skip] ${briefText}`);
   }
 
   /**
@@ -466,6 +568,7 @@ export class InkPipeline {
 
     for (const seg of segments) {
       if (signal.aborted) break;
+      if (!seg.text) continue; // Skip tag-only segments (no text to speak)
 
       await transport.sendText(JSON.stringify({
         type: 'tts', state: 'sentence_start',
@@ -475,7 +578,8 @@ export class InkPipeline {
 
       try {
         const ttsResult = await this.tts.synthesize(seg.text, {
-          voice: seg.voice,
+          voice: this.resolveVoice(seg.voice),
+          speed: this.ttsSpeed,
         });
 
         rateController.reset();
@@ -484,7 +588,7 @@ export class InkPipeline {
           ttsResult.sampleRate,
         );
       } catch (err) {
-        this.logger.error({ err, text: seg.text }, 'TTS error for narration segment');
+        this.logger.error({ err: err instanceof Error ? err.message : String(err), text: seg.text }, 'TTS error for narration segment');
       }
 
       await transport.sendText(JSON.stringify({
@@ -529,7 +633,8 @@ export class InkPipeline {
 
     try {
       const ttsResult = await this.tts.synthesize(choiceText, {
-        voice: this.choiceVoice,
+        voice: this.resolveVoice(this.choiceVoice),
+        speed: this.ttsSpeed,
       });
       rateController.reset();
       await this.sendOpusAudio(
@@ -537,7 +642,7 @@ export class InkPipeline {
         ttsResult.sampleRate,
       );
     } catch (err) {
-      this.logger.error({ err }, 'TTS error reading choices');
+      this.logger.error({ err: err instanceof Error ? err.message : String(err) }, 'TTS error reading choices');
     }
 
     await transport.sendText(JSON.stringify({
@@ -562,14 +667,14 @@ export class InkPipeline {
     }));
 
     try {
-      const ttsResult = await this.tts.synthesize(text);
+      const ttsResult = await this.tts.synthesize(text, { speed: this.ttsSpeed });
       rateController.reset();
       await this.sendOpusAudio(
         ttsResult.audio, opusEncoder, transport, rateController, signal,
         ttsResult.sampleRate,
       );
     } catch (err) {
-      this.logger.error({ err, text }, 'TTS error for segment');
+      this.logger.error({ err: err instanceof Error ? err.message : String(err), text }, 'TTS error for segment');
     }
 
     await transport.sendText(JSON.stringify({
@@ -609,6 +714,13 @@ export class InkPipeline {
     narration: NarrationSegment[],
   ): Promise<void> {
     const state = inkSession.getState();
+    this.logger.info({
+      storyId: state.storyId,
+      choiceCount: state.choices.length,
+      choices: state.choices.map(c => c.text),
+      narrationCount: narration.length,
+      isEnded: state.isEnded,
+    }, 'Sending ink_state');
     await transport.sendText(JSON.stringify({
       type: 'ink_state',
       session_id: session.id,

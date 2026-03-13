@@ -17,7 +17,8 @@ export async function handleListen(
       break;
     case 'stop':
       session.listeningState = 'idle';
-      logger.info({ sessionId: session.id }, 'Recording stopped');
+      session.lastAudioLevel = message.audio_level;
+      logger.info({ sessionId: session.id, audioLevel: message.audio_level }, 'Recording stopped');
       break;
     case 'detect':
       session.listeningState = 'detecting';

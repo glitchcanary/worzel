@@ -27,6 +27,8 @@ export const ListenMessageSchema = z.object({
   type: z.literal('listen'),
   state: z.enum(['start', 'stop', 'detect']),
   mode: z.enum(['manual', 'auto']).optional(),
+  /** Peak RMS audio energy (0.0–1.0) for the recording chunk. Fink extension. */
+  audio_level: z.number().min(0).max(1).optional(),
 });
 
 // --- STT: speech-to-text result (server → client) ---

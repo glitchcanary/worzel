@@ -8,7 +8,7 @@
 
 import { Story } from 'inkjs';
 import type { Choice } from 'inkjs/engine/Choice';
-import { parseTags, type ParsedTags } from './ink-tags.js';
+import { parseTags, mergeTags, type ParsedTags } from './ink-tags.js';
 
 export interface InkChoice {
   index: number;
@@ -85,12 +85,28 @@ export class InkSession {
    */
   continue(): { narration: NarrationSegment[]; choices: InkChoice[] } {
     const narration: NarrationSegment[] = [];
+    let pendingTags: ParsedTags | null = null;
 
     while (this.story.canContinue) {
       const text = this.story.Continue();
-      if (!text || !text.trim()) continue;
+      const rawTags = this.story.currentTags ?? [];
 
-      const tags = parseTags(this.story.currentTags ?? []);
+      if (!text || !text.trim()) {
+        // Empty text but may have tags — carry them forward
+        if (rawTags.length > 0) {
+          const emptyTags = parseTags(rawTags);
+          pendingTags = pendingTags ? mergeTags(pendingTags, emptyTags) : emptyTags;
+        }
+        continue;
+      }
+
+      let tags = parseTags(rawTags);
+      // Merge any tags carried forward from empty lines
+      if (pendingTags) {
+        tags = mergeTags(pendingTags, tags);
+        pendingTags = null;
+      }
+
       const speaker = tags.speaker ?? this.defaultSpeaker;
 
       // Update character registry from tags
@@ -104,6 +120,22 @@ export class InkSession {
         mood: tags.mood ?? character?.mood,
         tags,
       });
+    }
+
+    // If there are leftover pending tags with no following text (e.g. FINK: link
+    // before -> END), attach them to the last narration segment or create a
+    // tag-only segment so they aren't lost.
+    if (pendingTags) {
+      if (narration.length > 0) {
+        const last = narration[narration.length - 1]!;
+        last.tags = mergeTags(last.tags, pendingTags);
+      } else {
+        narration.push({
+          text: '',
+          speaker: pendingTags.speaker ?? this.defaultSpeaker,
+          tags: pendingTags,
+        });
+      }
     }
 
     const choices = this.parseChoices();

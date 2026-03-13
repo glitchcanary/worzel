@@ -5,6 +5,7 @@
  * - Local story IDs:     "test-garden"
  * - Absolute URLs:       "https://example.com/story.fink.js"
  * - Escaped URLs:        "https:\/\/example.com\/story.fink.js" (Ink convention)
+ * - Bare domain paths:   "example.com/path/story.fink.js" (Ink strips // as comment)
  * - Root-relative:       "/path/to/story.fink.js"
  * - Relative filenames:  "hub.fink.js" or "../other/story.fink.js"
  */
@@ -30,6 +31,13 @@ export function resolveFinkUrl(
   // Local story ID — no dots, no slashes (e.g. "test-garden", "menu")
   if (!unescaped.includes('/') && !unescaped.includes('.')) {
     return null;
+  }
+
+  // Bare domain path — "example.com/path/file.fink.js"
+  // Ink strips // as comments, so https:// can't appear in tags.
+  // Detect domain-like start (word.word) and prepend https://
+  if (/^[a-zA-Z0-9-]+\.[a-zA-Z]/.test(unescaped) && unescaped.includes('/')) {
+    return `https://${unescaped}`;
   }
 
   // Relative or root-relative — need a base URL to resolve against

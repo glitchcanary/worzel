@@ -5,6 +5,7 @@
  * - choice_match:    User's words match an Ink choice → advance story
  * - discussion:      User is asking about the world → LLM responds in-character
  * - meta_query:      User wants to know their options → LLM describes choices
+ * - skip_ahead:      User wants to skip narration → brief choice summary
  * - freeform_input:  Story is waiting for raw text input → pass through
  * - no_match:        Nothing matched → LLM redirects gently
  */
@@ -16,6 +17,7 @@ export type ClassificationType =
   | 'choice_match'
   | 'discussion'
   | 'meta_query'
+  | 'skip_ahead'
   | 'freeform_input'
   | 'no_match';
 
@@ -33,6 +35,13 @@ const META_KEYWORDS = new Set([
   'options', 'choices', 'help', 'what can i do', 'what are my options',
   'where am i', 'what now', 'what next', 'what should i do',
   'tell me my options', 'what do i do',
+]);
+
+/** Words that signal the user wants to skip narration and hear choices briefly. */
+const SKIP_KEYWORDS = new Set([
+  'skip', 'next', 'move on', 'got it', 'yeah yeah', 'yep yep',
+  'okay okay', 'ok ok', 'i get it', 'enough', 'stop',
+  'get on with it', 'hurry up', 'come on', 'cut to the chase',
 ]);
 
 /** Affirmative responses that match a single available choice. */
@@ -108,6 +117,17 @@ export class InkRouter {
     for (const keyword of META_KEYWORDS) {
       if (normalized.includes(keyword)) {
         return { type: 'meta_query', confidence: 0.9 };
+      }
+    }
+
+    // Skip/interrupt — exact match
+    if (SKIP_KEYWORDS.has(normalized)) {
+      return { type: 'skip_ahead', confidence: 1.0 };
+    }
+    // Multi-word skip phrase as substring (e.g. "yeah yeah just skip it")
+    for (const keyword of SKIP_KEYWORDS) {
+      if (keyword.includes(' ') && normalized.includes(keyword)) {
+        return { type: 'skip_ahead', confidence: 0.9 };
       }
     }
 
@@ -209,6 +229,7 @@ Classify the player's intent:
 - If they clearly want one of the listed choices, respond: CHOICE:N (the choice number)
 - If they are asking a QUESTION about the story world or a character (e.g. "what is this place?", "who are you?"), respond: DISCUSSION
 - If they are asking what they can do or want help (e.g. "what are my options?"), respond: META
+- If they seem impatient and want to skip narration or hear choices quickly (e.g. "yeah yeah", "skip", "get on with it"), respond: SKIP
 - If they are trying to perform an ACTION that is not one of the listed choices (e.g. "pet the cat", "eat it", "fly away", "open the door"), respond: NONE
 - If nothing matches, respond: NONE
 
@@ -246,6 +267,7 @@ Respond with ONLY the classification word/code, nothing else.`,
 
     if (trimmed === 'DISCUSSION') return { type: 'discussion', confidence: 0.8 };
     if (trimmed === 'META') return { type: 'meta_query', confidence: 0.8 };
+    if (trimmed === 'SKIP') return { type: 'skip_ahead', confidence: 0.8 };
     if (trimmed === 'NONE') return { type: 'no_match', confidence: 0.5 };
 
     return null;

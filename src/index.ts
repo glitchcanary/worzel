@@ -1,37 +1,12 @@
-import { loadConfig } from './config/loader.js';
-import { createLogger } from './utils/logger.js';
 import { createHttpServer, registerFillerRoutes } from './server/http.js';
 import { createWebSocketServer } from './server/websocket.js';
-import { SessionManager } from './session/manager.js';
-import { createProviders } from './providers/registry.js';
 import { FillerCache } from './pipeline/filler-cache.js';
+import { createAppRuntime, listenWithPortHandling } from './server/runtime.js';
 
 async function main(): Promise<void> {
-  // Load and validate config
-  const configPath = process.env['WORZEL_CONFIG_FILE'];
-  let config;
-  try {
-    config = loadConfig(configPath);
-  } catch (err) {
-    console.error('Configuration error:', (err as Error).message);
-    process.exit(1);
-  }
-
-  // Create logger
-  const logger = createLogger(config.logLevel);
-  logger.info('Starting worzel server...');
-
-  // Create providers (ASR, LLM, TTS)
-  const providers = createProviders(config);
-  logger.info({
-    asr: config.asr.provider,
-    llm: `${config.llm.provider}/${config.llm.model}`,
-    tts: config.tts.provider,
-  }, 'Providers initialized');
-
-  // Create session manager
-  const sessionManager = new SessionManager(config.session, logger);
-  sessionManager.start();
+  const { config, logger, providers, sessionManager } = createAppRuntime({
+    startupMessage: 'Starting worzel server...',
+  });
 
   // Create HTTP server
   const app = await createHttpServer(config, logger);
@@ -43,20 +18,11 @@ async function main(): Promise<void> {
   (app as unknown as { setFillerCache: (fc: typeof fillerCache) => void }).setFillerCache(fillerCache);
 
   // Start HTTP server
-  let address: string;
-  try {
-    address = await app.listen({
-      port: config.server.port,
-      host: config.server.host,
-    });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      console.error(`\nERROR: Port ${config.server.port} is already in use.`);
-      console.error(`Kill the existing server first: pkill -f 'node worzel/dist/index.js'\n`);
-      process.exit(1);
-    }
-    throw err;
-  }
+  const address = await listenWithPortHandling(app, {
+    port: config.server.port,
+    host: config.server.host,
+    inUseMessage: "Kill the existing server first: pkill -f 'node worzel/dist/index.js'",
+  });
 
   logger.info({ address }, 'HTTP server listening');
 

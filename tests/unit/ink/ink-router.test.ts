@@ -76,6 +76,55 @@ describe('InkRouter', () => {
       const result = router.tier1('the weather is nice', state);
       expect(result).toBeNull();
     });
+
+    it('detects "skip" as skip_ahead', () => {
+      const state = makeState([{ text: 'Open the gate' }]);
+      const result = router.tier1('skip', state);
+      expect(result?.type).toBe('skip_ahead');
+    });
+
+    it('detects "yeah yeah" as skip_ahead', () => {
+      const state = makeState([{ text: 'Open the gate' }]);
+      const result = router.tier1('yeah yeah', state);
+      expect(result?.type).toBe('skip_ahead');
+    });
+
+    it('detects "got it" as skip_ahead', () => {
+      const state = makeState([{ text: 'Open the gate' }]);
+      const result = router.tier1('got it', state);
+      expect(result?.type).toBe('skip_ahead');
+    });
+
+    it('detects "move on" as skip_ahead', () => {
+      const state = makeState([{ text: 'Open the gate' }]);
+      const result = router.tier1('move on', state);
+      expect(result?.type).toBe('skip_ahead');
+    });
+
+    it('detects multi-word skip phrase as substring', () => {
+      const state = makeState([{ text: 'Open the gate' }]);
+      const result = router.tier1('just move on already', state);
+      expect(result?.type).toBe('skip_ahead');
+    });
+
+    it('does not match single-word skip as substring of longer text', () => {
+      const state = makeState([{ text: 'Skip the intro' }]);
+      // "skip the intro" should NOT match the skip keyword via substring
+      // (only multi-word keywords get substring matching)
+      // but it COULD match as exact choice text — here it won't because
+      // skip keywords are checked before choices
+      const result = router.tier1('skip the intro', state);
+      // "skip the intro" is not in SKIP_KEYWORDS exactly,
+      // and "skip" is single-word so no substring match
+      // It should fall through to exact choice match
+      expect(result?.type).toBe('choice_match');
+    });
+
+    it('skip works even with no choices', () => {
+      const state = makeState([]);
+      const result = router.tier1('skip', state);
+      expect(result?.type).toBe('skip_ahead');
+    });
   });
 
   describe('tier2', () => {
@@ -156,6 +205,15 @@ describe('InkRouter', () => {
       const result = await router.classify('open the gate', state);
       expect(result.type).toBe('choice_match');
       expect(result.choiceIndex).toBe(0);
+    });
+
+    it('classifies skip phrases', async () => {
+      const state = makeState([
+        { text: 'Open the gate' },
+        { text: 'Turn back' },
+      ]);
+      const result = await router.classify('yeah yeah', state);
+      expect(result.type).toBe('skip_ahead');
     });
 
     it('matches choice via tier2 overlap', async () => {

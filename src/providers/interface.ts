@@ -64,6 +64,7 @@ export interface TTSProvider {
     language?: string;
     sampleRate?: number;
     format?: 'opus' | 'pcm' | 'mp3';
+    speed?: number;
   }): Promise<TTSResult>;
 }
 
