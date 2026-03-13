@@ -8,7 +8,7 @@
 // - ink_state messages update the story display
 // - User speech appears briefly as a transcript, not a persistent bubble
 
-import { OpusBrowserEncoder } from '/opus-encoder.js';
+import { OpusBrowserEncoder } from './opus-encoder.js';
 
 // ========================================================================
 // WsClient — WebSocket protocol client (copied from Worzel, + ink msgs)
@@ -79,7 +79,7 @@ class WsClient {
   }
   sendAudio(data) { if (this.ws?.readyState === 1) this.ws.send(data); }
   startListening(mode = 'manual') { this.send({ type: 'listen', state: 'start', mode }); }
-  stopListening() { this.send({ type: 'listen', state: 'stop' }); }
+  stopListening(opts) { this.send({ type: 'listen', state: 'stop', ...opts }); }
   abort() { this.send({ type: 'abort', reason: 'user_interrupt' }); }
   send(msg) { if (this.ws?.readyState === 1) this.ws.send(JSON.stringify(msg)); }
   handleMessage(msg) {
@@ -262,7 +262,7 @@ class FinkStory extends HTMLElement {
     img.style.cssText = 'max-width:100%;border-radius:8px;margin:8px 0;';
     img.onerror = () => img.remove();
     this._narration.appendChild(img);
-    this._scrollToBottom();
+    this._narration.scrollTop = this._narration.scrollHeight;
   }
 
   /** Add narration text (from story engine or LLM). */
@@ -334,8 +334,11 @@ class FinkStory extends HTMLElement {
   showEnded() {
     this._choices.innerHTML = `
       <div class="end-card">
-        <button onclick="this.dispatchEvent(new CustomEvent('fink-restart', { bubbles: true, composed: true }))">Start Over</button>
+        <button class="restart-btn">Start Over</button>
       </div>`;
+    this._choices.querySelector('.restart-btn').addEventListener('click', () => {
+      this.dispatchEvent(new CustomEvent('fink-restart', { bubbles: true, composed: true }));
+    });
   }
 
   /** Clear all content. */
@@ -366,6 +369,8 @@ class FinkMic extends HTMLElement {
     this._silenceTimer = null;
     this._silenceThreshold = 2000; // ms of silence before auto-stop
     this._lastAudioTime = 0;
+    this._speechDetected = false;
+    this._peakRms = 0; // peak RMS energy during this recording
     this.attachShadow({ mode: 'open' }).innerHTML = `
       <style>
         :host { display: flex; justify-content: center; padding: 12px; }
@@ -399,6 +404,17 @@ class FinkMic extends HTMLElement {
         .state-label.thinking { color: #f59e0b; }
         .state-label.speaking { color: #22c55e; }
         .state-label.listening { color: #e94560; }
+        .speed-ctl {
+          display: flex; gap: 2px; margin-left: 4px;
+        }
+        .spd {
+          background: transparent; border: 1px solid var(--fink-text-muted, #5a5e73);
+          color: var(--fink-text-muted, #5a5e73); border-radius: 4px;
+          font-size: 0.65rem; padding: 2px 5px; cursor: pointer;
+          font-family: system-ui, sans-serif; transition: all 0.15s;
+        }
+        .spd:hover { border-color: var(--fink-text-secondary, #8b8fa3); color: var(--fink-text-secondary); }
+        .spd.active { background: var(--fink-primary, #0f3460); border-color: var(--fink-accent, #e94560); color: var(--fink-text, #e8e8e8); }
       </style>
       <div class="wrap">
         <button class="mic" disabled>
@@ -407,6 +423,12 @@ class FinkMic extends HTMLElement {
         <div>
           <div class="hint">Hold to speak</div>
           <div class="state-label"></div>
+        </div>
+        <div class="speed-ctl">
+          <button class="spd" data-speed="1">1x</button>
+          <button class="spd active" data-speed="1.15">1.15x</button>
+          <button class="spd" data-speed="1.3">1.3x</button>
+          <button class="spd" data-speed="1.5">1.5x</button>
         </div>
       </div>`;
     const btn = this.shadowRoot.querySelector('button.mic');
@@ -435,6 +457,28 @@ class FinkMic extends HTMLElement {
 
     // Toggle mode by clicking the hint text
     hint.addEventListener('click', () => this.toggleHotMic());
+
+    // Speed buttons
+    const savedSpeed = localStorage.getItem('fink-tts-speed');
+    if (savedSpeed) {
+      this.ttsSpeed = parseFloat(savedSpeed);
+      this.shadowRoot.querySelectorAll('.spd').forEach(b => {
+        b.classList.toggle('active', parseFloat(b.dataset.speed) === this.ttsSpeed);
+      });
+    } else {
+      this.ttsSpeed = 1.15;
+    }
+    this.shadowRoot.querySelectorAll('.spd').forEach(b => {
+      b.addEventListener('click', () => {
+        this.ttsSpeed = parseFloat(b.dataset.speed);
+        localStorage.setItem('fink-tts-speed', String(this.ttsSpeed));
+        this.shadowRoot.querySelectorAll('.spd').forEach(s => s.classList.remove('active'));
+        b.classList.add('active');
+        this.dispatchEvent(new CustomEvent('fink-speed-change', {
+          bubbles: true, detail: { speed: this.ttsSpeed },
+        }));
+      });
+    });
   }
 
   toggleHotMic() {
@@ -462,13 +506,19 @@ class FinkMic extends HTMLElement {
   /** Auto-restart recording in hot mic mode (called after TTS finishes). */
   autoRestart() {
     if (this._hotMic && this._enabled && !this.recording) {
-      this.startRec();
+      // Small delay to avoid capturing TTS audio echo
+      setTimeout(() => {
+        if (this._hotMic && this._enabled && !this.recording) this.startRec();
+      }, 300);
     }
   }
 
   async startRec() {
     if (this.recording || !this._enabled) return;
     this.recording = true;
+    this._speechDetected = false;
+    this._lastAudioTime = 0;
+    this._peakRms = 0;
     const btn = this.shadowRoot.querySelector('button.mic');
     btn.classList.add('rec');
     if (this._hotMic) this.setPipelineState('listening');
@@ -480,13 +530,32 @@ class FinkMic extends HTMLElement {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
       this.audioCtx = new AudioContext({ sampleRate: 16000 });
       const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-      await this.audioCtx.audioWorklet.addModule('/pcm-processor.js');
+      await this.audioCtx.audioWorklet.addModule('./pcm-processor.js');
       const worklet = new AudioWorkletNode(this.audioCtx, 'pcm-processor');
       worklet.port.onmessage = (e) => {
         const samples = new Int16Array(e.data);
         const frames = this._encoder.encode(samples);
         for (const frame of frames) {
           this.dispatchEvent(new CustomEvent('fink-audio-data', { bubbles: true, detail: { audio: frame } }));
+        }
+        // Calculate RMS energy for this chunk (always, for peak tracking)
+        let sum = 0;
+        for (let i = 0; i < samples.length; i++) sum += Math.abs(samples[i]);
+        const rms = sum / samples.length / 32768;
+        if (rms > this._peakRms) this._peakRms = rms;
+        // Silence detection for hot-mic mode
+        if (this._hotMic) {
+          if (rms > 0.015) {
+            this._lastAudioTime = Date.now();
+            this._speechDetected = true;
+          }
+          // Only auto-stop after speech was detected (ignore pre-speech silence)
+          if (this._speechDetected && this._lastAudioTime > 0) {
+            if (Date.now() - this._lastAudioTime >= this._silenceThreshold) {
+              this._lastAudioTime = 0;
+              this.stopRec();
+            }
+          }
         }
       };
       source.connect(worklet);
@@ -511,7 +580,15 @@ class FinkMic extends HTMLElement {
     this._worklet?.disconnect(); this._source?.disconnect();
     this.audioCtx?.close(); this.audioCtx = null;
     this.mediaStream?.getTracks().forEach(t => t.stop()); this.mediaStream = null;
-    this.dispatchEvent(new CustomEvent('fink-recording-stop', { bubbles: true }));
+    const peakRms = this._peakRms;
+    this.dispatchEvent(new CustomEvent('fink-recording-stop', {
+      bubbles: true, detail: {
+        hadSpeech: this._speechDetected || !this._hotMic,
+        peakRms,
+      },
+    }));
+    this._speechDetected = false;
+    this._peakRms = 0;
   }
 }
 customElements.define('fink-mic', FinkMic);
@@ -574,7 +651,8 @@ class FinkApp extends HTMLElement {
   connectedCallback() {
     const input = this.shadowRoot.querySelector('.connect-bar input');
     const btn = this.shadowRoot.querySelector('.connect-bar button');
-    input.value = window.location.origin;
+    const basePath = window.location.pathname.startsWith('/fink') ? '/fink' : '';
+    input.value = window.location.origin + basePath;
 
     btn.addEventListener('click', () => {
       if (this.client?.currentState === 'connected') {
@@ -593,11 +671,20 @@ class FinkApp extends HTMLElement {
       mic.setPipelineState('idle');
       this.client?.startListening();
     });
-    mic.addEventListener('fink-recording-stop', () => {
-      this.client?.stopListening();
+    mic.addEventListener('fink-recording-stop', (e) => {
+      // In hot-mic mode, skip server call if no speech was detected
+      if (e.detail?.hadSpeech === false) {
+        mic.autoRestart();
+        return;
+      }
+      const peakRms = e.detail?.peakRms;
+      this.client?.stopListening(peakRms != null ? { audio_level: Math.round(peakRms * 1000) / 1000 } : undefined);
       mic.setPipelineState('thinking');
     });
     mic.addEventListener('fink-audio-data', e => this.client?.sendAudio(e.detail.audio));
+    mic.addEventListener('fink-speed-change', e => {
+      this.client?.send({ type: 'fink_settings', tts_speed: e.detail.speed });
+    });
 
     // Choice card tapped — abort current audio, then send ink:choose to server
     story.addEventListener('fink-choice', e => {
@@ -630,7 +717,11 @@ class FinkApp extends HTMLElement {
       btn.textContent = s === 'connected' ? 'Disconnect' : 'Connect';
       btn.classList.toggle('dc', s === 'connected');
       input.disabled = s === 'connected';
-      if (s === 'connected') mic.enable();
+      if (s === 'connected') {
+        mic.enable();
+        // Send initial TTS speed preference
+        this.client?.send({ type: 'fink_settings', tts_speed: mic.ttsSpeed ?? 1.15 });
+      }
       else { mic.disable(); if (s === 'disconnected') this.player?.stop(); }
     });
 
@@ -657,6 +748,7 @@ class FinkApp extends HTMLElement {
         if (!inkNarrating) story.endStreaming();
         inkNarrating = false;
         mic.setPipelineState('idle');
+        mic.autoRestart();
       }
     });
 

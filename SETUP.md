@@ -13,13 +13,33 @@ cd worzel
 npm install
 npm run build
 
-# 3. Start the server
-WORZEL_AUTH_SECRET="$(openssl rand -base64 32)" npm start
+# 3. Start the unified server in detached mode
+WORZEL_AUTH_SECRET="$(openssl rand -base64 32)" npm run start:unified
 
 # 4. Open http://localhost:3000 in your browser
 ```
 
 The LLM defaults to Ollama at localhost:11434 with qwen2.5:7b — no config needed.
+
+Foreground vs detached:
+
+- `npm run start:unified` detaches and returns you to the shell. It keeps running after that terminal command finishes.
+- `npm run start:unified:fg` stays attached to the terminal. Closing that terminal or pressing `Ctrl+C` stops the server.
+
+Useful unified management commands:
+
+```bash
+npm run status:unified
+npm run logs:unified
+npm run restart:unified
+npm run stop:unified
+```
+
+These commands are health-aware:
+
+- `start:unified` only reports success once `http://127.0.0.1:3000/api/health` is responding.
+- `restart:unified` will start the server even if nothing is currently running.
+- `status:unified` checks health, not just a saved PID file.
 
 ## Provider Setup
 
