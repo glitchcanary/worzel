@@ -66,6 +66,8 @@ export interface TTSProvider {
     sampleRate?: number;
     format?: 'opus' | 'pcm' | 'mp3';
     speed?: number;
+    cacheScope?: 'persistent' | 'volatile' | 'none';
+    cacheTtlMs?: number;
   }): Promise<TTSResult>;
 }
 

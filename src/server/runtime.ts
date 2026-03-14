@@ -29,7 +29,7 @@ export function createAppRuntime(options: RuntimeOptions): AppRuntime {
   const logger = createLogger(config.logLevel);
   logger.info(options.startupMessage);
 
-  const providers = createProviders(config);
+  const providers = createProviders(config, logger);
   logger.info({
     asr: config.asr.provider,
     llm: `${config.llm.provider}/${config.llm.model}`,

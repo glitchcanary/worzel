@@ -218,7 +218,7 @@ function createFinkOtaHandler(config: AppConfig, wsPath: string) {
 export async function registerFinkModule(options: FinkModuleOptions): Promise<FinkRuntime> {
   const { app, logger, sessionManager } = options;
   const config = applyFinkOverrides(options.config);
-  const providers = config === options.config ? options.providers : createProviders(config);
+  const providers = config === options.config ? options.providers : createProviders(config, logger);
   const fallbackTts = config.tts.provider === options.config.tts.provider
     ? undefined
     : options.providers.tts;

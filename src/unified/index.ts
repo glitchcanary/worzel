@@ -72,14 +72,32 @@ async function main(): Promise<void> {
     logger.warn({ err }, 'Filler cache init failed (non-fatal)');
   });
 
+  let shutdownStarted = false;
+  let forcedExitTimer: NodeJS.Timeout | null = null;
   const shutdown = async (signal: string) => {
+    if (shutdownStarted) {
+      logger.warn({ signal }, 'Shutdown already in progress');
+      return;
+    }
+    shutdownStarted = true;
     logger.info({ signal }, 'Shutting down...');
-    mainWss.close();
-    finkWss.close();
-    twilioWss?.close();
-    sessionManager.stop();
-    await app.close();
-    process.exit(0);
+    forcedExitTimer = setTimeout(() => {
+      logger.error({ signal }, 'Graceful shutdown timed out; forcing exit');
+      process.exit(1);
+    }, 1000);
+    try {
+      mainWss.close();
+      finkWss.close();
+      twilioWss?.close();
+      sessionManager.stop();
+      await app.close();
+      if (forcedExitTimer) clearTimeout(forcedExitTimer);
+      process.exit(0);
+    } catch (err) {
+      if (forcedExitTimer) clearTimeout(forcedExitTimer);
+      logger.error({ err, signal }, 'Shutdown failed; forcing exit');
+      process.exit(1);
+    }
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));

@@ -329,12 +329,16 @@ export class InkPipeline {
       primaryVoice?: string;
       fallbackVoice?: string;
       speed?: number;
+      cacheScope?: 'persistent' | 'volatile' | 'none';
+      cacheTtlMs?: number;
     },
   ): Promise<{ result: Awaited<ReturnType<TTSProvider['synthesize']>>; provider: string; fallback: boolean }> {
     try {
       const result = await this.tts.synthesize(text, {
         voice: options.primaryVoice,
         speed: options.speed,
+        cacheScope: options.cacheScope,
+        cacheTtlMs: options.cacheTtlMs,
       });
       return {
         result,
@@ -354,6 +358,8 @@ export class InkPipeline {
       const result = await this.ttsFallback.synthesize(text, {
         voice: options.fallbackVoice,
         speed: options.speed,
+        cacheScope: options.cacheScope,
+        cacheTtlMs: options.cacheTtlMs,
       });
       return {
         result,
@@ -761,6 +767,7 @@ export class InkPipeline {
           primaryVoice: this.resolveVoiceWith(this.voiceResolver, null, seg.voice, seg.voiceDirectives),
           fallbackVoice: this.resolveVoiceWith(this.fallbackVoiceResolver, null, seg.voice, seg.voiceDirectives),
           speed: this.ttsSpeed,
+          cacheScope: 'persistent',
         });
         await transport.sendText(JSON.stringify({
           type: 'tts',
@@ -826,6 +833,7 @@ export class InkPipeline {
           ? this.resolveVoiceWith(this.fallbackVoiceResolver, null, this.fallbackChoiceVoice)
           : undefined,
         speed: this.ttsSpeed,
+        cacheScope: 'persistent',
       });
       await transport.sendText(JSON.stringify({
         type: 'tts',
@@ -858,6 +866,7 @@ export class InkPipeline {
     rateController: AudioRateController,
     text: string,
     signal: AbortSignal,
+    cacheScope: 'persistent' | 'volatile' | 'none' = 'volatile',
   ): Promise<void> {
     await transport.sendText(JSON.stringify({
       type: 'tts', state: 'sentence_start',
@@ -865,7 +874,11 @@ export class InkPipeline {
     }));
 
     try {
-      const { result: ttsResult, provider, fallback } = await this.synthesizeWithFallback(text, { speed: this.ttsSpeed });
+      const { result: ttsResult, provider, fallback } = await this.synthesizeWithFallback(text, {
+        speed: this.ttsSpeed,
+        cacheScope,
+        cacheTtlMs: cacheScope === 'volatile' ? 30 * 60 * 1000 : undefined,
+      });
       await transport.sendText(JSON.stringify({
         type: 'tts',
         state: 'sentence_start',
@@ -896,13 +909,16 @@ export class InkPipeline {
     opusEncoder: OpusEncoder,
     text: string,
     signal: AbortSignal,
+    cacheScope: 'persistent' | 'volatile' | 'none' = 'persistent',
   ): Promise<void> {
     const rateController = new AudioRateController();
     await transport.sendText(JSON.stringify({
       type: 'tts', state: 'start', session_id: session.id,
     }));
 
-    await this.speakSegment(session, transport, opusEncoder, rateController, text, signal);
+    await this.speakSegment(
+      session, transport, opusEncoder, rateController, text, signal, cacheScope,
+    );
 
     await transport.sendText(JSON.stringify({
       type: 'tts', state: 'stop', session_id: session.id,

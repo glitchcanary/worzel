@@ -28,6 +28,8 @@ export class OpenAITTS implements TTSProvider {
     sampleRate?: number;
     format?: string;
     speed?: number;
+    cacheScope?: 'persistent' | 'volatile' | 'none';
+    cacheTtlMs?: number;
   }): Promise<TTSResult> {
     const voice = options?.voice ?? this.options.voice;
     const speed = options?.speed ?? 1.0;

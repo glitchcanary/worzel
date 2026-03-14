@@ -164,6 +164,8 @@ class AudioPlayer {
     this.ctx = null;
     this.nextTime = 0;
     this._sources = [];
+    this._gain = null;
+    this._fadeStopTimer = null;
     this._decoder = new OpusBrowserDecoder(sampleRate);
     this._decoder.initSync();
     this._decoder._onDecoded = (float32, decodedRate) => {
@@ -206,9 +208,10 @@ class AudioPlayer {
   _playAudioBuffer(buf) {
     if (!buf) return;
     if (!this.ctx) { this.ctx = new AudioContext({ sampleRate: buf.sampleRate || this.sampleRate }); this.nextTime = 0; }
+    this._ensureGain();
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(this.ctx.destination);
+    src.connect(this._gain);
     const now = this.ctx.currentTime;
     if (this.nextTime <= now) this.nextTime = now;
     src.start(this.nextTime);
@@ -224,9 +227,46 @@ class AudioPlayer {
     buf.getChannelData(0).set(float32);
     this._playAudioBuffer(buf);
   }
+  _ensureGain() {
+    if (!this.ctx) return;
+    if (!this._gain) {
+      this._gain = this.ctx.createGain();
+      this._gain.gain.value = 1;
+      this._gain.connect(this.ctx.destination);
+    }
+  }
+  fadeStop(durationMs = 500) {
+    if (!this.ctx || !this._gain) {
+      this.stop();
+      return Promise.resolve();
+    }
+    if (this._fadeStopTimer) {
+      clearTimeout(this._fadeStopTimer);
+      this._fadeStopTimer = null;
+    }
+    const now = this.ctx.currentTime;
+    this._gain.gain.cancelScheduledValues(now);
+    this._gain.gain.setValueAtTime(this._gain.gain.value, now);
+    this._gain.gain.linearRampToValueAtTime(0, now + durationMs / 1000);
+    return new Promise(resolve => {
+      this._fadeStopTimer = setTimeout(() => {
+        this._fadeStopTimer = null;
+        this.stop();
+        resolve();
+      }, durationMs);
+    });
+  }
   stop() {
+    if (this._fadeStopTimer) {
+      clearTimeout(this._fadeStopTimer);
+      this._fadeStopTimer = null;
+    }
     for (const src of this._sources) { try { src.stop(); } catch {} }
     this._sources = []; this.nextTime = 0;
+    if (this._gain) {
+      try { this._gain.disconnect(); } catch {}
+      this._gain = null;
+    }
     if (this.ctx) { this.ctx.close(); this.ctx = null; }
     if (this._decoder) this._decoder.resetTimestamp();
   }
@@ -307,6 +347,10 @@ class FinkStory extends HTMLElement {
         }
         .choice-card:hover { background: var(--fink-choice-hover, #264d7a); }
         .choice-card:active { background: var(--fink-choice-active, #2d6aa0); }
+        .choice-card:focus-visible {
+          outline: 2px solid #f6c453;
+          outline-offset: 2px;
+        }
         .choice-number { color: var(--fink-accent, #e94560); font-weight: bold; margin-right: 8px; }
         .choice-badge {
           display: inline-block;
@@ -443,6 +487,7 @@ class FinkStory extends HTMLElement {
   setChoices(choices, suggestion) {
     this._choices.innerHTML = '';
     this._renderSuggestion(suggestion, choices);
+    let suggestedCard = null;
     choices.forEach((choice, i) => {
       const card = document.createElement('button');
       const isSuggested = suggestion?.suggestedChoiceIndex === choice.index;
@@ -454,7 +499,10 @@ class FinkStory extends HTMLElement {
         }));
       });
       this._choices.appendChild(card);
+      if (isSuggested) suggestedCard = card;
     });
+    const firstCard = this._choices.querySelector('.choice-card');
+    (suggestedCard ?? firstCard)?.setAttribute('tabindex', '0');
   }
 
   /** Show story ended state. */
@@ -506,6 +554,33 @@ class FinkStory extends HTMLElement {
     this._choices.appendChild(this._nextMoveEl);
   }
 
+  focusChoice(step = 1) {
+    const cards = [...this._choices.querySelectorAll('.choice-card')];
+    if (cards.length === 0) return false;
+    const active = this.shadowRoot.activeElement;
+    let index = cards.findIndex(card => card === active);
+    if (index === -1) {
+      const suggested = cards.findIndex(card => card.classList.contains('suggested'));
+      index = suggested >= 0 ? suggested : (step > 0 ? -1 : 0);
+    }
+    index = (index + step + cards.length) % cards.length;
+    cards[index].focus();
+    return true;
+  }
+
+  activateFocusedChoice() {
+    const active = this.shadowRoot.activeElement;
+    if (active?.classList?.contains('choice-card')) {
+      active.click();
+      return true;
+    }
+    return false;
+  }
+
+  hasChoices() {
+    return this._choices.querySelector('.choice-card') !== null;
+  }
+
   _esc(s) { const d = document.createElement('span'); d.textContent = s; return d.innerHTML; }
 }
 customElements.define('fink-story', FinkStory);
@@ -521,12 +596,16 @@ class FinkMic extends HTMLElement {
     this._suspendInputUntil = 0;
     this._hotMic = false; // always-on mic mode
     this._silenceTimer = null;
-    this._silenceThreshold = 2000; // ms of silence before auto-stop
+    this._silenceThreshold = 1200; // ms of silence before auto-stop
     this._restartDelayMs = 900; // re-arm hot mic after TTS settles
     this._lastAudioTime = 0;
     this._speechDetected = false;
     this._speechStartTime = 0;
-    this._minSpeechMs = 250; // ignore tiny bursts and residual audio
+    this._recordingStartTime = 0;
+    this._minSpeechMs = 120; // ignore tiny bursts and residual audio
+    this._speechThreshold = 0.01;
+    this._fallbackSpeechThreshold = 0.006;
+    this._maxHotMicTurnMs = 7000;
     this._peakRms = 0; // peak RMS energy during this recording
     this._autoRestartTimer = null;
     this.attachShadow({ mode: 'open' }).innerHTML = `
@@ -588,12 +667,12 @@ class FinkMic extends HTMLElement {
         .spd.active { background: var(--fink-primary, #0f3460); border-color: var(--fink-accent, #e94560); color: var(--fink-text, #e8e8e8); }
       </style>
       <div class="wrap">
-        <button class="mode-btn" type="button">Push To Talk</button>
+        <button class="mode-btn" type="button">Mode: Push To Talk</button>
         <button class="mic" disabled>
           <svg class="icon" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
         </button>
         <div>
-          <div class="hint">Hold to speak</div>
+          <div class="hint">Push-to-talk mode. Hold mic while speaking.</div>
           <div class="state-label"></div>
         </div>
         <div class="speed-ctl">
@@ -610,7 +689,7 @@ class FinkMic extends HTMLElement {
     // Push-to-talk handlers
     btn.addEventListener('pointerdown', e => {
       if (this._hotMic) return; // hot mic uses click toggle
-      e.preventDefault(); btn.setPointerCapture(e.pointerId); this.startRec();
+      e.preventDefault(); btn.setPointerCapture(e.pointerId); this.startRec('manual');
     });
     btn.addEventListener('pointerup', e => {
       if (this._hotMic) return;
@@ -622,7 +701,7 @@ class FinkMic extends HTMLElement {
     btn.addEventListener('click', () => {
       if (!this._hotMic) return;
       if (this.recording) this.stopRec();
-      else this.startRec();
+      else this.startRec('manual');
     });
 
     // Explicit mode toggle
@@ -658,8 +737,13 @@ class FinkMic extends HTMLElement {
     const modeBtn = this.shadowRoot.querySelector('.mode-btn');
     btn.classList.toggle('hot', this._hotMic);
     modeBtn.classList.toggle('hot', this._hotMic);
-    modeBtn.textContent = this._hotMic ? 'Hot Mic On' : 'Push To Talk';
-    hint.textContent = this._hotMic ? 'Tap mic to start or stop listening' : 'Hold mic to speak';
+    modeBtn.textContent = this._hotMic ? 'Mode: Hot Mic' : 'Mode: Push To Talk';
+    hint.textContent = this._hotMic
+      ? 'Hot mic mode is active. Tap mic to start or stop listening.'
+      : 'Push-to-talk mode. Hold mic while speaking.';
+    if (this._hotMic && this._enabled && !this.recording) {
+      this.startRec('toggle');
+    }
     if (this.recording && !this._hotMic) this.stopRec();
   }
 
@@ -697,18 +781,19 @@ class FinkMic extends HTMLElement {
       if (this._autoRestartTimer) clearTimeout(this._autoRestartTimer);
       this._autoRestartTimer = setTimeout(() => {
         this._autoRestartTimer = null;
-        if (this._hotMic && this._enabled && !this.recording) this.startRec();
+        if (this._hotMic && this._enabled && !this.recording) this.startRec('auto');
       }, this._restartDelayMs);
     }
   }
 
-  async startRec() {
+  async startRec(source = 'manual') {
     if (this.recording || !this._enabled) return;
     if (Date.now() < this._suspendInputUntil) return;
     this.recording = true;
     this._speechDetected = false;
     this._lastAudioTime = 0;
     this._speechStartTime = 0;
+    this._recordingStartTime = Date.now();
     this._peakRms = 0;
     const btn = this.shadowRoot.querySelector('button.mic');
     btn.classList.add('rec');
@@ -733,10 +818,15 @@ class FinkMic extends HTMLElement {
         if (rms > this._peakRms) this._peakRms = rms;
         // Silence detection for hot-mic mode
         if (this._hotMic) {
-          if (rms > 0.015) {
+          if (rms > this._speechThreshold) {
             if (this._speechStartTime === 0) this._speechStartTime = Date.now();
             this._lastAudioTime = Date.now();
             if (!this._speechDetected && Date.now() - this._speechStartTime >= this._minSpeechMs) {
+              this._speechDetected = true;
+            }
+          } else if (rms > this._fallbackSpeechThreshold) {
+            this._lastAudioTime = Date.now();
+            if (!this._speechDetected && Date.now() - this._recordingStartTime >= 800) {
               this._speechDetected = true;
             }
           } else {
@@ -749,11 +839,17 @@ class FinkMic extends HTMLElement {
               this.stopRec();
             }
           }
+          if (Date.now() - this._recordingStartTime >= this._maxHotMicTurnMs) {
+            this.stopRec();
+          }
         }
       };
       source.connect(worklet);
       this._worklet = worklet; this._source = source;
-      this.dispatchEvent(new CustomEvent('fink-recording-start', { bubbles: true }));
+      this.dispatchEvent(new CustomEvent('fink-recording-start', {
+        bubbles: true,
+        detail: { source },
+      }));
     } catch (err) {
       console.error('[fink] Mic error:', err);
       this.recording = false;
@@ -776,12 +872,13 @@ class FinkMic extends HTMLElement {
     const peakRms = this._peakRms;
     this.dispatchEvent(new CustomEvent('fink-recording-stop', {
       bubbles: true, detail: {
-        hadSpeech: this._speechDetected || !this._hotMic,
+        hadSpeech: this._speechDetected || this._peakRms > this._fallbackSpeechThreshold || !this._hotMic,
         peakRms,
       },
     }));
     this._speechDetected = false;
     this._speechStartTime = 0;
+    this._recordingStartTime = 0;
     this._peakRms = 0;
   }
 }
@@ -795,6 +892,9 @@ class FinkApp extends HTMLElement {
     super();
     this.client = null;
     this.player = null;
+    this._isSpeaking = false;
+    this._responseWatchdog = null;
+    this._onKeyDown = (e) => this.handleKeyDown(e);
     this.attachShadow({ mode: 'open' }).innerHTML = `
       <style>
         :host {
@@ -858,10 +958,20 @@ class FinkApp extends HTMLElement {
 
     const mic = this.shadowRoot.querySelector('fink-mic');
     const story = this.shadowRoot.querySelector('fink-story');
+    window.addEventListener('keydown', this._onKeyDown, true);
 
-    mic.addEventListener('fink-recording-start', () => {
+    mic.addEventListener('fink-recording-start', async (e) => {
+      const source = e.detail?.source ?? 'manual';
+      if (this._isSpeaking) {
+        if (source !== 'manual') {
+          await mic.stopRec();
+          story.setStatus('Waiting for narration to finish before listening.', 'info');
+          return;
+        }
+        story.setStatus('Interrupting narration...', 'thinking');
+        await this.player?.fadeStop(200);
+      }
       story.setStatus('Listening for a story move...', 'listening');
-      this.player?.stop();
       this.client?.abort();
       mic.setPipelineState('listening');
       this.client?.startListening();
@@ -875,6 +985,7 @@ class FinkApp extends HTMLElement {
       }
       const peakRms = e.detail?.peakRms;
       story.setStatus('Sending audio for recognition...', 'thinking');
+      this.armResponseWatchdog(story, mic, 'speech recognition');
       this.client?.stopListening(peakRms != null ? { audio_level: Math.round(peakRms * 1000) / 1000 } : undefined);
       mic.setPipelineState('thinking');
     });
@@ -891,6 +1002,7 @@ class FinkApp extends HTMLElement {
         this.player?.stop();
         this.client.abort();
         story.setStatus('Choice selected. Advancing the story...', 'thinking');
+        this.armResponseWatchdog(story, mic, 'story advance');
         this.client.send({
           type: 'ink',
           action: 'choose',
@@ -898,6 +1010,69 @@ class FinkApp extends HTMLElement {
         });
       }
     });
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener('keydown', this._onKeyDown, true);
+    this.clearResponseWatchdog();
+  }
+
+  async handleKeyDown(e) {
+    const story = this.shadowRoot?.querySelector('fink-story');
+    const mic = this.shadowRoot?.querySelector('fink-mic');
+    if (!story || !mic) return;
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
+    const target = e.composedPath?.()[0];
+    const tagName = target?.tagName?.toLowerCase?.();
+    const isEditable = target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select';
+    if (isEditable) return;
+
+    if (e.key === 'Tab' && story.hasChoices()) {
+      e.preventDefault();
+      story.focusChoice(e.shiftKey ? -1 : 1);
+      return;
+    }
+
+    if (e.key === ' ' || e.code === 'Space') {
+      if (this._isSpeaking) {
+        e.preventDefault();
+        story.setStatus('Skipping narration...', 'thinking');
+        mic.suspendInput(700);
+        this.client?.abort();
+        await this.player?.fadeStop(500);
+        mic.setPipelineState('idle');
+        this._isSpeaking = false;
+        story.setStatus('Narration skipped. Choices remain on screen.', 'info');
+        mic.autoRestart();
+        return;
+      }
+      if (story.activateFocusedChoice()) {
+        e.preventDefault();
+      }
+    }
+  }
+
+  armResponseWatchdog(story, mic, context) {
+    this.clearResponseWatchdog();
+    this._responseWatchdog = {
+      warn: setTimeout(() => {
+        console.warn(`[fink] Still waiting for server response after ${context}`);
+        story.setStatus('Still thinking. If this hangs, repeat your move or tap a choice.', 'thinking');
+      }, 6000),
+      fail: setTimeout(() => {
+        console.error(`[fink] No server response after ${context}`);
+        mic.setPipelineState('idle');
+        story.setStatus('No response yet. Try again, or tap a choice.', 'error');
+        mic.autoRestart();
+      }, 12000),
+    };
+  }
+
+  clearResponseWatchdog() {
+    if (!this._responseWatchdog) return;
+    clearTimeout(this._responseWatchdog.warn);
+    clearTimeout(this._responseWatchdog.fail);
+    this._responseWatchdog = null;
   }
 
   async doConnect(serverUrl) {
@@ -922,12 +1097,14 @@ class FinkApp extends HTMLElement {
       btn.classList.toggle('dc', s === 'connected');
       input.disabled = s === 'connected';
       if (s === 'connected') {
+        this.clearResponseWatchdog();
         story.setStatus('Connected. Speak a choice or tap one.', 'info');
         mic.enable();
         // Send initial TTS speed preference
         this.client?.send({ type: 'fink_settings', tts_speed: mic.ttsSpeed ?? 1.15 });
       }
       else {
+        this.clearResponseWatchdog();
         mic.disable();
         if (s === 'disconnected') this.player?.stop();
         story.setStatus(`Connection state: ${s}.`, s === 'error' ? 'error' : 'info');
@@ -935,6 +1112,7 @@ class FinkApp extends HTMLElement {
     });
 
     this.client.on('stt', text => {
+      this.clearResponseWatchdog();
       console.log('[fink] You said:', text);
       story.showUserSpeech(text);
       mic.setPipelineState('thinking');
@@ -949,6 +1127,8 @@ class FinkApp extends HTMLElement {
         console.log(`[fink] TTS provider: ${ev.provider}${ev.fallback ? ' (fallback)' : ''}`);
       }
       if (ev.state === 'start') {
+        this.clearResponseWatchdog();
+        this._isSpeaking = true;
         story.setStatus('Speaking...', 'speaking');
         if (!inkNarrating) story.startStreaming();
         if (!this.player) this.player = new AudioPlayer(16000);
@@ -958,8 +1138,10 @@ class FinkApp extends HTMLElement {
         if (!inkNarrating) story.appendStreaming(ev.text + ' ');
       }
       else if (ev.state === 'stop') {
+        this.clearResponseWatchdog();
         if (!inkNarrating) story.endStreaming();
         inkNarrating = false;
+        this._isSpeaking = false;
         mic.setPipelineState('idle');
         story.setStatus('Ready for your next move.', 'info');
         mic.autoRestart();
@@ -970,6 +1152,7 @@ class FinkApp extends HTMLElement {
 
     // Ink state updates — text already displayed here, suppress TTS streaming display
     this.client.on('inkState', msg => {
+      this.clearResponseWatchdog();
       console.log('[fink] Ink state:', msg);
       if (msg.narration && msg.narration.length > 0) {
         inkNarrating = true;
@@ -991,6 +1174,7 @@ class FinkApp extends HTMLElement {
     });
 
     this.client.on('error', msg => {
+      this.clearResponseWatchdog();
       console.error('[fink] Error:', msg);
       story.setStatus(`Error: ${msg}`, 'error');
     });

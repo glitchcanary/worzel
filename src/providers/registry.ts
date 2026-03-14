@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config/schema.js';
+import { join } from 'node:path';
 import { resolveApiKey } from '../config/loader.js';
 import type { ASRProvider, LLMProvider, TTSProvider } from './interface.js';
 import { OpenAIASR } from './asr/openai-asr.js';
@@ -8,6 +9,8 @@ import { AnthropicLLM } from './llm/anthropic.js';
 import { EdgeTTS } from './tts/edge-tts.js';
 import { OpenAITTS } from './tts/openai-tts.js';
 import { ElevenLabsTTS } from './tts/elevenlabs-tts.js';
+import { CachedTTSProvider } from './tts/cached-tts.js';
+import type pino from 'pino';
 
 /**
  * Provider registry: creates provider instances from config.
@@ -19,11 +22,11 @@ export interface Providers {
   llmSmart?: LLMProvider;
 }
 
-export function createProviders(config: AppConfig): Providers {
+export function createProviders(config: AppConfig, logger?: pino.Logger): Providers {
   return {
     asr: createASR(config),
     llm: createLLM(config),
-    tts: createTTS(config),
+    tts: createTTS(config, logger),
     llmSmart: createLLMSmart(config),
   };
 }
@@ -77,33 +80,42 @@ function createLLM(config: AppConfig): LLMProvider {
   }
 }
 
-function createTTS(config: AppConfig): TTSProvider {
+function createTTS(config: AppConfig, logger?: pino.Logger): TTSProvider {
   const apiKey = resolveApiKey(config, 'tts');
+  let provider: TTSProvider;
   switch (config.tts.provider) {
     case 'edge':
-      return new EdgeTTS({
+      provider = new EdgeTTS({
         voice: config.tts.voice,
         sampleRate: config.tts.sampleRate,
       });
+      break;
     case 'openai':
-      return new OpenAITTS({
+      provider = new OpenAITTS({
         url: config.tts.url ?? 'https://api.openai.com/v1/audio/speech',
         apiKey,
         model: config.tts.model,
         voice: config.tts.voice,
         sampleRate: config.tts.sampleRate,
       });
+      break;
     case 'elevenlabs':
-      return new ElevenLabsTTS({
+      provider = new ElevenLabsTTS({
         apiKey: config.apiKeys.elevenlabs ?? '',
         model: config.tts.model,
         voice: config.tts.voice,
         sampleRate: config.tts.sampleRate,
       });
+      break;
     case 'piper-local':
     case 'kokoro-local':
       throw new Error(`${config.tts.provider} TTS not yet implemented (Phase 5)`);
   }
+
+  return new CachedTTSProvider(provider, {
+    cacheDir: process.env['WORZEL_TTS_CACHE_DIR'] ?? join(process.cwd(), 'tmp', 'tts-cache'),
+    logger,
+  });
 }
 
 function createLLMSmart(config: AppConfig): LLMProvider | undefined {

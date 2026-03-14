@@ -27,6 +27,9 @@ export class ElevenLabsTTS implements TTSProvider {
     voice?: string;
     sampleRate?: number;
     format?: string;
+    speed?: number;
+    cacheScope?: 'persistent' | 'volatile' | 'none';
+    cacheTtlMs?: number;
   }): Promise<TTSResult> {
     const requestedVoice = options?.voice ?? this.options.voice;
     const voiceId = await this.resolveVoiceId(requestedVoice);

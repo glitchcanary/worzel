@@ -32,7 +32,7 @@ export class FillerCache {
     logger.info({ count: FILLER_TEXTS.length }, 'Pre-caching filler audio');
     const results = await Promise.allSettled(
       FILLER_TEXTS.map(async (text): Promise<CachedFiller> => {
-        const result = await tts.synthesize(text);
+        const result = await tts.synthesize(text, { cacheScope: 'persistent' });
         // Resample to 16kHz (matching pipeline encoder rate) before Opus encoding
         const pcm16k = resamplePcm(result.audio, result.sampleRate, 16000);
         const opusFrames = encodeToOpusFrames(pcm16k, 16000);

@@ -31,6 +31,9 @@ export class EdgeTTS implements TTSProvider {
     language?: string;
     sampleRate?: number;
     format?: string;
+    speed?: number;
+    cacheScope?: 'persistent' | 'volatile' | 'none';
+    cacheTtlMs?: number;
   }): Promise<TTSResult> {
     const voice = options?.voice ?? this.options.voice;
     const sampleRate = options?.sampleRate ?? this.options.sampleRate;
