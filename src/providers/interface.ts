@@ -57,6 +57,7 @@ export interface LLMChunk {
 /** TTS (Text-to-Speech) provider */
 export interface TTSProvider {
   readonly name: string;
+  readonly provider?: string;
 
   /** Synthesize text to audio */
   synthesize(text: string, options?: {

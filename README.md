@@ -78,6 +78,58 @@ URLs on the unified one-port server:
 - Main health: `http://localhost:3000/api/health`
 - Fink health: `http://localhost:3000/fink/api/health`
 
+Fink can override the main server's TTS provider independently via env vars:
+
+```bash
+FINK_TTS_PROVIDER=elevenlabs
+FINK_TTS_MODEL=eleven_turbo_v2_5
+FINK_TTS_VOICE=Bill
+```
+
+When those are set, the unified server still shares one port, but `/fink/` uses its own TTS provider config. The startup log for `Fink module ready` will show the active `ttsProvider` and `ttsVoice`.
+
+## Fink Voice Profiles
+
+Fink stories can now use semantic voice IDs instead of provider product names.
+
+In Ink:
+
+```ink
+# speaker:narrator # voice:narrator
+# speaker:munrab # voice:munrab # voice.elevenlabs:Bill
+```
+
+In story metadata:
+
+```json
+{
+  "characters": {
+    "munrab": { "voice": "munrab" }
+  },
+  "voices": {
+    "munrab": {
+      "traits": ["old", "raspy", "deep"],
+      "providers": {
+        "openai": "ballad",
+        "elevenlabs": "Bill"
+      }
+    }
+  }
+}
+```
+
+Resolution order is:
+- `voice.<provider>` tag override, for example `voice.elevenlabs:Bill`
+- matching entry in story `voices`
+- fallback alias map from `FINK_TTS_VOICE_MAP`
+- raw `voice:` value for legacy stories
+
+This lets Ink stay provider-neutral while still choosing different concrete voices on OpenAI, ElevenLabs, or Edge.
+
+## TODO
+
+- Add hybrid auth: Supabase for normal online identity, plus a local salted-hash fallback for offline/dev/admin login.
+
 ## Clients
 
 - **Web browser** -- built-in web client using Web Components and WebCodecs Opus encoding. Chrome/Edge 94+, Firefox 133+, Safari 26+.

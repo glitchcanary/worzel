@@ -1,0 +1,19 @@
+{
+  "title": "UX Lab: Confirmation Loop",
+  "author": "Worzel",
+  "description": "Tests whether explicit confirmation reduces ASR-driven misfires.",
+  "characters": {
+    "narrator": {
+      "voice": "narrator"
+    }
+  },
+  "voices": {
+    "narrator": {
+      "providers": {
+        "openai": "alloy",
+        "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
+        "edge": "en-US-AriaNeural"
+      }
+    }
+  }
+}

@@ -12,6 +12,15 @@ describe('parseTags', () => {
     expect(result.voice).toBe('alloy');
   });
 
+  it('parses provider-specific voice directives', () => {
+    const result = parseTags(['voice:munrab', 'voice.elevenlabs:Bill', 'voice.style:old-school narrator']);
+    expect(result.voice).toBe('munrab');
+    expect(result.voiceDirectives).toEqual({
+      elevenlabs: 'Bill',
+      style: 'old-school narrator',
+    });
+  });
+
   it('parses mood tag', () => {
     const result = parseTags(['mood:mysterious']);
     expect(result.mood).toBe('mysterious');
@@ -95,5 +104,15 @@ describe('mergeTags', () => {
     const merged = mergeTags(a, b);
     expect(merged.foaf['name']).toBe('Test');
     expect(merged.foaf['knows']).toBe('other');
+  });
+
+  it('merges voice directives by key', () => {
+    const a = parseTags(['voice.elevenlabs:Bill']);
+    const b = parseTags(['voice.openai:ballad']);
+    const merged = mergeTags(a, b);
+    expect(merged.voiceDirectives).toEqual({
+      elevenlabs: 'Bill',
+      openai: 'ballad',
+    });
   });
 });

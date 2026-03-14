@@ -44,6 +44,8 @@ export const TtsMessageSchema = z.object({
   state: z.enum(['start', 'sentence_start', 'sentence_end', 'stop']),
   text: z.string().optional(),
   session_id: z.string().optional(),
+  provider: z.string().optional(),
+  fallback: z.boolean().optional(),
 });
 
 // --- Abort: interrupt current response ---

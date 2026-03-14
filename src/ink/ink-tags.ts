@@ -18,6 +18,7 @@
 export interface ParsedTags {
   speaker?: string;
   voice?: string;
+  voiceDirectives?: Record<string, string>;
   mood?: string;
   voiceHints?: string[];
   inputMode?: 'freeform';
@@ -58,6 +59,12 @@ export function parseTags(tags: string[]): ParsedTags {
 
     const key = trimmed.slice(0, colonIdx).trim().toLowerCase();
     const value = trimmed.slice(colonIdx + 1).trim();
+
+    if (key.startsWith('voice.')) {
+      result.voiceDirectives ??= {};
+      result.voiceDirectives[key.slice('voice.'.length)] = value;
+      continue;
+    }
 
     switch (key) {
       case 'speaker':
@@ -101,6 +108,7 @@ export function mergeTags(existing: ParsedTags, incoming: ParsedTags): ParsedTag
   return {
     speaker: incoming.speaker ?? existing.speaker,
     voice: incoming.voice ?? existing.voice,
+    voiceDirectives: { ...(existing.voiceDirectives ?? {}), ...(incoming.voiceDirectives ?? {}) },
     mood: incoming.mood ?? existing.mood,
     voiceHints: incoming.voiceHints ?? existing.voiceHints,
     inputMode: incoming.inputMode ?? existing.inputMode,

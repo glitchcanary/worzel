@@ -1,0 +1,19 @@
+{
+  "title": "UX Lab: Barge-In",
+  "author": "Worzel",
+  "description": "Longer setup narration intended to expose interruption and hot-mic timing issues.",
+  "characters": {
+    "narrator": {
+      "voice": "narrator"
+    }
+  },
+  "voices": {
+    "narrator": {
+      "providers": {
+        "openai": "alloy",
+        "elevenlabs": "wG54O0fjDbPBYb9MFXCb",
+        "edge": "en-US-AndrewNeural"
+      }
+    }
+  }
+}

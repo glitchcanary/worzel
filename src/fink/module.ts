@@ -8,7 +8,7 @@ import type pino from 'pino';
 import { generateToken } from '../utils/crypto.js';
 import type { AppConfig } from '../config/schema.js';
 import type { SessionManager } from '../session/manager.js';
-import type { Providers } from '../providers/registry.js';
+import { createProviders, type Providers } from '../providers/registry.js';
 import { WebSocketTransport } from '../transport/websocket-transport.js';
 import { RateLimiter } from '../server/middleware/rate-limit.js';
 import { verifyWsToken } from '../server/middleware/auth.js';
@@ -37,6 +37,7 @@ export interface FinkModuleOptions {
 export interface FinkRuntime {
   config: AppConfig;
   providers: Providers;
+  fallbackTts?: Providers['tts'];
   logger: pino.Logger;
   sessionManager: SessionManager;
   storyManager: StoryManager;
@@ -45,6 +46,7 @@ export interface FinkRuntime {
   defaultStoryId?: string;
   voiceAliases: Record<string, string>;
   choiceVoice?: string;
+  fallbackChoiceVoice?: string;
   storiesCount: number;
 }
 
@@ -73,8 +75,10 @@ function applyFinkOverrides(config: AppConfig): AppConfig {
   const ttsProvider = process.env['FINK_TTS_PROVIDER']?.trim().toLowerCase();
   const ttsModel = process.env['FINK_TTS_MODEL']?.trim();
   const ttsVoice = process.env['FINK_TTS_VOICE']?.trim();
+  const ttsSampleRateRaw = process.env['FINK_TTS_SAMPLE_RATE']?.trim();
+  const ttsSampleRate = ttsSampleRateRaw ? Number.parseInt(ttsSampleRateRaw, 10) : undefined;
 
-  if (!ttsProvider && !ttsModel && !ttsVoice) return config;
+  if (!ttsProvider && !ttsModel && !ttsVoice && !ttsSampleRate) return config;
 
   return {
     ...config,
@@ -83,6 +87,7 @@ function applyFinkOverrides(config: AppConfig): AppConfig {
       ...(ttsProvider ? { provider: ttsProvider as AppConfig['tts']['provider'] } : {}),
       ...(ttsModel ? { model: ttsModel } : {}),
       ...(ttsVoice ? { voice: ttsVoice } : {}),
+      ...(ttsSampleRate ? { sampleRate: ttsSampleRate } : {}),
     },
   };
 }
@@ -134,7 +139,7 @@ async function handleInkChoose(
     storyStacks.set(session.id, stack);
 
     const metadata = storyManager.getMetadata(targetId);
-    const newSession = new InkSession(targetId, storyJson, metadata?.defaultVoices?.['narrator']);
+    const newSession = new InkSession(targetId, storyJson, metadata);
     inkSessions.set(session.id, newSession);
     logger.info({ from: inkSession.storyId, to: targetId, stackDepth: stack.length }, 'Switching story via FINK: link (tap)');
 
@@ -213,12 +218,18 @@ function createFinkOtaHandler(config: AppConfig, wsPath: string) {
 export async function registerFinkModule(options: FinkModuleOptions): Promise<FinkRuntime> {
   const { app, logger, sessionManager } = options;
   const config = applyFinkOverrides(options.config);
-  const providers = options.providers;
+  const providers = config === options.config ? options.providers : createProviders(config);
+  const fallbackTts = config.tts.provider === options.config.tts.provider
+    ? undefined
+    : options.providers.tts;
   const routePrefix = options.routePrefix ?? '/fink';
   const wsPath = options.wsPath ?? '/ws/fink';
   const apiPrefix = options.apiPrefix ?? `${routePrefix}/api`;
   const voiceAliases = parseVoiceAliases(process.env['FINK_TTS_VOICE_MAP']);
-  const choiceVoice = process.env['FINK_CHOICE_VOICE']?.trim() || undefined;
+  const choiceVoice = process.env['FINK_CHOICE_VOICE']?.trim() || config.tts.voice || undefined;
+  const fallbackChoiceVoice = config.tts.provider === options.config.tts.provider
+    ? choiceVoice
+    : options.config.tts.voice;
 
   const storyManager = new StoryManager({ logger });
   const currentFile = fileURLToPath(import.meta.url);
@@ -271,11 +282,14 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
     wsPath,
     story: defaultStoryId,
     storyCount: stories.length,
+    ttsProvider: config.tts.provider,
+    ttsVoice: config.tts.voice,
   }, 'Fink module ready');
 
   return {
     config,
     providers,
+    fallbackTts,
     logger,
     sessionManager,
     storyManager,
@@ -284,6 +298,7 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
     defaultStoryId,
     voiceAliases,
     choiceVoice,
+    fallbackChoiceVoice,
     storiesCount: stories.length,
   };
 }
@@ -292,6 +307,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
   const {
     config,
     providers,
+    fallbackTts,
     logger,
     sessionManager,
     storyManager,
@@ -299,6 +315,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
     defaultStoryId,
     voiceAliases,
     choiceVoice,
+    fallbackChoiceVoice,
   } = runtime;
   const sessionLoggerBase = logger;
   const rateLimiter = new RateLimiter(config.rateLimit);
@@ -347,9 +364,11 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
       asr: providers.asr,
       llm: providers.llm,
       tts: providers.tts,
+      ttsFallback: fallbackTts,
       logger: sessionLogger,
       voiceAliases,
       choiceVoice,
+      fallbackChoiceVoice,
       onFinkLink: async (targetId, sess, trans, parentState) => {
         let resolvedId = targetId;
         let json = storyManager.getStoryJson(resolvedId);
@@ -373,7 +392,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         storyStacks.set(sess.id, stack);
 
         const meta = storyManager.getMetadata(resolvedId);
-        const newInk = new InkSession(resolvedId, json, meta?.defaultVoices?.['narrator']);
+        const newInk = new InkSession(resolvedId, json, meta);
         inkSessions.set(sess.id, newInk);
         inkSession = newInk;
         sessionLogger.info({ to: resolvedId, stackDepth: stack.length }, 'Voice FINK: link switch');
@@ -415,7 +434,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         }
 
         const meta = storyManager.getMetadata(parent.storyId);
-        const parentInk = new InkSession(parent.storyId, parentJson, meta?.defaultVoices?.['narrator']);
+        const parentInk = new InkSession(parent.storyId, parentJson, meta);
         parentInk.restore(parent.serializedState);
         inkSessions.set(sess.id, parentInk);
         inkSession = parentInk;
@@ -445,7 +464,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
       const storyJson = storyManager.getStoryJson(defaultStoryId);
       if (storyJson) {
         const metadata = storyManager.getMetadata(defaultStoryId);
-        inkSession = new InkSession(defaultStoryId, storyJson, metadata?.defaultVoices?.['narrator']);
+        inkSession = new InkSession(defaultStoryId, storyJson, metadata);
         inkSessions.set(session.id, inkSession);
 
         const initial = inkSession.continue();

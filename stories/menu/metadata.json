@@ -1,5 +1,21 @@
 {
   "title": "Story Menu",
   "author": "Fink",
-  "description": "Choose a story to play."
+  "description": "Choose a story to play.",
+  "characters": {
+    "narrator": {
+      "voice": "narrator"
+    }
+  },
+  "voices": {
+    "narrator": {
+      "description": "Neutral menu narrator for short prompts and signposting.",
+      "traits": ["clear", "steady", "helpful"],
+      "providers": {
+        "openai": "alloy",
+        "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
+        "edge": "en-US-AriaNeural"
+      }
+    }
+  }
 }

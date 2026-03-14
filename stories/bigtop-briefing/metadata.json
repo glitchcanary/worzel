@@ -1,5 +1,29 @@
 {
   "title": "Bigtop Briefing",
   "author": "hallyboo / glitchcan-minigam",
-  "description": "A noir circus briefing extracted from bigtop-briefing.fink.js."
+  "description": "A noir circus briefing extracted from bigtop-briefing.fink.js.",
+  "characters": {
+    "narrator": {
+      "voice": "carney_narrator",
+      "voiceDirectives": {
+        "style": "gruff noir carnival barker"
+      }
+    }
+  },
+  "voices": {
+    "carney_narrator": {
+      "description": "Noir circus proprietor voice with worn authority and theatrical edges.",
+      "traits": ["deep", "raspy", "world-weary", "showman"],
+      "style": {
+        "tone": "noir",
+        "pace": "measured",
+        "texture": "gritty"
+      },
+      "providers": {
+        "openai": "ballad",
+        "elevenlabs": "wG54O0fjDbPBYb9MFXCb",
+        "edge": "en-US-AndrewNeural"
+      }
+    }
+  }
 }

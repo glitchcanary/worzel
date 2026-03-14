@@ -19,6 +19,7 @@ export interface EdgeTTSOptions {
  */
 export class EdgeTTS implements TTSProvider {
   readonly name = 'edge-tts';
+  readonly provider = 'edge';
   private readonly options: EdgeTTSOptions;
 
   constructor(options: EdgeTTSOptions) {

@@ -6,6 +6,38 @@
     "narrator": "alloy",
     "cat": "shimmer"
   },
+  "characters": {
+    "narrator": {
+      "voice": "narrator"
+    },
+    "cat": {
+      "name": "Mr Whiskers",
+      "voice": "cat",
+      "voiceDirectives": {
+        "style": "curious mysterious feline"
+      }
+    }
+  },
+  "voices": {
+    "narrator": {
+      "description": "Warm storybook narrator.",
+      "traits": ["clear", "gentle", "inviting"],
+      "providers": {
+        "openai": "alloy",
+        "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
+        "edge": "en-US-AriaNeural"
+      }
+    },
+    "cat": {
+      "description": "Talking cat with playful mystery.",
+      "traits": ["playful", "mysterious", "light"],
+      "providers": {
+        "openai": "shimmer",
+        "elevenlabs": "pFZP5JQG7iQjIQuC4Bku",
+        "edge": "en-GB-SoniaNeural"
+      }
+    }
+  },
   "finkData": {
     "@context": "http://xmlns.com/foaf/0.1/",
     "characters": [

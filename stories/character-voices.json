@@ -1,0 +1,24 @@
+{
+  "characters": {
+    "barney_the_carny": {
+      "description": "Over-the-top but high-quality carnival barker / noir proprietor voice.",
+      "traits": [
+        "showman",
+        "carnival",
+        "gritty",
+        "theatrical",
+        "older male",
+        "noir"
+      ],
+      "providers": {
+        "elevenlabs": "wG54O0fjDbPBYb9MFXCb",
+        "openai": "ballad",
+        "edge": "en-US-AndrewNeural"
+      },
+      "notes": [
+        "Use for circus noir, carnivals, barkers, proprietors, theatrical intros.",
+        "Primary demo placements: bigtop-briefing, ux-barge-in-lab."
+      ]
+    }
+  }
+}

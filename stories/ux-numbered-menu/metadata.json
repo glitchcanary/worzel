@@ -1,0 +1,19 @@
+{
+  "title": "UX Lab: Numbered Menu",
+  "author": "Worzel",
+  "description": "Tests numbered menu wording versus descriptive wording.",
+  "characters": {
+    "narrator": {
+      "voice": "narrator"
+    }
+  },
+  "voices": {
+    "narrator": {
+      "providers": {
+        "openai": "alloy",
+        "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
+        "edge": "en-US-AriaNeural"
+      }
+    }
+  }
+}

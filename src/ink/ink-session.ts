@@ -9,6 +9,7 @@
 import { Story } from 'inkjs';
 import type { Choice } from 'inkjs/engine/Choice';
 import { parseTags, mergeTags, type ParsedTags } from './ink-tags.js';
+import type { StoryCharacterMetadata, StoryMetadata, StoryVoiceProfile } from './story-manager.js';
 
 export interface InkChoice {
   index: number;
@@ -21,6 +22,7 @@ export interface CharacterInfo {
   name: string;
   ttsVoice?: string;
   mood?: string;
+  voiceDirectives?: Record<string, string>;
   foaf: Record<string, string>;
 }
 
@@ -29,6 +31,7 @@ export interface NarrationSegment {
   text: string;
   speaker: string;
   voice?: string;
+  voiceDirectives?: Record<string, string>;
   mood?: string;
   tags: ParsedTags;
 }
@@ -50,14 +53,26 @@ export class InkSession {
   private characters = new Map<string, CharacterInfo>();
   private defaultSpeaker = 'narrator';
   private defaultVoice?: string;
+  private readonly voiceProfiles = new Map<string, StoryVoiceProfile>();
   private _turnCount = 0;
   private _waitingForExternalInput?: string;
   private _lastNarration: NarrationSegment[] = [];
 
-  constructor(storyId: string, storyJson: string, defaultVoice?: string) {
+  constructor(storyId: string, storyJson: string, metadataOrDefaultVoice?: StoryMetadata | string) {
     this.storyId = storyId;
     this.story = new Story(storyJson);
-    this.defaultVoice = defaultVoice;
+    if (typeof metadataOrDefaultVoice === 'string' || metadataOrDefaultVoice === undefined) {
+      this.defaultVoice = metadataOrDefaultVoice;
+    } else {
+      this.defaultVoice = metadataOrDefaultVoice.characters?.['narrator']?.voice
+        ?? metadataOrDefaultVoice.defaultVoices?.['narrator'];
+      for (const [voiceId, profile] of Object.entries(metadataOrDefaultVoice.voices ?? {})) {
+        this.voiceProfiles.set(voiceId, profile);
+      }
+      for (const [speaker, character] of Object.entries(metadataOrDefaultVoice.characters ?? {})) {
+        this.seedCharacter(speaker, character);
+      }
+    }
 
     // Parse global tags for story-level metadata
     const globalTags = this.story.globalTags ?? [];
@@ -113,10 +128,18 @@ export class InkSession {
       this.updateCharacter(speaker, tags);
 
       const character = this.characters.get(speaker);
+      const voice = tags.voice ?? character?.ttsVoice ?? this.defaultVoice;
+      const profile = this.voiceProfiles.get(voice ?? '');
       narration.push({
         text: text.trim(),
         speaker,
-        voice: tags.voice ?? character?.ttsVoice ?? this.defaultVoice,
+        voice,
+        voiceDirectives: {
+          ...(profile?.style ?? {}),
+          ...(profile?.providers ?? {}),
+          ...(character?.voiceDirectives ?? {}),
+          ...(tags.voiceDirectives ?? {}),
+        },
         mood: tags.mood ?? character?.mood,
         tags,
       });
@@ -207,6 +230,11 @@ export class InkSession {
     return new Map(this.characters);
   }
 
+  getVoiceProfile(id?: string): StoryVoiceProfile | undefined {
+    if (!id) return undefined;
+    return this.voiceProfiles.get(id);
+  }
+
   /**
    * Read a story variable.
    */
@@ -290,8 +318,23 @@ export class InkSession {
       name: tags.foaf['name'] ?? existing?.name ?? speaker,
       ttsVoice: tags.voice ?? existing?.ttsVoice,
       mood: tags.mood ?? existing?.mood,
+      voiceDirectives: { ...(existing?.voiceDirectives ?? {}), ...(tags.voiceDirectives ?? {}) },
       foaf: { ...(existing?.foaf ?? {}), ...tags.foaf },
     };
     this.characters.set(speaker, character);
+  }
+
+  private seedCharacter(speaker: string, character: StoryCharacterMetadata): void {
+    this.characters.set(speaker, {
+      name: character.name ?? speaker,
+      ttsVoice: character.voice,
+      mood: character.mood,
+      voiceDirectives: {
+        ...(this.voiceProfiles.get(character.voice ?? '')?.style ?? {}),
+        ...(this.voiceProfiles.get(character.voice ?? '')?.providers ?? {}),
+        ...(character.voiceDirectives ?? {}),
+      },
+      foaf: { ...(character.foaf ?? {}) },
+    });
   }
 }

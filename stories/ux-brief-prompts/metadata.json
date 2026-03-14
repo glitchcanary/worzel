@@ -1,0 +1,20 @@
+{
+  "title": "UX Lab: Brief Prompts",
+  "author": "Worzel",
+  "description": "Minimal prompt wording to test whether shorter narration improves turn-taking.",
+  "characters": {
+    "narrator": {
+      "voice": "narrator"
+    }
+  },
+  "voices": {
+    "narrator": {
+      "description": "Neutral low-friction lab narrator.",
+      "providers": {
+        "openai": "alloy",
+        "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
+        "edge": "en-US-AriaNeural"
+      }
+    }
+  }
+}

@@ -15,6 +15,7 @@ export interface OpenAITTSOptions {
  */
 export class OpenAITTS implements TTSProvider {
   readonly name = 'openai-tts';
+  readonly provider = 'openai';
   private readonly fetch = createGuardedFetch();
   private readonly options: OpenAITTSOptions;
 

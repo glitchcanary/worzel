@@ -25,6 +25,7 @@ export interface Classification {
   type: ClassificationType;
   choiceIndex?: number;
   confidence: number;
+  residualText?: string;
 }
 
 /** IVR sentinel choice texts that should be excluded from voice matching. */
@@ -55,8 +56,24 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/[^\w\s]/g, '').trim();
 }
 
+function compactNormalize(text: string): string {
+  return normalize(text).replace(/\s+/g, '');
+}
+
 function tokenize(text: string): string[] {
-  return normalize(text).split(/\s+/).filter(Boolean);
+  const base = normalize(text).split(/\s+/).filter(Boolean);
+  const expanded = [...base];
+  for (let i = 0; i < base.length - 1; i++) {
+    expanded.push(base[i]! + base[i + 1]!);
+  }
+  return [...new Set(expanded)];
+}
+
+function isLikelyQuestion(text: string): boolean {
+  const trimmed = text.trim().toLowerCase();
+  if (!trimmed) return false;
+  if (trimmed.endsWith('?')) return true;
+  return /^(who|what|when|where|why|how|is|are|do|does|did|can|could|would|should|will)\b/.test(trimmed);
 }
 
 export class InkRouter {
@@ -88,16 +105,16 @@ export class InkRouter {
 
     // --- Tier 1: Instant keyword/exact matching ---
     const tier1 = this.tier1(asrText, filtered);
-    if (tier1) return tier1;
+    if (tier1) return this.attachResidualText(asrText, filtered, tier1, signal);
 
     // --- Tier 2: Token overlap scoring ---
     const tier2 = this.tier2(asrText, filtered);
-    if (tier2) return tier2;
+    if (tier2) return this.attachResidualText(asrText, filtered, tier2, signal);
 
     // --- Tier 3: LLM-based classification ---
     if (this.llm && filtered.choices.length > 0) {
       const tier3 = await this.tier3(asrText, filtered, signal);
-      if (tier3) return tier3;
+      if (tier3) return this.attachResidualText(asrText, filtered, tier3, signal);
     }
 
     return { type: 'no_match', confidence: 0 };
@@ -108,6 +125,7 @@ export class InkRouter {
    */
   tier1(asrText: string, state: InkSessionState): Classification | null {
     const normalized = normalize(asrText);
+    const compact = compactNormalize(asrText);
 
     // Meta keywords
     if (META_KEYWORDS.has(normalized)) {
@@ -140,7 +158,7 @@ export class InkRouter {
 
     // Exact text match (case-insensitive, punctuation-stripped)
     for (const choice of state.choices) {
-      if (normalize(choice.text) === normalized) {
+      if (normalize(choice.text) === normalized || compactNormalize(choice.text) === compact) {
         return { type: 'choice_match', choiceIndex: choice.index, confidence: 1.0 };
       }
     }
@@ -148,7 +166,12 @@ export class InkRouter {
     // Voice hint match
     for (const choice of state.choices) {
       for (const hint of choice.voiceHints) {
-        if (normalized.includes(hint) || hint.includes(normalized)) {
+        if (
+          normalized.includes(hint)
+          || hint.includes(normalized)
+          || compact.includes(compactNormalize(hint))
+          || compactNormalize(hint).includes(compact)
+        ) {
           return { type: 'choice_match', choiceIndex: choice.index, confidence: 0.95 };
         }
       }
@@ -192,7 +215,7 @@ export class InkRouter {
     const best = scores[0]!;
     const runnerUp = scores[1];
 
-    if (best.score > 0.5) {
+    if (best.score >= 0.5) {
       const gap = runnerUp ? best.score - runnerUp.score : best.score;
       if (gap > 0.2 || !runnerUp) {
         return { type: 'choice_match', choiceIndex: best.index, confidence: best.score };
@@ -213,12 +236,17 @@ export class InkRouter {
     if (!this.llm) return null;
 
     const choiceList = state.choices
-      .map((c, i) => `${i + 1}. "${c.text}"`)
+      .map((c, i) => `${i + 1}. "${c.text}"${c.voiceHints.length ? ` (voice hints: ${c.voiceHints.join(', ')})` : ''}`)
       .join('\n');
+    const sceneText = state.narration.map(n => n.text).join('\n');
+    const allowDiscussion = isLikelyQuestion(asrText);
 
     const messages: ChatMessage[] = [{
       role: 'user',
       content: `You are classifying a player's spoken input in an interactive story.
+
+Current scene:
+${sceneText || '(no scene text)'}
 
 Available choices:
 ${choiceList}
@@ -227,13 +255,19 @@ The player said: "${asrText}"
 
 Classify the player's intent:
 - If they clearly want one of the listed choices, respond: CHOICE:N (the choice number)
-- If they are asking a QUESTION about the story world or a character (e.g. "what is this place?", "who are you?"), respond: DISCUSSION
+- If they are describing an ACTION, destination, object, cue, or intention that IMPLIEDLY maps to one listed choice, still respond: CHOICE:N
+- Prefer CHOICE over NONE whenever one listed option is the clearly best semantic fit for what they mean
+- Only respond DISCUSSION for a genuine question about the story world or a character${allowDiscussion ? '' : ' (this utterance does not look like a question, so DISCUSSION is strongly disfavored)'}
 - If they are asking what they can do or want help (e.g. "what are my options?"), respond: META
 - If they seem impatient and want to skip narration or hear choices quickly (e.g. "yeah yeah", "skip", "get on with it"), respond: SKIP
 - If they are trying to perform an ACTION that is not one of the listed choices (e.g. "pet the cat", "eat it", "fly away", "open the door"), respond: NONE
 - If nothing matches, respond: NONE
 
-IMPORTANT: Only use DISCUSSION for genuine questions. Commands, actions, and requests that don't match a choice are NONE.
+IMPORTANT:
+- Only use DISCUSSION for genuine questions.
+- Imperatives, short action phrases, and destination phrases usually mean CHOICE or NONE, not DISCUSSION.
+- Never invent a new option. Pick the closest listed choice or return NONE.
+- If the player says something like "follow the smell" and one choice is "go to the animals", that should be CHOICE, not NONE, because the intent clearly points to that destination.
 
 Respond with ONLY the classification word/code, nothing else.`,
     }];
@@ -272,4 +306,141 @@ Respond with ONLY the classification word/code, nothing else.`,
 
     return null;
   }
+
+  private async attachResidualText(
+    asrText: string,
+    state: InkSessionState,
+    classification: Classification,
+    signal?: AbortSignal,
+  ): Promise<Classification> {
+    if (classification.type !== 'choice_match' || classification.choiceIndex === undefined) {
+      return classification;
+    }
+
+    const matchedChoice = state.choices.find(choice => choice.index === classification.choiceIndex);
+    if (!matchedChoice) {
+      return classification;
+    }
+
+    const residualText = await this.extractChoiceResidual(asrText, matchedChoice, signal);
+    return residualText
+      ? { ...classification, residualText }
+      : classification;
+  }
+
+  private async extractChoiceResidual(
+    asrText: string,
+    choice: InkSessionState['choices'][number],
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    const heuristicResidual = extractResidualByPrefixOrSuffix(asrText, [
+      choice.text,
+      ...choice.voiceHints,
+    ]);
+    if (heuristicResidual) {
+      return heuristicResidual;
+    }
+
+    if (!this.llm) return undefined;
+
+    const asrTokens = tokenize(asrText);
+    if (asrTokens.length <= 3) return undefined;
+
+    let response = '';
+    try {
+      for await (const chunk of this.llm.chat([{
+        role: 'user',
+        content: buildCarryoverPrompt(asrText, choice.text, choice.voiceHints),
+      }], {
+        maxTokens: 60,
+        temperature: 0,
+        signal,
+      })) {
+        response += chunk.text;
+        if (chunk.done) break;
+      }
+    } catch {
+      return undefined;
+    }
+
+    const trimmed = response.trim();
+    if (!trimmed || /^NONE$/i.test(trimmed)) return undefined;
+
+    const match = trimmed.match(/^FOLLOWUP:\s*(.+)$/is);
+    const residualText = (match?.[1] ?? '').trim();
+    return residualText || undefined;
+  }
+}
+
+function buildCarryoverPrompt(asrText: string, choiceText: string, voiceHints: string[]): string {
+  const hintsLine = voiceHints.length > 0 ? `\nVoice hints: ${voiceHints.join(', ')}` : '';
+  return `You are extracting any follow-up text that should carry into the NEXT turn of an interactive story.
+
+Player utterance: "${asrText}"
+Matched current choice: "${choiceText}"${hintsLine}
+
+Return exactly one of:
+- NONE
+- FOLLOWUP: <verbatim leftover text>
+
+Use FOLLOWUP only when the utterance contains both:
+1. a clear selection of the matched current choice, and
+2. extra words that should be applied immediately after that choice succeeds
+
+Rules:
+- Copy the extra words verbatim from the player utterance when possible.
+- Exclude the matched choice words themselves.
+- Ignore filler like "please", "okay", "yeah", "thanks", or hesitation noise.
+- Do not paraphrase, explain, or invent.
+- If there is no meaningful carryover text, return NONE.
+
+Examples:
+- Utterance: "ask one last question who can you trust here"
+  Choice: "ask one last question"
+  Result: FOLLOWUP: who can you trust here
+- Utterance: "go to the shed"
+  Choice: "go to the shed"
+  Result: NONE
+- Utterance: "yes do it"
+  Choice: "open the door"
+  Result: NONE`;
+}
+
+function extractResidualByPrefixOrSuffix(asrText: string, phrases: string[]): string | undefined {
+  const originalTokens = asrText.trim().split(/\s+/).filter(Boolean);
+  const asrTokens = originalTokens.map(token => normalize(token)).filter(Boolean);
+  if (asrTokens.length === 0) return undefined;
+
+  for (const phrase of phrases) {
+    const phraseTokens = tokenize(phrase);
+    if (phraseTokens.length === 0 || asrTokens.length <= phraseTokens.length) continue;
+
+    if (startsWithTokens(asrTokens, phraseTokens)) {
+      return cleanResidualText(originalTokens.slice(phraseTokens.length).join(' '));
+    }
+    if (endsWithTokens(asrTokens, phraseTokens)) {
+      return cleanResidualText(originalTokens.slice(0, originalTokens.length - phraseTokens.length).join(' '));
+    }
+  }
+
+  return undefined;
+}
+
+function startsWithTokens(tokens: string[], prefix: string[]): boolean {
+  return prefix.every((token, index) => tokens[index] === token);
+}
+
+function endsWithTokens(tokens: string[], suffix: string[]): boolean {
+  const offset = tokens.length - suffix.length;
+  return suffix.every((token, index) => tokens[offset + index] === token);
+}
+
+function cleanResidualText(text: string): string | undefined {
+  const cleaned = text
+    .replace(/^[,.:;!?-]+\s*/, '')
+    .replace(/\s*[,.:;!?-]+$/, '')
+    .trim();
+  if (!cleaned) return undefined;
+  if (/^(please|okay|ok|yeah|yep|thanks|thank you)$/i.test(cleaned)) return undefined;
+  return cleaned;
 }

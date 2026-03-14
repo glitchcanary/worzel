@@ -118,7 +118,12 @@ export class VoicePipeline {
 
     // Opus encoder for TTS output (16kHz mono — matches ESP32 I2S rate,
     // avoids costly libopus internal resampling on the microcontroller)
-    const opusEncoder = new OpusEncoder({ sampleRate: 16000, channels: 1 });
+    const opusEncoder = new OpusEncoder({
+      sampleRate: 16000,
+      channels: 1,
+      bitrate: 24000,
+      enableDtx: false,
+    });
 
     try {
       // 1. Decode audio to PCM

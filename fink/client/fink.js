@@ -55,10 +55,14 @@ class WsClient {
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = 'arraybuffer';
       this.ws.onopen = () => {
-        const fmt = (typeof AudioEncoder !== 'undefined') ? 'opus' : 'pcm';
         this.ws.send(JSON.stringify({
           type: 'hello', version: 1, transport: 'websocket',
-          audio_params: { format: fmt, sample_rate: 16000, channels: 1, frame_duration: 60 },
+          audio_params: {
+            format: this.options.audioFormat ?? 'pcm',
+            sample_rate: 16000,
+            channels: 1,
+            frame_duration: 60,
+          },
           features: ['tts', 'stt'],
         }));
       };
@@ -86,7 +90,14 @@ class WsClient {
     switch (msg.type) {
       case 'hello': this.sessionId = msg.session_id; this.setState('connected'); this.startPing(); break;
       case 'stt': this.emit('stt', msg.text); break;
-      case 'tts': this.emit('tts', { state: msg.state, text: msg.text }); break;
+      case 'tts':
+        this.emit('tts', {
+          state: msg.state,
+          text: msg.text,
+          provider: msg.provider,
+          fallback: msg.fallback,
+        });
+        break;
       case 'ink_state': this.emit('inkState', msg); break;
       case 'pipeline_telemetry': this.emit('telemetry', msg); break;
       case 'pong': break;
@@ -168,20 +179,50 @@ class AudioPlayer {
     if (!opusArrayBuffer || opusArrayBuffer.byteLength === 0) return;
     if (this._decoder?.ready) this._decoder.decode(opusArrayBuffer);
   }
-  _playFloat32(float32) {
-    if (!float32 || float32.length === 0) return;
+  enqueue(pcmArrayBuffer) {
+    if (!pcmArrayBuffer || pcmArrayBuffer.byteLength === 0) return;
+    const int16 = new Int16Array(pcmArrayBuffer);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+    this._playFloat32(float32);
+  }
+  async enqueueCompressed(audioArrayBuffer) {
+    if (!audioArrayBuffer || audioArrayBuffer.byteLength === 0) return;
     if (!this.ctx) { this.ctx = new AudioContext({ sampleRate: this.sampleRate }); this.nextTime = 0; }
-    if (this.ctx.state === 'suspended') this.ctx.resume();
-    const buf = this.ctx.createBuffer(1, float32.length, this.sampleRate);
-    buf.getChannelData(0).set(float32);
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+    const decoded = await this.ctx.decodeAudioData(audioArrayBuffer.slice(0));
+    this._playAudioBuffer(decoded);
+  }
+  enqueueAuto(audioArrayBuffer) {
+    if (!audioArrayBuffer || audioArrayBuffer.byteLength === 0) return;
+    const bytes = new Uint8Array(audioArrayBuffer, 0, Math.min(audioArrayBuffer.byteLength, 3));
+    const isId3 = bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33;
+    if (isId3) {
+      this.enqueueCompressed(audioArrayBuffer).catch(err => console.error('[fink] Compressed audio decode error:', err));
+      return;
+    }
+    this.enqueue(audioArrayBuffer);
+  }
+  _playAudioBuffer(buf) {
+    if (!buf) return;
+    if (!this.ctx) { this.ctx = new AudioContext({ sampleRate: buf.sampleRate || this.sampleRate }); this.nextTime = 0; }
     const src = this.ctx.createBufferSource();
-    src.buffer = buf; src.connect(this.ctx.destination);
+    src.buffer = buf;
+    src.connect(this.ctx.destination);
     const now = this.ctx.currentTime;
     if (this.nextTime <= now) this.nextTime = now;
     src.start(this.nextTime);
     this.nextTime += buf.duration;
     this._sources.push(src);
     src.onended = () => { this._sources = this._sources.filter(s => s !== src); };
+  }
+  _playFloat32(float32) {
+    if (!float32 || float32.length === 0) return;
+    if (!this.ctx) { this.ctx = new AudioContext({ sampleRate: this.sampleRate }); this.nextTime = 0; }
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    const buf = this.ctx.createBuffer(1, float32.length, this.sampleRate);
+    buf.getChannelData(0).set(float32);
+    this._playAudioBuffer(buf);
   }
   stop() {
     for (const src of this._sources) { try { src.stop(); } catch {} }
@@ -208,6 +249,37 @@ class FinkStory extends HTMLElement {
           flex: 1; overflow-y: auto; padding: 16px 20px;
           line-height: 1.7; font-size: 1.05rem;
         }
+        .last-heard {
+          position: sticky; top: 0; z-index: 2;
+          margin: 0 0 12px 0; padding: 8px 10px;
+          background: rgba(15, 52, 96, 0.92);
+          border: 1px solid var(--fink-border, #1a1a3e);
+          border-radius: 8px;
+          color: var(--fink-text-secondary, #b8bfd6);
+          font-size: 0.82rem; line-height: 1.35;
+          font-family: system-ui, sans-serif;
+          backdrop-filter: blur(4px);
+        }
+        .session-note {
+          position: sticky; top: 0; z-index: 3;
+          margin: 0 0 12px 0; padding: 8px 10px;
+          background: rgba(20, 20, 34, 0.94);
+          border: 1px solid var(--fink-border, #1a1a3e);
+          border-radius: 8px;
+          color: var(--fink-text-secondary, #b8bfd6);
+          font-size: 0.8rem; line-height: 1.35;
+          font-family: system-ui, sans-serif;
+          backdrop-filter: blur(4px);
+        }
+        .session-note.listening { border-color: #3b82f6; color: #dbeafe; }
+        .session-note.thinking { border-color: #f59e0b; color: #fde68a; }
+        .session-note.speaking { border-color: #22c55e; color: #dcfce7; }
+        .session-note.error { border-color: #ef4444; color: #fecaca; }
+        .last-heard strong {
+          color: var(--fink-text, #e8e8e8);
+          font-weight: 600;
+          margin-right: 6px;
+        }
         .narration p {
           margin-bottom: 12px; opacity: 0; animation: fadeIn 0.4s ease forwards;
         }
@@ -228,9 +300,41 @@ class FinkStory extends HTMLElement {
           color: var(--fink-text, #e8e8e8); transition: all 0.15s;
           text-align: left;
         }
+        .choice-card.suggested {
+          background: #2a5d54;
+          border-color: #7cd6b4;
+          box-shadow: 0 0 0 1px rgba(124, 214, 180, 0.35);
+        }
         .choice-card:hover { background: var(--fink-choice-hover, #264d7a); }
         .choice-card:active { background: var(--fink-choice-active, #2d6aa0); }
         .choice-number { color: var(--fink-accent, #e94560); font-weight: bold; margin-right: 8px; }
+        .choice-badge {
+          display: inline-block;
+          margin-left: 8px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          background: rgba(124, 214, 180, 0.16);
+          color: #baf0dd;
+          font-size: 0.72rem;
+          font-family: system-ui, sans-serif;
+          vertical-align: middle;
+        }
+        .next-move {
+          margin: 0 0 10px 0;
+          padding: 10px 12px;
+          border-radius: 8px;
+          border: 1px solid rgba(124, 214, 180, 0.35);
+          background: rgba(42, 93, 84, 0.22);
+          color: var(--fink-text-secondary, #b8bfd6);
+          font-size: 0.84rem;
+          line-height: 1.4;
+          font-family: system-ui, sans-serif;
+        }
+        .next-move strong {
+          color: var(--fink-text, #e8e8e8);
+          font-weight: 600;
+          margin-right: 6px;
+        }
         .empty {
           display: flex; align-items: center; justify-content: center;
           flex: 1; color: var(--fink-text-muted, #5a5e73); font-style: italic;
@@ -251,6 +355,9 @@ class FinkStory extends HTMLElement {
       <div class="choices"></div>`;
     this._narration = this.shadowRoot.querySelector('.narration');
     this._choices = this.shadowRoot.querySelector('.choices');
+    this._lastHeardEl = null;
+    this._statusEl = null;
+    this._nextMoveEl = null;
   }
 
   /** Add an image to the narration area. */
@@ -283,6 +390,13 @@ class FinkStory extends HTMLElement {
   /** Show the user's spoken text briefly. */
   showUserSpeech(text) {
     this._clearEmpty();
+    this.setStatus(`Heard: "${text}"`, 'thinking');
+    if (!this._lastHeardEl) {
+      this._lastHeardEl = document.createElement('div');
+      this._lastHeardEl.className = 'last-heard';
+      this._narration.prepend(this._lastHeardEl);
+    }
+    this._lastHeardEl.innerHTML = `<strong>You said</strong>${this._esc(text)}`;
     const p = document.createElement('p');
     p.className = 'user-speech';
     p.textContent = `"${text}"`;
@@ -314,13 +428,26 @@ class FinkStory extends HTMLElement {
     }
   }
 
+  setStatus(text, kind = 'info') {
+    this._clearEmpty();
+    if (!this._statusEl) {
+      this._statusEl = document.createElement('div');
+      this._statusEl.className = 'session-note';
+      this._narration.prepend(this._statusEl);
+    }
+    this._statusEl.className = `session-note ${kind}`.trim();
+    this._statusEl.textContent = text;
+  }
+
   /** Update the choice cards. */
-  setChoices(choices) {
+  setChoices(choices, suggestion) {
     this._choices.innerHTML = '';
+    this._renderSuggestion(suggestion, choices);
     choices.forEach((choice, i) => {
       const card = document.createElement('button');
-      card.className = 'choice-card';
-      card.innerHTML = `<span class="choice-number">${i + 1}.</span>${this._esc(choice.text)}`;
+      const isSuggested = suggestion?.suggestedChoiceIndex === choice.index;
+      card.className = 'choice-card' + (isSuggested ? ' suggested' : '');
+      card.innerHTML = `<span class="choice-number">${i + 1}.</span>${this._esc(choice.text)}${isSuggested ? '<span class="choice-badge">Suggested</span>' : ''}`;
       card.addEventListener('click', () => {
         this.dispatchEvent(new CustomEvent('fink-choice', {
           bubbles: true, detail: { choiceIndex: choice.index },
@@ -346,11 +473,37 @@ class FinkStory extends HTMLElement {
     this._narration.innerHTML = '';
     this._choices.innerHTML = '';
     this._streamEl = null;
+    this._lastHeardEl = null;
+    this._statusEl = null;
+    this._nextMoveEl = null;
   }
 
   _clearEmpty() {
     const e = this._narration.querySelector('.empty');
     if (e) e.remove();
+  }
+
+  _renderSuggestion(suggestion, choices) {
+    if (this._nextMoveEl) {
+      this._nextMoveEl.remove();
+      this._nextMoveEl = null;
+    }
+    if (!suggestion) return;
+
+    const parts = [`<strong>Next move</strong>Heard next: "${this._esc(suggestion.heardText)}".`];
+    if (suggestion.suggestedChoiceIndex != null) {
+      const match = choices.find(choice => choice.index === suggestion.suggestedChoiceIndex);
+      if (match) {
+        parts.push(`Suggested choice: "${this._esc(match.text)}".`);
+      }
+    } else if (suggestion.pendingInputText) {
+      parts.push(`Draft reply ready: "${this._esc(suggestion.pendingInputText)}".`);
+    }
+
+    this._nextMoveEl = document.createElement('div');
+    this._nextMoveEl.className = 'next-move';
+    this._nextMoveEl.innerHTML = parts.join(' ');
+    this._choices.appendChild(this._nextMoveEl);
   }
 
   _esc(s) { const d = document.createElement('span'); d.textContent = s; return d.innerHTML; }
@@ -365,16 +518,35 @@ class FinkMic extends HTMLElement {
     super();
     this.recording = false;
     this._enabled = false;
+    this._suspendInputUntil = 0;
     this._hotMic = false; // always-on mic mode
     this._silenceTimer = null;
     this._silenceThreshold = 2000; // ms of silence before auto-stop
+    this._restartDelayMs = 900; // re-arm hot mic after TTS settles
     this._lastAudioTime = 0;
     this._speechDetected = false;
+    this._speechStartTime = 0;
+    this._minSpeechMs = 250; // ignore tiny bursts and residual audio
     this._peakRms = 0; // peak RMS energy during this recording
+    this._autoRestartTimer = null;
     this.attachShadow({ mode: 'open' }).innerHTML = `
       <style>
         :host { display: flex; justify-content: center; padding: 12px; }
         .wrap { display: flex; align-items: center; gap: 12px; }
+        .mode-btn {
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid var(--fink-border, #1a1a3e);
+          background: #13253f;
+          color: var(--fink-text-secondary, #8b8fa3);
+          font-size: 0.72rem;
+          font-family: system-ui, sans-serif;
+          cursor: pointer;
+        }
+        .mode-btn.hot {
+          border-color: #22c55e;
+          color: #dcfce7;
+        }
         button.mic {
           width: 56px; height: 56px; border-radius: 50%;
           border: 2px solid var(--fink-accent, #e94560);
@@ -394,9 +566,8 @@ class FinkMic extends HTMLElement {
         button.mic.hot.rec .icon { fill: white; }
         .hint {
           font-size: 0.8rem; color: var(--fink-text-muted, #5a5e73);
-          font-family: system-ui, sans-serif; cursor: pointer;
+          font-family: system-ui, sans-serif;
         }
-        .hint:hover { color: var(--fink-text-secondary, #8b8fa3); }
         .state-label {
           font-size: 0.75rem; font-family: system-ui, sans-serif;
           color: var(--fink-text-secondary); min-width: 80px;
@@ -417,6 +588,7 @@ class FinkMic extends HTMLElement {
         .spd.active { background: var(--fink-primary, #0f3460); border-color: var(--fink-accent, #e94560); color: var(--fink-text, #e8e8e8); }
       </style>
       <div class="wrap">
+        <button class="mode-btn" type="button">Push To Talk</button>
         <button class="mic" disabled>
           <svg class="icon" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
         </button>
@@ -433,6 +605,7 @@ class FinkMic extends HTMLElement {
       </div>`;
     const btn = this.shadowRoot.querySelector('button.mic');
     const hint = this.shadowRoot.querySelector('.hint');
+    const modeBtn = this.shadowRoot.querySelector('.mode-btn');
 
     // Push-to-talk handlers
     btn.addEventListener('pointerdown', e => {
@@ -444,9 +617,6 @@ class FinkMic extends HTMLElement {
       btn.releasePointerCapture(e.pointerId); this.stopRec();
     });
     btn.addEventListener('lostpointercapture', () => { if (!this._hotMic && this.recording) this.stopRec(); });
-    btn.addEventListener('touchstart', e => { if (this._hotMic) return; e.preventDefault(); this.startRec(); }, { passive: false });
-    btn.addEventListener('touchend', e => { if (this._hotMic) return; e.preventDefault(); this.stopRec(); }, { passive: false });
-    btn.addEventListener('touchcancel', () => { if (!this._hotMic && this.recording) this.stopRec(); });
 
     // Hot mic click toggle
     btn.addEventListener('click', () => {
@@ -455,8 +625,8 @@ class FinkMic extends HTMLElement {
       else this.startRec();
     });
 
-    // Toggle mode by clicking the hint text
-    hint.addEventListener('click', () => this.toggleHotMic());
+    // Explicit mode toggle
+    modeBtn.addEventListener('click', () => this.toggleHotMic());
 
     // Speed buttons
     const savedSpeed = localStorage.getItem('fink-tts-speed');
@@ -485,15 +655,33 @@ class FinkMic extends HTMLElement {
     this._hotMic = !this._hotMic;
     const btn = this.shadowRoot.querySelector('button.mic');
     const hint = this.shadowRoot.querySelector('.hint');
+    const modeBtn = this.shadowRoot.querySelector('.mode-btn');
     btn.classList.toggle('hot', this._hotMic);
-    hint.textContent = this._hotMic ? 'Hot mic (click to toggle)' : 'Hold to speak';
+    modeBtn.classList.toggle('hot', this._hotMic);
+    modeBtn.textContent = this._hotMic ? 'Hot Mic On' : 'Push To Talk';
+    hint.textContent = this._hotMic ? 'Tap mic to start or stop listening' : 'Hold mic to speak';
     if (this.recording && !this._hotMic) this.stopRec();
   }
 
   get hotMic() { return this._hotMic; }
 
+  async ensureEncoder() {
+    if (this._encoder) return this._encoder;
+    this._encoder = new OpusBrowserEncoder();
+    await this._encoder.init();
+    console.log(`[fink] Audio format: ${this._encoder.format}`);
+    return this._encoder;
+  }
+
+  get audioFormat() {
+    return this._encoder?.format ?? 'pcm';
+  }
+
   enable() { this._enabled = true; this.shadowRoot.querySelector('button.mic').disabled = false; }
   disable() { this._enabled = false; this.shadowRoot.querySelector('button.mic').disabled = true; if (this.recording) this.stopRec(); }
+  suspendInput(ms = 1200) {
+    this._suspendInputUntil = Date.now() + ms;
+  }
   setPipelineState(state) {
     const label = this.shadowRoot.querySelector('.state-label');
     label.className = 'state-label';
@@ -506,27 +694,27 @@ class FinkMic extends HTMLElement {
   /** Auto-restart recording in hot mic mode (called after TTS finishes). */
   autoRestart() {
     if (this._hotMic && this._enabled && !this.recording) {
-      // Small delay to avoid capturing TTS audio echo
-      setTimeout(() => {
+      if (this._autoRestartTimer) clearTimeout(this._autoRestartTimer);
+      this._autoRestartTimer = setTimeout(() => {
+        this._autoRestartTimer = null;
         if (this._hotMic && this._enabled && !this.recording) this.startRec();
-      }, 300);
+      }, this._restartDelayMs);
     }
   }
 
   async startRec() {
     if (this.recording || !this._enabled) return;
+    if (Date.now() < this._suspendInputUntil) return;
     this.recording = true;
     this._speechDetected = false;
     this._lastAudioTime = 0;
+    this._speechStartTime = 0;
     this._peakRms = 0;
     const btn = this.shadowRoot.querySelector('button.mic');
     btn.classList.add('rec');
     if (this._hotMic) this.setPipelineState('listening');
     try {
-      if (!this._encoder) {
-        this._encoder = new OpusBrowserEncoder();
-        await this._encoder.init();
-      }
+      await this.ensureEncoder();
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
       this.audioCtx = new AudioContext({ sampleRate: 16000 });
       const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
@@ -546,8 +734,13 @@ class FinkMic extends HTMLElement {
         // Silence detection for hot-mic mode
         if (this._hotMic) {
           if (rms > 0.015) {
+            if (this._speechStartTime === 0) this._speechStartTime = Date.now();
             this._lastAudioTime = Date.now();
-            this._speechDetected = true;
+            if (!this._speechDetected && Date.now() - this._speechStartTime >= this._minSpeechMs) {
+              this._speechDetected = true;
+            }
+          } else {
+            this._speechStartTime = 0;
           }
           // Only auto-stop after speech was detected (ignore pre-speech silence)
           if (this._speechDetected && this._lastAudioTime > 0) {
@@ -588,6 +781,7 @@ class FinkMic extends HTMLElement {
       },
     }));
     this._speechDetected = false;
+    this._speechStartTime = 0;
     this._peakRms = 0;
   }
 }
@@ -654,11 +848,11 @@ class FinkApp extends HTMLElement {
     const basePath = window.location.pathname.startsWith('/fink') ? '/fink' : '';
     input.value = window.location.origin + basePath;
 
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       if (this.client?.currentState === 'connected') {
         this.client.disconnect();
       } else {
-        this.doConnect(input.value);
+        await this.doConnect(input.value);
       }
     });
 
@@ -666,18 +860,21 @@ class FinkApp extends HTMLElement {
     const story = this.shadowRoot.querySelector('fink-story');
 
     mic.addEventListener('fink-recording-start', () => {
+      story.setStatus('Listening for a story move...', 'listening');
       this.player?.stop();
       this.client?.abort();
-      mic.setPipelineState('idle');
+      mic.setPipelineState('listening');
       this.client?.startListening();
     });
     mic.addEventListener('fink-recording-stop', (e) => {
       // In hot-mic mode, skip server call if no speech was detected
       if (e.detail?.hadSpeech === false) {
+        story.setStatus('No speech detected. Try again or tap a choice.', 'error');
         mic.autoRestart();
         return;
       }
       const peakRms = e.detail?.peakRms;
+      story.setStatus('Sending audio for recognition...', 'thinking');
       this.client?.stopListening(peakRms != null ? { audio_level: Math.round(peakRms * 1000) / 1000 } : undefined);
       mic.setPipelineState('thinking');
     });
@@ -690,8 +887,10 @@ class FinkApp extends HTMLElement {
     story.addEventListener('fink-choice', e => {
       console.log('[fink] Choice tapped:', e.detail.choiceIndex);
       if (this.client?.currentState === 'connected') {
+        mic.suspendInput(1500);
         this.player?.stop();
         this.client.abort();
+        story.setStatus('Choice selected. Advancing the story...', 'thinking');
         this.client.send({
           type: 'ink',
           action: 'choose',
@@ -701,15 +900,20 @@ class FinkApp extends HTMLElement {
     });
   }
 
-  doConnect(serverUrl) {
-    this.client = new WsClient({ serverUrl });
-    this.player = new AudioPlayer(16000);
-
+  async doConnect(serverUrl) {
     const status = this.shadowRoot.querySelector('.status');
     const btn = this.shadowRoot.querySelector('.connect-bar button');
     const input = this.shadowRoot.querySelector('.connect-bar input');
     const story = this.shadowRoot.querySelector('fink-story');
     const mic = this.shadowRoot.querySelector('fink-mic');
+
+    await mic.ensureEncoder();
+
+    this.client = new WsClient({
+      serverUrl,
+      audioFormat: mic.audioFormat,
+    });
+    this.player = new AudioPlayer(16000);
 
     this.client.on('stateChange', s => {
       status.textContent = s;
@@ -718,11 +922,16 @@ class FinkApp extends HTMLElement {
       btn.classList.toggle('dc', s === 'connected');
       input.disabled = s === 'connected';
       if (s === 'connected') {
+        story.setStatus('Connected. Speak a choice or tap one.', 'info');
         mic.enable();
         // Send initial TTS speed preference
         this.client?.send({ type: 'fink_settings', tts_speed: mic.ttsSpeed ?? 1.15 });
       }
-      else { mic.disable(); if (s === 'disconnected') this.player?.stop(); }
+      else {
+        mic.disable();
+        if (s === 'disconnected') this.player?.stop();
+        story.setStatus(`Connection state: ${s}.`, s === 'error' ? 'error' : 'info');
+      }
     });
 
     this.client.on('stt', text => {
@@ -736,7 +945,11 @@ class FinkApp extends HTMLElement {
     let inkNarrating = false;
 
     this.client.on('tts', ev => {
+      if (ev.provider) {
+        console.log(`[fink] TTS provider: ${ev.provider}${ev.fallback ? ' (fallback)' : ''}`);
+      }
       if (ev.state === 'start') {
+        story.setStatus('Speaking...', 'speaking');
         if (!inkNarrating) story.startStreaming();
         if (!this.player) this.player = new AudioPlayer(16000);
         mic.setPipelineState('speaking');
@@ -748,31 +961,39 @@ class FinkApp extends HTMLElement {
         if (!inkNarrating) story.endStreaming();
         inkNarrating = false;
         mic.setPipelineState('idle');
+        story.setStatus('Ready for your next move.', 'info');
         mic.autoRestart();
       }
     });
 
-    this.client.on('audio', data => this.player?.enqueueOpus(data));
+    this.client.on('audio', data => this.player?.enqueueAuto(data));
 
     // Ink state updates — text already displayed here, suppress TTS streaming display
     this.client.on('inkState', msg => {
       console.log('[fink] Ink state:', msg);
       if (msg.narration && msg.narration.length > 0) {
         inkNarrating = true;
+        story.setStatus('Story advanced.', 'info');
         for (const seg of msg.narration) {
           if (seg.image) story.addImage(seg.image);
           story.addNarration(seg.text, seg.speaker);
         }
       }
       if (msg.choices) {
-        story.setChoices(msg.choices);
+        story.setChoices(msg.choices, msg.suggestion);
+        if (!msg.narration || msg.narration.length === 0) {
+          story.setStatus('Choices updated. Speak one or tap one.', 'info');
+        }
       }
       if (msg.isEnded) {
         story.showEnded();
       }
     });
 
-    this.client.on('error', msg => console.error('[fink] Error:', msg));
+    this.client.on('error', msg => {
+      console.error('[fink] Error:', msg);
+      story.setStatus(`Error: ${msg}`, 'error');
+    });
     this.client.connect();
   }
 }

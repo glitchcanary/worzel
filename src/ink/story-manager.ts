@@ -22,7 +22,24 @@ export interface StoryMetadata {
   author?: string;
   description?: string;
   defaultVoices?: Record<string, string>;
+  characters?: Record<string, StoryCharacterMetadata>;
+  voices?: Record<string, StoryVoiceProfile>;
   finkData?: Record<string, unknown>;
+}
+
+export interface StoryCharacterMetadata {
+  name?: string;
+  voice?: string;
+  mood?: string;
+  voiceDirectives?: Record<string, string>;
+  foaf?: Record<string, string>;
+}
+
+export interface StoryVoiceProfile {
+  description?: string;
+  traits?: string[];
+  style?: Record<string, string>;
+  providers?: Record<string, string>;
 }
 
 export class StoryManager {
@@ -225,6 +242,8 @@ export class StoryManager {
         author: data.author,
         description: data.description,
         defaultVoices: data.defaultVoices,
+        characters: data.characters,
+        voices: data.voices,
         finkData: data.finkData,
       };
     } catch {

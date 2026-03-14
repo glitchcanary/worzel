@@ -28,6 +28,7 @@ import { resamplePcm } from '../utils/resample.js';
 import { stripThinkTags } from '../utils/sanitize.js';
 import { TextSegmenter } from '../pipeline/text-segmenter.js';
 import { AudioRateController } from '../pipeline/audio-rate-controller.js';
+import { VoiceResolver } from '../ink/voice-resolver.js';
 
 /** Parent story state saved before a FINK link switch. */
 export interface ParentStoryState {
@@ -50,21 +51,33 @@ export interface InkPipelineOptions {
   asr: ASRProvider;
   llm: LLMProvider;
   tts: TTSProvider;
+  ttsFallback?: TTSProvider;
   logger: pino.Logger;
   voiceAliases?: Record<string, string>;
   choiceVoice?: string;
+  fallbackChoiceVoice?: string;
   onFinkLink?: FinkLinkHandler;
   onStoryEnded?: StoryEndedHandler;
+}
+
+interface CarryoverSuggestion {
+  heardText: string;
+  suggestedChoiceIndex?: number;
+  pendingInputText?: string;
+  confidence: number;
 }
 
 export class InkPipeline {
   private readonly asr: ASRProvider;
   private readonly llm: LLMProvider;
   private readonly tts: TTSProvider;
+  private readonly ttsFallback?: TTSProvider;
   private readonly logger: pino.Logger;
   private readonly router: InkRouter;
-  private readonly voiceAliases: Map<string, string>;
+  private readonly voiceResolver: VoiceResolver;
+  private readonly fallbackVoiceResolver?: VoiceResolver;
   private readonly choiceVoice: string;
+  private readonly fallbackChoiceVoice?: string;
   private readonly onFinkLink?: FinkLinkHandler;
   private readonly onStoryEnded?: StoryEndedHandler;
   private audioBuffer: Buffer[] = [];
@@ -76,12 +89,21 @@ export class InkPipeline {
     this.asr = options.asr;
     this.llm = options.llm;
     this.tts = options.tts;
+    this.ttsFallback = options.ttsFallback;
     this.logger = options.logger;
     this.router = new InkRouter({ llm: options.llm });
-    this.voiceAliases = new Map(
-      Object.entries(options.voiceAliases ?? {}).map(([key, value]) => [key.toLowerCase(), value]),
-    );
+    this.voiceResolver = new VoiceResolver({
+      provider: options.tts.provider ?? options.tts.name.replace(/-tts$/, ''),
+      aliases: options.voiceAliases,
+    });
+    this.fallbackVoiceResolver = options.ttsFallback
+      ? new VoiceResolver({
+          provider: options.ttsFallback.provider ?? options.ttsFallback.name.replace(/-tts$/, ''),
+          aliases: options.voiceAliases,
+        })
+      : undefined;
     this.choiceVoice = options.choiceVoice ?? 'nova';
+    this.fallbackChoiceVoice = options.fallbackChoiceVoice;
     this.onFinkLink = options.onFinkLink;
     this.onStoryEnded = options.onStoryEnded;
   }
@@ -106,7 +128,12 @@ export class InkPipeline {
 
     const abortController = new AbortController();
     session.abortController = abortController;
-    const opusEncoder = new OpusEncoder({ sampleRate: 16000, channels: 1 });
+    const opusEncoder = new OpusEncoder({
+      sampleRate: 16000,
+      channels: 1,
+      bitrate: 24000,
+      enableDtx: false,
+    });
 
     try {
       // 0. Skip ASR if client reports very low audio energy (likely silence/ambient)
@@ -156,6 +183,7 @@ export class InkPipeline {
         type: classification.type,
         choiceIndex: classification.choiceIndex,
         confidence: classification.confidence,
+        residualText: classification.residualText,
       }, 'Classification result');
 
       // 4. Act on classification
@@ -201,20 +229,10 @@ export class InkPipeline {
 
         case 'no_match':
           this.noMatchCount++;
-          await this.handleLlmResponse(
+          await this.handleNoMatchResponse(
             session, transport, inkSession, opusEncoder,
-            asrText, 'no_match', abortController.signal,
+            abortController.signal,
           );
-          // Read the real choices after the creative refusal
-          if (!abortController.signal.aborted) {
-            const noMatchState = inkSession.getState();
-            if (noMatchState.choices.length > 0) {
-              await this.readChoicesAloud(
-                session, transport, opusEncoder,
-                noMatchState.choices, abortController.signal,
-              );
-            }
-          }
           break;
       }
 
@@ -237,7 +255,12 @@ export class InkPipeline {
     narration: NarrationSegment[],
     choices: InkChoice[],
   ): Promise<void> {
-    const opusEncoder = new OpusEncoder({ sampleRate: 16000, channels: 1 });
+    const opusEncoder = new OpusEncoder({
+      sampleRate: 16000,
+      channels: 1,
+      bitrate: 24000,
+      enableDtx: false,
+    });
     const abortController = new AbortController();
     session.abortController = abortController;
 
@@ -247,7 +270,7 @@ export class InkPipeline {
       );
     }
 
-    if (choices.length > 0 && !abortController.signal.aborted) {
+    if (choices.length > 0 && choices.length <= 4 && !abortController.signal.aborted) {
       await this.readChoicesAloud(
         session, transport, opusEncoder, choices, abortController.signal,
       );
@@ -264,7 +287,12 @@ export class InkPipeline {
     inkSession: InkSession,
     choiceIndex: number,
   ): Promise<void> {
-    const opusEncoder = new OpusEncoder({ sampleRate: 16000, channels: 1 });
+    const opusEncoder = new OpusEncoder({
+      sampleRate: 16000,
+      channels: 1,
+      bitrate: 24000,
+      enableDtx: false,
+    });
     const abortController = new AbortController();
     session.abortController = abortController;
 
@@ -282,9 +310,57 @@ export class InkPipeline {
   /** TTS speed multiplier — configurable per-session via fink_settings. */
   ttsSpeed = 1.15;
 
-  private resolveVoice(voice?: string): string | undefined {
-    if (!voice) return undefined;
-    return this.voiceAliases.get(voice.toLowerCase()) ?? voice;
+  private resolveVoiceWith(
+    resolver: VoiceResolver | undefined,
+    inkSession: InkSession | null,
+    voice?: string,
+    directives?: Record<string, string>,
+  ): string | undefined {
+    return resolver?.resolve(
+      voice,
+      directives,
+      inkSession?.getVoiceProfile(voice),
+    );
+  }
+
+  private async synthesizeWithFallback(
+    text: string,
+    options: {
+      primaryVoice?: string;
+      fallbackVoice?: string;
+      speed?: number;
+    },
+  ): Promise<{ result: Awaited<ReturnType<TTSProvider['synthesize']>>; provider: string; fallback: boolean }> {
+    try {
+      const result = await this.tts.synthesize(text, {
+        voice: options.primaryVoice,
+        speed: options.speed,
+      });
+      return {
+        result,
+        provider: this.tts.provider ?? this.tts.name,
+        fallback: false,
+      };
+    } catch (err) {
+      if (!this.ttsFallback) throw err;
+
+      this.logger.warn({
+        provider: this.tts.provider ?? this.tts.name,
+        fallbackProvider: this.ttsFallback.provider ?? this.ttsFallback.name,
+        err: err instanceof Error ? err.message : String(err),
+        text,
+      }, 'Primary TTS failed, falling back');
+
+      const result = await this.ttsFallback.synthesize(text, {
+        voice: options.fallbackVoice,
+        speed: options.speed,
+      });
+      return {
+        result,
+        provider: this.ttsFallback.provider ?? this.ttsFallback.name,
+        fallback: true,
+      };
+    }
   }
 
   /**
@@ -299,7 +375,10 @@ export class InkPipeline {
     signal: AbortSignal,
   ): Promise<void> {
     const choiceIndex = classification.choiceIndex!;
-    this.logger.info({ choiceIndex }, 'Advancing story');
+    this.logger.info({
+      choiceIndex,
+      residualText: classification.residualText,
+    }, 'Advancing story');
 
     // Save state before any potential FINK link switch (for parent story stack)
     const parentState: ParentStoryState = {
@@ -361,7 +440,12 @@ export class InkPipeline {
     }
 
     // Send ink_state to client (narration + new choices)
-    await this.sendInkState(transport, session, inkSession, result.narration);
+    const carryoverSuggestion = !signal.aborted
+      ? await this.buildCarryoverSuggestion(inkSession, classification.residualText, signal)
+      : undefined;
+    await this.sendInkState(
+      transport, session, inkSession, result.narration, carryoverSuggestion,
+    );
 
     // Narrate the story text via TTS (multi-voice)
     if (result.narration.length > 0) {
@@ -430,6 +514,13 @@ export class InkPipeline {
         session, transport, opusEncoder, result.narration, signal,
       );
     }
+
+    const state = inkSession.getState();
+    if (state.choices.length > 0 && state.choices.length <= 4 && !signal.aborted) {
+      await this.readChoicesAloud(
+        session, transport, opusEncoder, state.choices, signal,
+      );
+    }
   }
 
   /**
@@ -464,6 +555,95 @@ export class InkPipeline {
 
     await this.speakText(session, transport, opusEncoder, briefText, signal);
     session.addDialogue('assistant', `[Skip] ${briefText}`);
+  }
+
+  /**
+   * Handle no-match with a deterministic redirect grounded in the real choices.
+   * Avoids LLM responses inventing actions or fake options.
+   */
+  private async handleNoMatchResponse(
+    session: Session,
+    transport: Transport,
+    inkSession: InkSession,
+    opusEncoder: OpusEncoder,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const state = inkSession.getState();
+
+    if (state.choices.length === 0) {
+      await this.speakText(
+        session, transport, opusEncoder,
+        "I didn't catch a matching move.", signal,
+      );
+      return;
+    }
+
+    const redirectText = this.noMatchCount <= 1
+      ? "I didn't catch a matching move. The current options are on screen."
+      : "I still didn't catch a matching move. Say help if you want the options read again.";
+
+    await this.speakText(session, transport, opusEncoder, redirectText, signal);
+    session.addDialogue('assistant', `[NoMatch] ${redirectText}`);
+  }
+
+  private async buildCarryoverSuggestion(
+    inkSession: InkSession,
+    residualText: string | undefined,
+    signal: AbortSignal,
+  ): Promise<CarryoverSuggestion | undefined> {
+    const followUpText = residualText?.trim();
+    if (!followUpText) {
+      return undefined;
+    }
+
+    const state = inkSession.getState();
+    if (state.isEnded) {
+      return undefined;
+    }
+
+    if (state.waitingForExternalInput) {
+      this.logger.info({
+        residualText: followUpText,
+        waitingForExternalInput: state.waitingForExternalInput,
+      }, 'Carryover suggestion prepared for freeform turn');
+      return {
+        heardText: followUpText,
+        pendingInputText: followUpText,
+        confidence: 1,
+      };
+    }
+
+    if (state.choices.length === 0) {
+      return undefined;
+    }
+
+    const followUpClassification = await this.router.classify(
+      followUpText, state, signal,
+    );
+    this.logger.info({
+      residualText: followUpText,
+      type: followUpClassification.type,
+      choiceIndex: followUpClassification.choiceIndex,
+      confidence: followUpClassification.confidence,
+    }, 'Carryover suggestion classification');
+
+    if (followUpClassification.type === 'choice_match' && followUpClassification.confidence >= 0.75) {
+      return {
+        heardText: followUpText,
+        suggestedChoiceIndex: followUpClassification.choiceIndex,
+        confidence: followUpClassification.confidence,
+      };
+    }
+
+    if (followUpClassification.type === 'freeform_input') {
+      return {
+        heardText: followUpText,
+        pendingInputText: followUpText,
+        confidence: followUpClassification.confidence,
+      };
+    }
+
+    return undefined;
   }
 
   /**
@@ -577,15 +757,23 @@ export class InkPipeline {
       }));
 
       try {
-        const ttsResult = await this.tts.synthesize(seg.text, {
-          voice: this.resolveVoice(seg.voice),
+        const { result: ttsResult, provider, fallback } = await this.synthesizeWithFallback(seg.text, {
+          primaryVoice: this.resolveVoiceWith(this.voiceResolver, null, seg.voice, seg.voiceDirectives),
+          fallbackVoice: this.resolveVoiceWith(this.fallbackVoiceResolver, null, seg.voice, seg.voiceDirectives),
           speed: this.ttsSpeed,
         });
+        await transport.sendText(JSON.stringify({
+          type: 'tts',
+          state: 'sentence_start',
+          session_id: session.id,
+          provider,
+          fallback,
+        }));
 
         rateController.reset();
         await this.sendOpusAudio(
           ttsResult.audio, opusEncoder, transport, rateController, signal,
-          ttsResult.sampleRate,
+          ttsResult.sampleRate, ttsResult.format,
         );
       } catch (err) {
         this.logger.error({ err: err instanceof Error ? err.message : String(err), text: seg.text }, 'TTS error for narration segment');
@@ -632,14 +820,24 @@ export class InkPipeline {
     }));
 
     try {
-      const ttsResult = await this.tts.synthesize(choiceText, {
-        voice: this.resolveVoice(this.choiceVoice),
+      const { result: ttsResult, provider, fallback } = await this.synthesizeWithFallback(choiceText, {
+        primaryVoice: this.resolveVoiceWith(this.voiceResolver, null, this.choiceVoice),
+        fallbackVoice: this.fallbackChoiceVoice
+          ? this.resolveVoiceWith(this.fallbackVoiceResolver, null, this.fallbackChoiceVoice)
+          : undefined,
         speed: this.ttsSpeed,
       });
+      await transport.sendText(JSON.stringify({
+        type: 'tts',
+        state: 'sentence_start',
+        session_id: session.id,
+        provider,
+        fallback,
+      }));
       rateController.reset();
       await this.sendOpusAudio(
         ttsResult.audio, opusEncoder, transport, rateController, signal,
-        ttsResult.sampleRate,
+        ttsResult.sampleRate, ttsResult.format,
       );
     } catch (err) {
       this.logger.error({ err: err instanceof Error ? err.message : String(err) }, 'TTS error reading choices');
@@ -667,11 +865,18 @@ export class InkPipeline {
     }));
 
     try {
-      const ttsResult = await this.tts.synthesize(text, { speed: this.ttsSpeed });
+      const { result: ttsResult, provider, fallback } = await this.synthesizeWithFallback(text, { speed: this.ttsSpeed });
+      await transport.sendText(JSON.stringify({
+        type: 'tts',
+        state: 'sentence_start',
+        session_id: session.id,
+        provider,
+        fallback,
+      }));
       rateController.reset();
       await this.sendOpusAudio(
         ttsResult.audio, opusEncoder, transport, rateController, signal,
-        ttsResult.sampleRate,
+        ttsResult.sampleRate, ttsResult.format,
       );
     } catch (err) {
       this.logger.error({ err: err instanceof Error ? err.message : String(err), text }, 'TTS error for segment');
@@ -712,6 +917,7 @@ export class InkPipeline {
     session: Session,
     inkSession: InkSession,
     narration: NarrationSegment[],
+    suggestion?: CarryoverSuggestion,
   ): Promise<void> {
     const state = inkSession.getState();
     this.logger.info({
@@ -720,6 +926,7 @@ export class InkPipeline {
       choices: state.choices.map(c => c.text),
       narrationCount: narration.length,
       isEnded: state.isEnded,
+      suggestion,
     }, 'Sending ink_state');
     await transport.sendText(JSON.stringify({
       type: 'ink_state',
@@ -735,6 +942,7 @@ export class InkPipeline {
         index: c.index,
         text: c.text,
       })),
+      suggestion,
       isEnded: state.isEnded,
       turnCount: state.turnCount,
       storyId: state.storyId,
@@ -742,7 +950,9 @@ export class InkPipeline {
   }
 
   /**
-   * Encode PCM to Opus and send frames with rate control.
+   * Send audio to the browser client with pacing.
+   * MP3 is forwarded as a single blob for browser decodeAudioData().
+   * PCM is chunked at the encoder frame size for steady playback timing.
    */
   private async sendOpusAudio(
     pcmAudio: Buffer,
@@ -751,19 +961,31 @@ export class InkPipeline {
     rateController: AudioRateController,
     signal: AbortSignal,
     srcSampleRate?: number,
+    srcFormat?: string,
   ): Promise<number> {
+    if (srcFormat === 'mp3') {
+      if (signal.aborted) return 0;
+      await transport.sendBinary(pcmAudio);
+      return 1;
+    }
     const pcm = srcSampleRate
       ? resamplePcm(pcmAudio, srcSampleRate, encoder.sampleRate)
       : pcmAudio;
-    const opusFrames = encoder.encodeAll(pcm);
+    const bytesPerFrame = encoder.frameSizeBytes;
     let packetsSent = 0;
-    for (const opusPacket of opusFrames) {
+    for (let offset = 0; offset < pcm.length; offset += bytesPerFrame) {
       if (signal.aborted) break;
       const delay = rateController.getDelay();
       if (delay > 0) {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
-      await transport.sendBinary(opusPacket);
+      let frame = pcm.subarray(offset, offset + bytesPerFrame);
+      if (frame.length < bytesPerFrame) {
+        const padded = Buffer.alloc(bytesPerFrame);
+        frame.copy(padded);
+        frame = padded;
+      }
+      await transport.sendBinary(frame);
       packetsSent++;
     }
     return packetsSent;
