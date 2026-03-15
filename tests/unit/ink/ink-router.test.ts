@@ -228,4 +228,100 @@ describe('InkRouter', () => {
       expect(result.choiceIndex).toBe(0);
     });
   });
+
+  // =====================================================================
+  // ASR-realistic inputs — what real speech recognition actually produces
+  // =====================================================================
+  describe('ASR-realistic matching', () => {
+    const choices = [
+      { text: 'Open the gate' },
+      { text: 'Talk to the guard' },
+      { text: 'Turn back' },
+    ];
+
+    it('matches with filler words from ASR', async () => {
+      const state = makeState(choices);
+      const result = await router.classify('uh open the gate', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(0);
+    });
+
+    it('matches with trailing politeness', async () => {
+      const state = makeState(choices);
+      const result = await router.classify('open the gate please', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(0);
+    });
+
+    it('matches with leading "I want to"', async () => {
+      const state = makeState(choices);
+      const result = await router.classify('I want to open the gate', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(0);
+    });
+
+    it('matches with "let me" prefix', async () => {
+      const state = makeState(choices);
+      const result = await router.classify('let me talk to the guard', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(1);
+    });
+
+    it('matches partial choice text (key words only)', async () => {
+      const state = makeState(choices);
+      const result = await router.classify('turn back', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(2);
+    });
+
+    it('matches with repeated/stuttered words', async () => {
+      const state = makeState(choices);
+      const result = await router.classify('open open the gate', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(0);
+    });
+
+    it('matches with word order variation', async () => {
+      const state = makeState(choices);
+      const result = await router.classify('the gate open it', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(0);
+    });
+
+    it('still rejects genuinely unrelated speech', async () => {
+      const state = makeState(choices);
+      const result = await router.classify('what is the weather like today', state);
+      expect(result.type).toBe('no_match');
+    });
+
+    it('matches with voice hint despite extra words', async () => {
+      const state = makeState([
+        { text: 'Push open the heavy gate', voiceHints: ['enter garden'] },
+        { text: 'Turn back home' },
+      ]);
+      const result = await router.classify('I want to enter the garden', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(0);
+    });
+
+    it('disambiguates similar choices with a distinguishing word', async () => {
+      const state = makeState([
+        { text: 'Go to the north gate' },
+        { text: 'Go to the south gate' },
+      ]);
+      const result = await router.classify('go north', state);
+      expect(result.type).toBe('choice_match');
+      expect(result.choiceIndex).toBe(0);
+    });
+
+    it('returns no_match for ambiguous input across similar choices', async () => {
+      const state = makeState([
+        { text: 'Go to the north gate' },
+        { text: 'Go to the south gate' },
+      ]);
+      // "go to the gate" matches both equally — should not pick one
+      const result = await router.classify('go to the gate', state);
+      expect(result.type !== 'choice_match' || result.confidence < 0.8).toBe(true);
+    });
+  });
 });

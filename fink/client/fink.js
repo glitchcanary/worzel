@@ -762,7 +762,7 @@ class FinkMic extends HTMLElement {
   }
 
   enable() { this._enabled = true; this.shadowRoot.querySelector('button.mic').disabled = false; }
-  disable() { this._enabled = false; this.shadowRoot.querySelector('button.mic').disabled = true; if (this.recording) this.stopRec(); }
+  disable() { this._enabled = false; this.shadowRoot.querySelector('button.mic').disabled = true; if (this.recording) this.stopRec(); this.releaseAudioGraph(); }
   suspendInput(ms = 1200) {
     this._suspendInputUntil = Date.now() + ms;
   }
@@ -786,6 +786,26 @@ class FinkMic extends HTMLElement {
     }
   }
 
+  /** Acquire mic stream and AudioContext once, reuse across recording cycles. */
+  async _ensureAudioGraph() {
+    if (this.mediaStream && this.audioCtx && this.audioCtx.state !== 'closed') return;
+    this.mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+    this.audioCtx = new AudioContext({ sampleRate: 16000 });
+    await this.audioCtx.audioWorklet.addModule('./pcm-processor.js');
+    console.log('[fink] Mic stream and AudioContext acquired (once)');
+  }
+
+  /** Tear down mic stream and AudioContext (on disconnect or disable). */
+  releaseAudioGraph() {
+    this._worklet?.disconnect(); this._worklet = null;
+    this._source?.disconnect(); this._source = null;
+    this.audioCtx?.close(); this.audioCtx = null;
+    this.mediaStream?.getTracks().forEach(t => t.stop()); this.mediaStream = null;
+    console.log('[fink] Audio graph released');
+  }
+
   async startRec(source = 'manual') {
     if (this.recording || !this._enabled) return;
     if (Date.now() < this._suspendInputUntil) return;
@@ -800,10 +820,10 @@ class FinkMic extends HTMLElement {
     if (this._hotMic) this.setPipelineState('listening');
     try {
       await this.ensureEncoder();
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-      this.audioCtx = new AudioContext({ sampleRate: 16000 });
-      const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-      await this.audioCtx.audioWorklet.addModule('./pcm-processor.js');
+      await this._ensureAudioGraph();
+      // Resume AudioContext if suspended (browsers suspend after inactivity)
+      if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+      const src = this.audioCtx.createMediaStreamSource(this.mediaStream);
       const worklet = new AudioWorkletNode(this.audioCtx, 'pcm-processor');
       worklet.port.onmessage = (e) => {
         const samples = new Int16Array(e.data);
@@ -844,8 +864,8 @@ class FinkMic extends HTMLElement {
           }
         }
       };
-      source.connect(worklet);
-      this._worklet = worklet; this._source = source;
+      src.connect(worklet);
+      this._worklet = worklet; this._source = src;
       this.dispatchEvent(new CustomEvent('fink-recording-start', {
         bubbles: true,
         detail: { source },
@@ -866,9 +886,9 @@ class FinkMic extends HTMLElement {
         this.dispatchEvent(new CustomEvent('fink-audio-data', { bubbles: true, detail: { audio: frame } }));
       }
     }
-    this._worklet?.disconnect(); this._source?.disconnect();
-    this.audioCtx?.close(); this.audioCtx = null;
-    this.mediaStream?.getTracks().forEach(t => t.stop()); this.mediaStream = null;
+    // Disconnect worklet and source node, but keep AudioContext and MediaStream alive
+    this._worklet?.disconnect(); this._worklet = null;
+    this._source?.disconnect(); this._source = null;
     const peakRms = this._peakRms;
     this.dispatchEvent(new CustomEvent('fink-recording-stop', {
       bubbles: true, detail: {

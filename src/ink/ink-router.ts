@@ -61,12 +61,7 @@ function compactNormalize(text: string): string {
 }
 
 function tokenize(text: string): string[] {
-  const base = normalize(text).split(/\s+/).filter(Boolean);
-  const expanded = [...base];
-  for (let i = 0; i < base.length - 1; i++) {
-    expanded.push(base[i]! + base[i + 1]!);
-  }
-  return [...new Set(expanded)];
+  return normalize(text).split(/\s+/).filter(Boolean);
 }
 
 function isLikelyQuestion(text: string): boolean {
@@ -199,13 +194,14 @@ export class InkRouter {
       const choicePrecision = userTokens.size > 0 ? choiceOverlap / userTokens.size : 0;
       const textScore = Math.max(choiceRecall, choicePrecision);
 
-      // Score 2: token overlap with each voice hint phrase (scored individually)
+      // Score 2: token overlap with each voice hint phrase (bidirectional, like text)
       let hintScore = 0;
       for (const hint of choice.voiceHints) {
         const hintTokens = new Set(tokenize(hint));
         const hintOverlap = [...hintTokens].filter(t => userTokens.has(t)).length;
         const recall = hintTokens.size > 0 ? hintOverlap / hintTokens.size : 0;
-        hintScore = Math.max(hintScore, recall);
+        const precision = userTokens.size > 0 ? hintOverlap / userTokens.size : 0;
+        hintScore = Math.max(hintScore, Math.max(recall, precision));
       }
 
       return { index: choice.index, score: Math.max(textScore, hintScore) };
@@ -215,9 +211,9 @@ export class InkRouter {
     const best = scores[0]!;
     const runnerUp = scores[1];
 
-    if (best.score >= 0.5) {
+    if (best.score >= 0.4) {
       const gap = runnerUp ? best.score - runnerUp.score : best.score;
-      if (gap > 0.2 || !runnerUp) {
+      if (gap > 0.1 || !runnerUp) {
         return { type: 'choice_match', choiceIndex: best.index, confidence: best.score };
       }
     }

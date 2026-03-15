@@ -219,6 +219,37 @@ The provider registry already supports local models (Ollama) alongside cloud pro
 
 ---
 
-## Next Step
+## Operational Expectations
 
-Turn the "what exists" section into a typed internal schema and interface spec. The current TypeScript types (Session, DialogueEntry, AudioParams, NarrationSegment, InkChoice) are adequate for today but won't support scenes, multi-participant, or media without extension. A formal object model would define the canonical representations and make the gaps concrete.
+Components and capabilities are documented above. This section defines what a working session must **survive** — the contract that tests, contributors, and AI agents should build against.
+
+### Mic and Audio Session
+
+- Mic permission is requested **once** per session. The MediaStream and AudioContext persist across recording cycles.
+- Hot-mic mode may cycle 100+ times in a session without resource leaks, permission re-prompts, or AudioContext exhaustion.
+- AudioContext suspension (browser policy) is handled by resuming, not recreating.
+
+### Choice Matching (InkRouter)
+
+- ASR output is messy. The router must tolerate: filler words ("uh", "like"), trailing politeness ("please"), leading intent phrases ("I want to", "let me"), stuttered/repeated words, and minor word order variation.
+- A user who says the gist of a choice — not the exact words — should match. Exact wording is not expected from speech.
+- Genuinely ambiguous input (matching two choices equally) should fall through to LLM classification or no_match, not pick one arbitrarily.
+- Genuinely unrelated input should not false-positive match a choice.
+
+### Session Durability
+
+- A Fink session should remain coherent across 20+ turns with a mix of exact matches, near-misses, and unrecognizable input.
+- Pipeline state (`_isSpeaking`, recording state, abort state) must stay consistent even if TTS drops mid-stream, WebSocket reconnects, or the user barge-ins during narration.
+- No single bad ASR result should break the session — no_match is a valid outcome, not a crash.
+
+### Client Code
+
+- Audio, WebSocket, and codec logic shared between clients (`src/web-client/` and `fink/client/`) must not diverge. Bug fixes apply to both. Duplication is tracked as debt.
+
+---
+
+## Next Steps
+
+1. Turn the "what exists" section into a typed internal schema and interface spec. The current TypeScript types (Session, DialogueEntry, AudioParams, NarrationSegment, InkChoice) are adequate for today but won't support scenes, multi-participant, or media without extension.
+2. Extract shared audio module from duplicated web client code.
+3. Add session-level integration tests that simulate multi-turn Fink sessions with ASR-realistic input.
