@@ -98,6 +98,7 @@ class WsClient {
           fallback: msg.fallback,
         });
         break;
+      case 'input_ignored': this.emit('inputIgnored', msg); break;
       case 'ink_state': this.emit('inkState', msg); break;
       case 'pipeline_telemetry': this.emit('telemetry', msg); break;
       case 'pong': break;
@@ -672,7 +673,7 @@ class FinkMic extends HTMLElement {
           <svg class="icon" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
         </button>
         <div>
-          <div class="hint">Push-to-talk mode. Hold mic while speaking.</div>
+          <div class="hint">Voice trigger mode. Press and speak when ready.</div>
           <div class="state-label"></div>
         </div>
         <div class="speed-ctl">
@@ -739,8 +740,8 @@ class FinkMic extends HTMLElement {
     modeBtn.classList.toggle('hot', this._hotMic);
     modeBtn.textContent = this._hotMic ? 'Mode: Hot Mic' : 'Mode: Push To Talk';
     hint.textContent = this._hotMic
-      ? 'Hot mic mode is active. Tap mic to start or stop listening.'
-      : 'Push-to-talk mode. Hold mic while speaking.';
+      ? 'Open-mic mode is active. Use the mic control to open or close the line.'
+      : 'Voice trigger mode. Press and speak when ready.';
     if (this._hotMic && this._enabled && !this.recording) {
       this.startRec('toggle');
     }
@@ -914,6 +915,7 @@ class FinkApp extends HTMLElement {
     this.player = null;
     this._isSpeaking = false;
     this._responseWatchdog = null;
+    this._suppressNextRecordingStop = false;
     this._onKeyDown = (e) => this.handleKeyDown(e);
     this.attachShadow({ mode: 'open' }).innerHTML = `
       <style>
@@ -984,27 +986,32 @@ class FinkApp extends HTMLElement {
       const source = e.detail?.source ?? 'manual';
       if (this._isSpeaking) {
         if (source !== 'manual') {
+          this._suppressNextRecordingStop = true;
           await mic.stopRec();
-          story.setStatus('Waiting for narration to finish before listening.', 'info');
+          story.setStatus('Waiting for the voice to finish.', 'info');
           return;
         }
-        story.setStatus('Interrupting narration...', 'thinking');
+        story.setStatus('Breaking in...', 'thinking');
         await this.player?.fadeStop(200);
       }
-      story.setStatus('Listening for a story move...', 'listening');
+      story.setStatus('Listening...', 'listening');
       this.client?.abort();
       mic.setPipelineState('listening');
       this.client?.startListening();
     });
     mic.addEventListener('fink-recording-stop', (e) => {
+      if (this._suppressNextRecordingStop) {
+        this._suppressNextRecordingStop = false;
+        return;
+      }
       // In hot-mic mode, skip server call if no speech was detected
       if (e.detail?.hadSpeech === false) {
-        story.setStatus('No speech detected. Try again or tap a choice.', 'error');
+        story.setStatus('No speech detected. Try again when ready.', 'error');
         mic.autoRestart();
         return;
       }
       const peakRms = e.detail?.peakRms;
-      story.setStatus('Sending audio for recognition...', 'thinking');
+      story.setStatus('Interpreting...', 'thinking');
       this.armResponseWatchdog(story, mic, 'speech recognition');
       this.client?.stopListening(peakRms != null ? { audio_level: Math.round(peakRms * 1000) / 1000 } : undefined);
       mic.setPipelineState('thinking');
@@ -1021,7 +1028,7 @@ class FinkApp extends HTMLElement {
         mic.suspendInput(1500);
         this.player?.stop();
         this.client.abort();
-        story.setStatus('Choice selected. Advancing the story...', 'thinking');
+        story.setStatus('Advancing...', 'thinking');
         this.armResponseWatchdog(story, mic, 'story advance');
         this.client.send({
           type: 'ink',
@@ -1056,13 +1063,13 @@ class FinkApp extends HTMLElement {
     if (e.key === ' ' || e.code === 'Space') {
       if (this._isSpeaking) {
         e.preventDefault();
-        story.setStatus('Skipping narration...', 'thinking');
+        story.setStatus('Skipping ahead...', 'thinking');
         mic.suspendInput(700);
         this.client?.abort();
         await this.player?.fadeStop(500);
         mic.setPipelineState('idle');
         this._isSpeaking = false;
-        story.setStatus('Narration skipped. Choices remain on screen.', 'info');
+        story.setStatus('Skipped. Your next move is open.', 'info');
         mic.autoRestart();
         return;
       }
@@ -1077,12 +1084,12 @@ class FinkApp extends HTMLElement {
     this._responseWatchdog = {
       warn: setTimeout(() => {
         console.warn(`[fink] Still waiting for server response after ${context}`);
-        story.setStatus('Still thinking. If this hangs, repeat your move or tap a choice.', 'thinking');
+        story.setStatus('Still thinking. If this stalls, try the move again.', 'thinking');
       }, 6000),
       fail: setTimeout(() => {
         console.error(`[fink] No server response after ${context}`);
         mic.setPipelineState('idle');
-        story.setStatus('No response yet. Try again, or tap a choice.', 'error');
+        story.setStatus('No reply yet. Try again when ready.', 'error');
         mic.autoRestart();
       }, 12000),
     };
@@ -1118,7 +1125,7 @@ class FinkApp extends HTMLElement {
       input.disabled = s === 'connected';
       if (s === 'connected') {
         this.clearResponseWatchdog();
-        story.setStatus('Connected. Speak a choice or tap one.', 'info');
+        story.setStatus('Connected.', 'info');
         mic.enable();
         // Send initial TTS speed preference
         this.client?.send({ type: 'fink_settings', tts_speed: mic.ttsSpeed ?? 1.15 });
@@ -1163,12 +1170,23 @@ class FinkApp extends HTMLElement {
         inkNarrating = false;
         this._isSpeaking = false;
         mic.setPipelineState('idle');
-        story.setStatus('Ready for your next move.', 'info');
+        story.setStatus('Ready.', 'info');
         mic.autoRestart();
       }
     });
 
     this.client.on('audio', data => this.player?.enqueueAuto(data));
+
+    this.client.on('inputIgnored', msg => {
+      this.clearResponseWatchdog();
+      mic.setPipelineState('idle');
+      if (msg.reason === 'low_audio') {
+        story.setStatus('Too quiet to follow. Try again when ready.', 'info');
+      } else {
+        story.setStatus('No words caught there. Try again when ready.', 'info');
+      }
+      mic.autoRestart();
+    });
 
     // Ink state updates — text already displayed here, suppress TTS streaming display
     this.client.on('inkState', msg => {
@@ -1176,7 +1194,7 @@ class FinkApp extends HTMLElement {
       console.log('[fink] Ink state:', msg);
       if (msg.narration && msg.narration.length > 0) {
         inkNarrating = true;
-        story.setStatus('Story advanced.', 'info');
+        story.setStatus('Advanced.', 'info');
         for (const seg of msg.narration) {
           if (seg.image) story.addImage(seg.image);
           story.addNarration(seg.text, seg.speaker);
@@ -1185,7 +1203,7 @@ class FinkApp extends HTMLElement {
       if (msg.choices) {
         story.setChoices(msg.choices, msg.suggestion);
         if (!msg.narration || msg.narration.length === 0) {
-          story.setStatus('Choices updated. Speak one or tap one.', 'info');
+          story.setStatus('Options updated.', 'info');
         }
       }
       if (msg.isEnded) {
