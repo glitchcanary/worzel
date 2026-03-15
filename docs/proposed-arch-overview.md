@@ -330,6 +330,75 @@ The tags in the Ink stories serve every surface: `speaker:` drives TTS voice sel
 
 The architecture makes "any human, any device, same stories" possible. A monolith makes it impossible.
 
+### The Counter-Argument: Edge-First and the Web Platform
+
+The previous section overstates the case for server-side middleware. Worzel has its own problems: it requires a costly central server running Node.js, WebSocket infrastructure, LLM API keys, and TTS services. Every concurrent session burns compute. Finkapp, by contrast, runs on a CDN for pennies — the entire story engine executes in the user's browser with zero server cost.
+
+**The web platform is catching up.** Browser-native capabilities increasingly cover what worzel does server-side:
+
+- **Web Speech API** provides ASR and TTS directly in the browser — no server roundtrip, no API keys, no per-minute billing. Voice quality is improving rapidly.
+- **WebLLM / on-device models** can run small language models client-side for utterance classification, discussion mode, and meta-queries. The InkRouter's three-tier classification doesn't inherently require a server.
+- **Web Audio API** already powers finkapp's foley system with zero latency. Server-side audio mixing adds latency for no gain on capable devices.
+
+**The `ooOO` format is designed for the edge.** FINK's `ooOO\`...\`` tagged template literal is a modernised JSONP: it wraps raw Ink source in executable JavaScript that can be served from any static host, loaded cross-origin, and executed in a sandboxed V8 context (32MB memory, 5-second timeout). No server compilation step, no API endpoint — just a `.fink.js` file on a CDN. This is a deliberate architectural choice that favours distribution over centralisation.
+
+The honest position: **the middleware doesn't have to be a server.** It could be a shared JavaScript module — an importable story engine that runs in the browser for visual clients, on Node.js for voice clients that need server-side TTS, and compiled to WASM for ESP32. The separation is between "story logic" and "rendering surface," not between "server" and "client."
+
+### The Real Unsolved Problem: Temporal Coordination
+
+The deeper architectural gap — felt in both worzel and finkapp — is the absence of a shared temporal model. Interactive fiction with embedded media is fundamentally a timing problem, and neither system has a principled answer.
+
+**Where timing matters today:**
+
+In finkapp, timing is managed through scattered `setTimeout` calls with hardcoded delays:
+- Text paragraphs stagger at 150ms intervals (`fink-ink-engine.js`)
+- Minigame launch waits 800ms after tag processing
+- Window state transitions animate over 350ms CSS durations
+- Narrative resumption after minigame completion delays 100ms for DOM settlement
+
+In worzel, timing is equally ad hoc:
+- Audio packets pace at 60ms intervals after an initial 5-packet burst (`audio-rate-controller.ts`)
+- Story loading delays 100ms before fetch
+- Interrupt handling (user speaks while TTS is playing) aborts via `AbortController` but has no model of "what was the user interrupting" or "how far through the current segment were we"
+
+**Where timing will break:**
+
+The hallmark-parody story in `hampstead.fink.js` already demonstrates the problem: a `# VIDEO:` tag embeds an MP4 clip mid-narrative. The video has its own duration. The narrative has text that should appear after the video. But there's no coordination — the story engine doesn't know when the video ends, doesn't pause narrative flow during playback, and can't synchronise foley or audio cues to video timestamps.
+
+As stories get richer, this gets worse:
+- A character speaks while a background video plays — the `speaker:` TTS and the video audio need mixing, or the video needs to pause during speech
+- A minigame runs in "mini-live" mode (the slider's embedded state) while narrative continues — two temporal streams running simultaneously, each potentially generating audio and visual events
+- A foley cue (`# FOLEY: thunder`) should coincide with a specific moment in a video or animation, not just fire-and-forget at tag-processing time
+- An interrupt (user taps a choice, or speaks over TTS) needs to know what's currently playing to decide what to cancel, what to fade, and what to keep
+
+**What a temporal model needs:**
+
+The system needs a lightweight scheduler that tracks concurrent media streams and their relationships:
+
+1. **Streams** — each active medium (narrative text animation, TTS playback, video, minigame, foley, background audio) is a named stream with a known or estimated duration
+2. **Sequencing** — `after(stream)`, `with(stream)`, `at(stream, timestamp)` — declarative relationships between streams, not hardcoded `setTimeout` values
+3. **Interrupts** — when the user acts (taps choice, speaks, presses button), the model knows which streams are active, can cancel/fade/pause them by policy, and can record the interrupt point for resumption or logging
+4. **Surface-independence** — the temporal model describes *what happens when*, not *how it renders*. A visual client animates text over 150ms; a voice client speaks it over 2 seconds; an e-ink client displays it instantly. The model accommodates all three without surface-specific timing constants
+
+This isn't a rendering framework or a media player. It's a coordination layer that sits between the story engine (which produces events with temporal semantics) and the client surface (which renders them with surface-specific timing). It's the piece that both worzel and finkapp are missing.
+
+### Minigames Are Not Black Boxes
+
+The finkapp minigame integration reveals a related architectural tension. Minigames communicate with the story engine via a well-defined postMessage protocol:
+
+- **Story → Minigame:** launch with parameters (`# MINIGAME: mudslider mode=cave controls=dpad`), pause/resume signals
+- **Minigame → Story:** completion events with result payloads (`{ success, score, variables }`), which update Ink story variables (diamonds, chess_won) and trigger narrative continuation
+
+This protocol is good — it's the right pattern for decoupling. But it treats minigames as opaque: the story engine doesn't know what's happening *inside* the minigame. It can't:
+
+- Synchronise narrative events with minigame state (e.g., a character comments when the player reaches a certain score)
+- Coordinate audio between the minigame's own sound and the story's foley/audio layers
+- Present minigame progress to non-visual clients (a voice client can't describe a gems board it can't see)
+
+The slider window design (full / embed / mini-live / mini-paused) acknowledges this tension — it gives the user control over how much screen space the minigame occupies relative to the narrative. But it's a visual solution to what is partly a temporal and informational problem.
+
+For multi-surface support, minigames need to expose a richer event stream: state summaries that a voice client can narrate, audio channel declarations that a mixer can balance, and timing signals that the temporal model can coordinate with narrative flow. The postMessage protocol is the right transport — it just needs a richer vocabulary.
+
 ---
 
 ## Next Steps
