@@ -248,6 +248,90 @@ Components and capabilities are documented above. This section defines what a wo
 
 ---
 
+## Finkapp and the Client-Middleware Lesson
+
+### What Finkapp Is Today
+
+Finkapp is a pure client-side interactive fiction player hosted as static files. It runs entirely in the browser with no server or middleware layer. Its modules — all attached to `window` — include:
+
+- **FinkInkEngine** — compiles raw Ink source in-browser via inkjs, processes tags (`IMAGE:`, `BG:`, `FINK:`, `MINIGAME:`, `FOLEY:`, `AUDIO:`, `speaker:`, `voice:`), manages story state and knot tracking
+- **FinkPlayer** — coordination layer: initialises modules, loads stories via HTTP fetch, handles bookmarks and restart
+- **FinkUI** — DOM rendering: narrative paragraphs, tappable choice cards, image/video display, stats bar
+- **FinkSandbox** — fetches external `.fink` files with duplicate-load detection
+- **FinkNavigation** — URL hash-based deep linking and knot-level navigation
+- **FinkBreadcrumb** — visual trail of visited knots and FINK file transitions
+- **FinkFoley** — synthesised sound effects via Web Audio API
+- **FinkAudio** — audio file playback for soundtrack and ambient audio
+- **FinkMinigames** — embedded games (chess, gems, gridluck) with a slider window for sizing/pausing
+- **FinkDevPanel** — developer tools with swimlane event logging, state inspection, log filtering
+
+Interaction is visual and tap-based. There is no voice input, no LLM classification, and no TTS. Stories are fetched as raw `.fink` (Ink source) files and compiled client-side. Tag processing — including `speaker:` and `voice:` tags that would drive TTS in a voice context — is handled entirely inside `FinkInkEngine.continueStory()`.
+
+### The Architectural Problem
+
+Finkapp is a monolith. The Ink engine, tag interpretation, navigation logic, media handling, and visual rendering are all fused into one browser application. This means:
+
+1. **No voice client can share the story engine.** Worzel's Fink reimplements Ink session management, tag parsing, and choice handling server-side because there's nothing to import from finkapp.
+2. **No accessible client can be built on top.** A screen-reader-friendly or voice-only interface would need to reimplement all of finkapp's story logic — or become another monolith.
+3. **ESP32 boards with displays can't participate.** A small colour TFT on an ESP32 is a legitimate rendering surface for interactive fiction, but it can't run a browser-based monolith. Without a middleware layer, it gets nothing.
+4. **Tag semantics are locked to one rendering mode.** `speaker:` and `voice:` tags are parsed but only used for visual display. `FOLEY:` tags trigger Web Audio synthesis. On a different surface these same tags should drive TTS voice selection, hardware audio playback, or character portraits on a small screen — but the interpretation is hardcoded.
+
+### The Worzel Lesson: Client-Middleware Separation
+
+Worzel already demonstrates the right pattern. Its architecture cleanly separates:
+
+- **Middleware** — InkSession, InkRouter (three-tier utterance classification), voice profile resolution, tag parsing, story state management, TTS pipeline, LLM-powered discussion and meta-query modes
+- **Clients** — browser web client, ESP32 hardware client, Twilio phone bridge — all connecting to the same middleware over the same WebSocket protocol
+
+The same story, the same `speaker:`/`voice:`/`mood:` tags, the same discussion mode, the same choice matching logic serves every client. A bug fix to InkRouter improves voice matching on the phone, the browser, and the ESP32 simultaneously.
+
+### What Finkapp Should Become
+
+Finkapp should adopt the same client-middleware split:
+
+**Story middleware** (shared, runs server-side or as a portable engine):
+- Ink compilation and session management
+- Tag parsing and semantic interpretation (`speaker:`, `voice:`, `mood:`, `IMAGE:`, `FOLEY:`, `MINIGAME:`, `AUDIO:`, `BG:`)
+- Navigation logic (FINK cross-story links, backstack, deep linking)
+- State management (bookmarks, inventory, story variables)
+- Choice presentation (what the choices are, not how they look)
+- InkRouter-style classification (for voice clients) and discussion/meta-query modes
+
+**Visual client** (the current finkapp, refactored):
+- DOM rendering of narrative text with animation
+- Image and video display
+- Tappable choice cards
+- Minigame embedding and slider window
+- Theme and CSS
+- Dev panel
+
+**Voice client** (worzel's Fink, connecting to shared middleware):
+- Voice input via ASR
+- InkRouter classification of utterances against choices
+- Multi-character TTS driven by `speaker:`/`voice:`/`mood:` tags
+- Discussion and meta-query modes for non-visual story exploration
+- Foley and audio playback via server-side or hardware audio
+
+**Hardware clients** (ESP32 variants):
+- Headless ESP32 with speaker — voice-only, same as voice client
+- ESP32 with colour TFT — renders narrative text, character portraits, choice list on small screen; voice or button input
+- ESP32 with e-ink — static story text and choices; button input
+
+### Accessibility Falls Out of the Architecture
+
+The point isn't to build a separate "accessible version." It's that once the story engine is middleware, accessibility is just another client surface:
+
+- **Blind users** get the voice client: multi-character TTS distinguishes speakers, discussion mode explains context, meta-query mode describes choices naturally. The `speaker:`/`voice:`/`mood:` tags aren't decorative — they're accessibility infrastructure.
+- **Low-vision users** get the visual client with standard screen reader support, because the client only handles rendering (which can be made ARIA-compliant) rather than also being the story engine.
+- **Users on constrained devices** get the ESP32 client that matches their hardware — colour display, e-ink, or audio-only.
+- **Phone users** get the same stories via the Twilio bridge.
+
+The tags in the Ink stories serve every surface: `speaker:` drives TTS voice selection on voice clients, character name display on visual clients, and portrait selection on ESP32 TFTs. `FOLEY:` drives Web Audio synthesis in the browser, hardware audio on ESP32, and server-side audio mixing on voice clients. One authored story, many rendering surfaces, no rewrites.
+
+The architecture makes "any human, any device, same stories" possible. A monolith makes it impossible.
+
+---
+
 ## Next Steps
 
 1. Turn the "what exists" section into a typed internal schema and interface spec. The current TypeScript types (Session, DialogueEntry, AudioParams, NarrationSegment, InkChoice) are adequate for today but won't support scenes, multi-participant, or media without extension.
