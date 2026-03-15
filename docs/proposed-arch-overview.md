@@ -401,8 +401,119 @@ For multi-surface support, minigames need to expose a richer event stream: state
 
 ---
 
+## Xiaozhi Protocol Compatibility
+
+### Background
+
+[Xiaozhi](https://github.com/78/xiaozhi-esp32) (小智) is an open-source ESP32 voice assistant platform with a large Chinese developer community (44k+ GitHub stars). It defines a WebSocket protocol for ESP32 ↔ server communication that has become a de facto standard for ESP32 voice hardware. The official console is at [xiaozhi.me](https://xiaozhi.me); developer docs at [xiaozhi.dev](https://xiaozhi.dev/en/docs/).
+
+Worzel's WebSocket protocol is already substantially compatible with Xiaozhi's. This is architecturally significant: it means Xiaozhi-compatible ESP32 hardware — dozens of board designs, cases, and accessories from the Chinese maker ecosystem — can potentially connect to a worzel server with minimal adaptation.
+
+### Protocol Comparison
+
+**Identical or directly compatible:**
+
+| Message | Xiaozhi | Worzel | Notes |
+|---------|---------|--------|-------|
+| Handshake | `{type: "hello", version: 1, transport: "websocket", audio_params: {format: "opus", sample_rate: 16000, channels: 1, frame_duration: 60}}` | Same structure, same fields | Feature negotiation differs slightly (`features: {mcp: true}` vs `features: ["tts", "stt"]`) |
+| Binary audio | Raw Opus frames, 16kHz mono, 60ms | Raw Opus frames, 16kHz mono, 60ms | **Identical wire format** (Xiaozhi v1) |
+| Listen control | `{type: "listen", state: "start"/"stop"/"detect", mode: "auto"/"manual"/"realtime"}` | Same structure, same states | **Identical** |
+| ASR result | `{type: "stt", text: "..."}` | `{type: "stt", text: "..."}` | **Identical** |
+| TTS lifecycle | `{type: "tts", state: "start"/"stop"/"sentence_start"}` | Same, plus `"sentence_end"` | Worzel superset; Xiaozhi clients ignore unknown states |
+| Abort | `{type: "abort", reason: "..."}` | `{type: "abort", reason: "..."}` | **Identical** |
+| MCP/IoT | `{type: "mcp", payload: {jsonrpc: "2.0", method, params, id}}` | `{type: "mcp", method, id, params}` — also `{type: "iot", descriptors}` | Same intent, envelope differs |
+
+**Xiaozhi-only messages:**
+
+| Message | Purpose | Worzel equivalent |
+|---------|---------|-------------------|
+| `{type: "llm", emotion: "happy"}` | Drive facial expression on device display | None — worzel uses `mood:` Ink tags, but doesn't send emotion to device |
+| `{type: "system", command: "reboot"}` | Remote device management | None |
+| Protocol v2/v3 binary framing | Structured binary wrapper with timestamps | Worzel uses raw Opus (equivalent to Xiaozhi v1) |
+
+**Worzel-only messages:**
+
+| Message | Purpose | Xiaozhi equivalent |
+|---------|---------|-------------------|
+| `{type: "goodbye", reason}` | Graceful disconnect | Not documented; connection just closes |
+| `{type: "error", code, message}` | Structured error reporting | Not documented |
+| `{type: "input_ignored", reason}` | Explain why input was skipped (empty ASR, low audio) | Not documented |
+| `{type: "tts", state: "sentence_end"}` | Mark end of sentence audio segment | Not present; only `sentence_start` and `stop` |
+| `ping`/`pong` | Application-level keepalive | Uses WebSocket-level ping/pong or server timeout |
+
+**Authentication differs but is bridgeable:**
+
+| | Xiaozhi | Worzel |
+|--|---------|--------|
+| **Step 1** | Device calls OTA endpoint with MAC address | Client calls `POST /api/ota` with `device_id` |
+| **Step 2** | Bearer token in `Authorization` header; `Device-Id` and `Client-Id` in headers | JWT in URL query parameter `?token=...` |
+| **Binding** | 6-digit activation code flow via xiaozhi.me console | Direct token issuance |
+
+### Server Architecture Comparison
+
+Both systems follow the same pipeline pattern but diverge in orchestration:
+
+```
+Xiaozhi:  Device → WebSocket → VAD → ASR → Intent → LLM → TTS → Device
+Worzel:   Device → WebSocket →       ASR → InkRouter/LLM → TTS → Device
+```
+
+Key differences:
+
+| Aspect | Xiaozhi | Worzel |
+|--------|---------|--------|
+| **VAD** | Server-side SileroVAD before ASR | Client-side (listen start/stop signals) |
+| **Intent** | Dedicated intent classifier between ASR and LLM | InkRouter's three-tier classification (exact/fuzzy/LLM) integrated with Ink story state |
+| **Story engine** | None — general-purpose chatbot | InkSession manages narrative state, knots, choices, cross-story navigation |
+| **Speaker ID** | 3D-Speaker voiceprint recognition | None |
+| **Memory** | Short-term + mem0ai cloud | Ink story variables + session state |
+| **TTS providers** | 10+ Chinese providers (Volcano, iFlytek, CosyVoice, etc.) | Google Cloud TTS, with voice profile system |
+| **ASR providers** | FunASR, SherpaASR, Alibaba/Tencent/Baidu cloud | Google Cloud Speech-to-Text |
+| **LLM** | Qwen, DeepSeek, ChatGLM, Gemini, Ollama | Claude, with discussion and meta-query modes |
+| **Deployment** | Python server + Java management API + Vue UI | Node.js/TypeScript monolith |
+
+### What Compatibility Means in Practice
+
+**A Xiaozhi ESP32 board connecting to worzel would need:**
+
+1. **Auth adaptation** — either worzel accepts Xiaozhi-style `Authorization` headers, or the ESP32 firmware is configured to pass the token as a URL parameter. This is a thin translation layer.
+
+2. **Feature negotiation** — worzel's hello response should advertise capabilities the Xiaozhi firmware understands. The `features` field format differs (`{mcp: true}` vs `["mcp"]`) but the semantics overlap.
+
+3. **Emotion/expression mapping** — Xiaozhi devices with displays expect `{type: "llm", emotion: "happy"}` messages to show facial expressions. Worzel could map its `mood:` Ink tags to these emotion messages, giving ESP32 displays character-appropriate expressions driven by the story.
+
+4. **No VAD change needed** — Xiaozhi firmware already sends `listen` start/stop, which is what worzel expects. Server-side VAD is optional in both systems.
+
+**What worzel gains:**
+
+- Access to 70+ ESP32 board configurations from the Xiaozhi ecosystem
+- Hardware designs with displays (round LCDs, TFTs), speakers, microphones, and cases already manufactured and available
+- A large community of firmware developers familiar with the protocol
+- The `{type: "llm", emotion}` message as a channel for driving device displays from Ink `mood:` tags — character expressions on hardware screens
+
+**What the Xiaozhi ecosystem gains:**
+
+- Interactive fiction as a use case beyond general-purpose chatbot
+- Multi-character voice with `speaker:`/`voice:` tag-driven TTS profiles
+- Narrative state management (save/restore, bookmarks, cross-story navigation)
+- InkRouter's structured choice matching instead of free-form LLM chat
+
+### Compatibility Roadmap
+
+1. **Immediate (no protocol changes):** A Xiaozhi ESP32 board can connect to worzel today if auth is adapted. The hello/listen/stt/tts/abort lifecycle and Opus audio framing already match. The board won't show emotions or use MCP, but voice interaction works.
+
+2. **Short-term:** Add `{type: "llm", emotion}` output to worzel, mapped from Ink `mood:` tags. This lights up Xiaozhi displays with story-driven expressions. Accept Xiaozhi-style auth headers alongside URL-param tokens.
+
+3. **Medium-term:** Align MCP message envelopes. Xiaozhi wraps JSON-RPC in `{type: "mcp", payload: {...}}` while worzel flattens it to `{type: "mcp", method, params, id}`. Either adopt Xiaozhi's envelope (it's cleaner) or support both.
+
+4. **Longer-term:** Explore Xiaozhi's MQTT+UDP transport as an alternative for constrained networks. MQTT for control plane, UDP for audio — this matters for cellular-connected ESP32 boards (ML307 4G) where WebSocket overhead is significant.
+
+---
+
 ## Next Steps
 
 1. Turn the "what exists" section into a typed internal schema and interface spec. The current TypeScript types (Session, DialogueEntry, AudioParams, NarrationSegment, InkChoice) are adequate for today but won't support scenes, multi-participant, or media without extension.
 2. Extract shared audio module from duplicated web client code.
 3. Add session-level integration tests that simulate multi-turn Fink sessions with ASR-realistic input.
+4. Prototype Xiaozhi ESP32 board connecting to worzel — validate auth bridging and confirm the hello/listen/tts lifecycle works end-to-end with real hardware.
+5. Map Ink `mood:` tags to Xiaozhi `{type: "llm", emotion}` messages for display-equipped ESP32 boards.
