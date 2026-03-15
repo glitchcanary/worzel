@@ -53,18 +53,41 @@ export class CachedTTSProvider implements TTSProvider {
   }): Promise<TTSResult> {
     const cacheScope = options?.cacheScope ?? 'volatile';
     if (cacheScope === 'none') {
+      this.logger?.info({
+        provider: this.provider ?? this.name,
+        cacheScope,
+        textLength: text.length,
+      }, 'TTS cache bypass');
       return this.inner.synthesize(text, options);
     }
 
     const cacheKey = buildCacheKey(this.inner, text, options);
+    const cacheLog = {
+      key: cacheKey.slice(0, 12),
+      provider: this.provider ?? this.name,
+      cacheScope,
+      textLength: text.length,
+      voice: options?.voice,
+      sampleRate: options?.sampleRate,
+      format: options?.format,
+      speed: options?.speed,
+    };
 
     if (cacheScope === 'volatile') {
       const hit = this.getVolatile(cacheKey);
-      if (hit) return hit;
+      if (hit) {
+        this.logger?.info(cacheLog, 'TTS cache hit');
+        return hit;
+      }
     } else {
       const hit = await this.getPersistent(cacheKey);
-      if (hit) return hit;
+      if (hit) {
+        this.logger?.info(cacheLog, 'TTS cache hit');
+        return hit;
+      }
     }
+
+    this.logger?.info(cacheLog, 'TTS cache miss');
 
     const result = await this.inner.synthesize(text, options);
 
@@ -84,15 +107,25 @@ export class CachedTTSProvider implements TTSProvider {
       this.volatileCache.delete(key);
       return undefined;
     }
-    this.logger?.debug({ key, provider: this.provider ?? this.name }, 'TTS volatile cache hit');
     return cloneResult(hit.result);
   }
 
   private setVolatile(key: string, result: TTSResult, ttlMs?: number): void {
+    const expiresAt = Date.now() + (ttlMs ?? this.volatileTtlMs);
     this.volatileCache.set(key, {
       result: cloneResult(result),
-      expiresAt: Date.now() + (ttlMs ?? this.volatileTtlMs),
+      expiresAt,
     });
+    this.logger?.info({
+      key: key.slice(0, 12),
+      provider: this.provider ?? this.name,
+      cacheScope: 'volatile',
+      audioBytes: result.audio.length,
+      format: result.format,
+      sampleRate: result.sampleRate,
+      ttlMs: ttlMs ?? this.volatileTtlMs,
+      expiresAt,
+    }, 'TTS cache write');
   }
 
   private async getPersistent(key: string): Promise<TTSResult | undefined> {
@@ -101,7 +134,6 @@ export class CachedTTSProvider implements TTSProvider {
       const payload = JSON.parse(
         await readFile(join(this.cacheDir, `${key}.json`), 'utf8'),
       ) as PersistentPayload;
-      this.logger?.debug({ key, provider: this.provider ?? this.name }, 'TTS persistent cache hit');
       return {
         audio: Buffer.from(payload.audioBase64, 'base64'),
         sampleRate: payload.sampleRate,
@@ -123,6 +155,14 @@ export class CachedTTSProvider implements TTSProvider {
         audioBase64: result.audio.toString('base64'),
       };
       await writeFile(join(this.cacheDir, `${key}.json`), JSON.stringify(payload));
+      this.logger?.info({
+        key: key.slice(0, 12),
+        provider: this.provider ?? this.name,
+        cacheScope: 'persistent',
+        audioBytes: result.audio.length,
+        format: result.format,
+        sampleRate: result.sampleRate,
+      }, 'TTS cache write');
     } catch (err) {
       this.logger?.warn({ err, key, provider: this.provider ?? this.name }, 'Failed to write TTS cache');
     }
