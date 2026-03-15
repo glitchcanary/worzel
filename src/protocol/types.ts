@@ -48,6 +48,13 @@ export const TtsMessageSchema = z.object({
   fallback: z.boolean().optional(),
 });
 
+// --- Input ignored: server intentionally skipped a turn (server → client) ---
+export const InputIgnoredMessageSchema = z.object({
+  type: z.literal('input_ignored'),
+  reason: z.enum(['low_audio', 'empty_asr']),
+  session_id: z.string().optional(),
+});
+
 // --- Abort: interrupt current response ---
 export const AbortMessageSchema = z.object({
   type: z.literal('abort'),
@@ -127,6 +134,7 @@ export type HelloMessage = z.infer<typeof HelloMessageSchema>;
 export type ListenMessage = z.infer<typeof ListenMessageSchema>;
 export type SttMessage = z.infer<typeof SttMessageSchema>;
 export type TtsMessage = z.infer<typeof TtsMessageSchema>;
+export type InputIgnoredMessage = z.infer<typeof InputIgnoredMessageSchema>;
 export type AbortMessage = z.infer<typeof AbortMessageSchema>;
 export type IotMessage = z.infer<typeof IotMessageSchema>;
 export type McpMessage = z.infer<typeof McpMessageSchema>;

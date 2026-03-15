@@ -141,6 +141,11 @@ export class InkPipeline {
       if (audioLevel !== undefined && audioLevel < 0.01) {
         this.logger.info({ audioLevel }, 'Audio level below threshold, skipping ASR');
         this.audioBuffer = [];
+        await transport.sendText(JSON.stringify({
+          type: 'input_ignored',
+          reason: 'low_audio',
+          session_id: session.id,
+        }));
         return;
       }
 
@@ -160,6 +165,11 @@ export class InkPipeline {
 
       if (!asrResult.text.trim()) {
         this.logger.info('ASR returned empty text, skipping');
+        await transport.sendText(JSON.stringify({
+          type: 'input_ignored',
+          reason: 'empty_asr',
+          session_id: session.id,
+        }));
         return;
       }
 
@@ -585,7 +595,7 @@ export class InkPipeline {
     }
 
     const redirectText = this.noMatchCount <= 1
-      ? "I didn't catch a matching move. The current options are on screen."
+      ? "I didn't catch a matching move. You can say help if you want the options again."
       : "I still didn't catch a matching move. Say help if you want the options read again.";
 
     await this.speakText(session, transport, opusEncoder, redirectText, signal);
