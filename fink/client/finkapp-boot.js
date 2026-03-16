@@ -8,21 +8,25 @@ const player = new FinkPlayer(app);
 
 // Check URL params for story source
 const params = new URLSearchParams(window.location.search);
-const storyUrl = params.get('story');
-const storyId = params.get('id');
+const finkUrl = params.get('fink');     // ?fink=https://example.com/story.fink.js
+const storyUrl = params.get('story');   // ?story=/path/to/story.ink
+const storyId = params.get('id');       // ?id=test-garden
 
-if (storyUrl) {
-  // Direct story URL: ?story=/path/to/story.ink
+if (finkUrl) {
+  // Direct .fink.js URL (loaded via sandbox)
+  player.loadFinkJs(finkUrl);
+} else if (storyUrl) {
+  // Direct story URL (any format: .ink, .ink.json, .fink.js)
   player.loadFromUrl(storyUrl, storyId);
 } else if (storyId) {
-  // Story by ID: ?id=test-garden (loads from /stories/{id}/story.ink)
+  // Story by ID: loads from /stories/{id}/story.ink
   player.loadFromUrl(`/stories/${storyId}/story.ink`, storyId);
 } else {
   // Default: try to load the story list from the API
   player.loadStoryList().catch(() => {
-    player.ui.setStatus('Pass ?story=URL or ?id=NAME to load a story', 'muted');
+    player.ui.setStatus('Pass ?story=URL, ?id=NAME, or ?fink=URL to load', 'muted');
     player.ui.addNarration([{
-      text: 'No story loaded. Use ?story=path/to/story.ink or ?id=story-name to open a story.',
+      text: 'No story loaded. Use ?id=story-name, ?story=path/to/story.ink, or ?fink=url.fink.js',
       speaker: 'narrator',
       tags: { foaf: {}, raw: [] },
     }]);
