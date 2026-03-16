@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>finkapp — Ink Story Navigator</title>
+  <link rel="icon" href="./favicon.ico" />
+
+  <!-- inkjs full (includes compiler) -->
+  <script src="https://cdn.jsdelivr.net/npm/inkjs@2.3.2/dist/ink-full.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #111;
+      font-family: 'Georgia', 'Iowan Old Style', 'Palatino Linotype', serif;
+      padding: 16px;
+    }
+
+    /* ── Container ─────────────────────────────────────────── */
+    .finkapp {
+      width: 100%;
+      max-width: 560px;
+      height: 90vh;
+      max-height: 800px;
+      display: flex;
+      flex-direction: column;
+      background: var(--fa-bg);
+      border-radius: 6px;
+      overflow: hidden;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+      position: relative;
+
+      /* Theme tokens */
+      --fa-bg:           #1a1f2e;
+      --fa-surface:      #232838;
+      --fa-border:       #2d3348;
+      --fa-text:         #d8dce6;
+      --fa-text-dim:     #7a7f94;
+      --fa-text-muted:   #4a4e63;
+      --fa-speaker:      #8bb4e0;
+      --fa-accent:       #c97040;
+      --fa-accent-dim:   #8a5030;
+      --fa-choice-bg:    #252a3a;
+      --fa-choice-hover: #2e3450;
+      --fa-choice-num:   #c97040;
+      --fa-error:        #e05555;
+      --fa-media-tag:    #5a6080;
+    }
+
+    /* ── Header ────────────────────────────────────────────── */
+    .finkapp-header {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 12px 16px;
+      background: var(--fa-surface);
+      border-bottom: 1px solid var(--fa-border);
+      flex-shrink: 0;
+    }
+    .finkapp-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--fa-accent);
+    }
+    .finkapp-knot {
+      font-size: 11px;
+      color: var(--fa-text-muted);
+      font-style: italic;
+    }
+
+    /* ── Background layer ──────────────────────────────────── */
+    .finkapp-bg {
+      position: absolute;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+      opacity: 0;
+      transition: opacity 0.6s ease;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .finkapp-bg.active {
+      opacity: 0.15;
+    }
+
+    /* ── Narration ─────────────────────────────────────────── */
+    .finkapp-narration {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: relative;
+      z-index: 1;
+      scrollbar-width: thin;
+      scrollbar-color: var(--fa-border) transparent;
+    }
+
+    .finkapp-para {
+      font-size: 15px;
+      line-height: 1.65;
+      color: var(--fa-text);
+      opacity: 0;
+      transform: translateY(3px);
+      animation: fadeUp 0.25s ease forwards;
+    }
+    @keyframes fadeUp {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .finkapp-speaker {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--fa-speaker);
+      margin-right: 2px;
+    }
+
+    .finkapp-para[data-mood="tense"]      { color: #d8c8a0; }
+    .finkapp-para[data-mood="mysterious"] { color: #a0b8d8; font-style: italic; }
+    .finkapp-para[data-mood="calm"]       { color: #a0d8b8; }
+    .finkapp-para[data-mood="angry"]      { color: #d8a0a0; }
+    .finkapp-para[data-mood="sad"]        { color: #b0b0d0; }
+    .finkapp-para[data-mood="curious"]    { color: #c8c0d8; }
+
+    /* ── Images ────────────────────────────────────────────── */
+    .finkapp-image {
+      max-width: 100%;
+      border-radius: 4px;
+      margin: 4px 0;
+    }
+
+    .finkapp-video {
+      max-width: 100%;
+      border-radius: 4px;
+      margin: 4px 0;
+    }
+
+    /* ── Media & vizprom tags ──────────────────────────────── */
+    .finkapp-vizprom {
+      font-size: 11px;
+      color: var(--fa-text-muted);
+      font-style: italic;
+      padding: 6px 10px;
+      background: rgba(255,255,255,0.03);
+      border-left: 2px solid var(--fa-border);
+      border-radius: 2px;
+    }
+    .finkapp-media-tag {
+      font-size: 11px;
+      color: var(--fa-media-tag);
+      padding: 2px 0;
+    }
+
+    /* ── Choices ────────────────────────────────────────────── */
+    .finkapp-choices {
+      flex-shrink: 0;
+      padding: 12px 16px;
+      border-top: 1px solid var(--fa-border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      position: relative;
+      z-index: 1;
+      max-height: 40%;
+      overflow-y: auto;
+    }
+
+    .finkapp-choice-btn {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      width: 100%;
+      text-align: left;
+      padding: 10px 14px;
+      background: var(--fa-choice-bg);
+      border: 1px solid var(--fa-border);
+      border-radius: 4px;
+      color: var(--fa-text);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.4;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .finkapp-choice-btn:hover {
+      background: var(--fa-choice-hover);
+      border-color: var(--fa-accent-dim);
+    }
+    .finkapp-choice-btn:active {
+      background: var(--fa-accent-dim);
+    }
+    .finkapp-choice-num {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--fa-choice-num);
+      min-width: 14px;
+    }
+    .finkapp-choice-text {
+      flex: 1;
+    }
+
+    /* ── Ended / restart ───────────────────────────────────── */
+    .finkapp-ended {
+      font-size: 13px;
+      color: var(--fa-text-dim);
+      text-align: center;
+      padding: 8px 0;
+    }
+    .finkapp-restart-btn {
+      align-self: center;
+      padding: 8px 20px;
+      background: transparent;
+      border: 1px solid var(--fa-border);
+      border-radius: 4px;
+      color: var(--fa-text-dim);
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .finkapp-restart-btn:hover {
+      border-color: var(--fa-accent-dim);
+      color: var(--fa-accent);
+    }
+
+    /* ── Errors ─────────────────────────────────────────────── */
+    .finkapp-error {
+      font-size: 12px;
+      color: var(--fa-error);
+      padding: 4px 10px;
+      background: rgba(224,85,85,0.08);
+      border-left: 2px solid var(--fa-error);
+      border-radius: 2px;
+    }
+
+    /* ── Status bar ────────────────────────────────────────── */
+    .finkapp-status {
+      flex-shrink: 0;
+      padding: 6px 16px;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      color: var(--fa-text-muted);
+      border-top: 1px solid var(--fa-border);
+      background: var(--fa-surface);
+      position: relative;
+      z-index: 1;
+    }
+    .finkapp-status[data-level="error"] { color: var(--fa-error); }
+    .finkapp-status[data-level="muted"] { color: var(--fa-text-muted); }
+  </style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script type="module">
+import { FinkPlayer } from './fink-player.js';
+
+const app = document.getElementById('app');
+const player = new FinkPlayer(app);
+
+// Check URL params for story source
+const params = new URLSearchParams(window.location.search);
+const storyUrl = params.get('story');
+const storyId = params.get('id');
+
+if (storyUrl) {
+  // Direct story URL: ?story=/path/to/story.ink
+  player.loadFromUrl(storyUrl, storyId);
+} else if (storyId) {
+  // Story by ID: ?id=test-garden (loads from /stories/{id}/story.ink)
+  player.loadFromUrl(`/stories/${storyId}/story.ink`, storyId);
+} else {
+  // Default: try to load the story list from the API
+  player.loadStoryList().catch(() => {
+    // If no API available, show a helpful message
+    player.ui.setStatus('Pass ?story=URL or ?id=NAME to load a story', 'muted');
+    player.ui.addNarration([{
+      text: 'No story loaded. Use ?story=path/to/story.ink or ?id=story-name to open a story.',
+      speaker: 'narrator',
+      tags: { foaf: {}, raw: [] },
+    }]);
+  });
+}
+
+// Expose player globally for dev console access
+window.finkPlayer = player;
+</script>
+
+</body>
+</html>

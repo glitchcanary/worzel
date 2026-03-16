@@ -277,6 +277,14 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
     decorateReply: false,
   });
 
+  // Serve stories directory as static files so the client-side finkapp
+  // can fetch .ink source files directly for in-browser compilation.
+  await app.register(fastifyStatic, {
+    root: storiesDir,
+    prefix: '/stories/',
+    decorateReply: false,
+  });
+
   logger.info({
     routePrefix,
     wsPath,
