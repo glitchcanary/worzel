@@ -219,6 +219,665 @@ The provider registry already supports local models (Ollama) alongside cloud pro
 
 ---
 
+## Event Bus Architecture: MQTT-ifying the Ink Engine
+
+### The Minimal API Insight
+
+> "The external API for a simple web ink player is basically pulling a chunk of content versus presenting a choice to the user and relaying. While Ink has much more to it, something like this seems the essence of Ink's minimal engine's interaction with its immediate implementation environment, right? Plus other engines and variable sync events. Can we MQTT-ify it into being event bus based?"
+> — danbri
+
+This observation cuts to the heart of it. The entire inkjs API surface used across both worzel and finkapp reduces to six calls:
+
+```
+canContinue        → bool
+Continue()         → string (+ side-effect: currentTags)
+currentChoices     → Choice[]
+ChooseChoiceIndex  → void
+variablesState[]   → get/set
+state.ToJson/LoadJson → serialize/restore
+```
+
+Everything else — tags, voices, routing, prompts — is built on top of those six calls. The core loop is:
+
+```
+while canContinue → emit content chunks
+when !canContinue && choices → present choices, wait
+when choice received → ChooseChoiceIndex, loop
+when !canContinue && !choices → story ended
+```
+
+MQTT-ified, this becomes topic-based messages on the bus:
+
+```
+# Engine → Bus (outbound)
+module/{id}/content     { text, speaker, tags, environment, spatial }
+module/{id}/choices     { choices: [{index, text, tags}], awaiting: true }
+module/{id}/state       { variables: {delta}, turnCount, ended }
+module/{id}/lifecycle   { status: "ready|suspended|ended" }
+
+# Bus → Engine (inbound)
+module/{id}/choose      { index: 2 }
+module/{id}/set_var     { name: "diamonds", value: 15, source: "minigame/gem-cave" }
+module/{id}/control     { action: "save|restore|suspend|resume" }
+
+# Cross-module (supervisor-mediated)
+sync/variables          { source: "ink/manor", deltas: {diamonds: +3} }
+sync/spatial            { source: "ink/manor", scene: {facing, sources, environment} }
+sync/focus              { active: "ink/manor", previous: "game/gem-cave" }
+```
+
+Every module — ink, minigame, inventory, ambient audio — speaks the same topic structure. The ink-specific internals (`Continue()`, `ChooseChoiceIndex`) are *inside* the module, invisible to the bus. From outside, ink is just a thing that emits content, presents choices, and accepts selections. Same as a dialogue tree. Same as a quiz widget. Same as a vibe-coded choose-your-own-adventure that doesn't use Ink at all.
+
+### The Ink Module Adapter
+
+The bus-facing surface of the ink module is tiny:
+
+```typescript
+class InkModule implements ModuleBusAdapter {
+  private story: Story          // inkjs internals, hidden
+  private session: InkSession   // tags, voices, hidden
+
+  handleChoose(msg) {
+    this.session.choose(msg.index)     // ChooseChoiceIndex inside
+    this.drainContent()                 // while canContinue, publish chunks
+  }
+
+  drainContent() {
+    while (this.story.canContinue) {
+      const text = this.story.Continue()
+      const tags = parseTags(this.story.currentTags)
+      this.publish(`module/${this.id}/content`, { text, ...tags })
+    }
+    if (this.story.currentChoices.length > 0) {
+      this.publish(`module/${this.id}/choices`, { choices: ... })
+    } else {
+      this.publish(`module/${this.id}/lifecycle`, { status: "ended" })
+    }
+  }
+}
+```
+
+A minigame module has the same shape — it just publishes `content` (frame updates, score) and `choices` (player actions) differently inside. The bus doesn't care.
+
+### Variable Sync on the Bus
+
+The delta-tracking approach generalises cleanly to cross-module variable synchronisation:
+
+```
+1. Ink module sets diamonds = 18
+2. Publishes: sync/variables { source: "ink/manor", deltas: {diamonds: +3} }
+3. Supervisor receives, checks trust tier (can ink/manor write diamonds? yes)
+4. Supervisor publishes: sync/variables { source: "supervisor", diamonds: 18 }
+5. Minigame module receives, updates its local view
+6. Minigame awards 2 gems
+7. Publishes: sync/variables { source: "game/gems", deltas: {diamonds: +2} }
+8. Supervisor receives, checks trust tier, applies delta (18+2=20)
+9. Publishes updated canonical value to all subscribers
+```
+
+The supervisor is the **only** authority on the merged variable state. Modules propose deltas. The supervisor applies or rejects based on trust tier, then broadcasts the canonical value.
+
+### What This Buys
+
+- **Ink engine becomes replaceable.** Swap inkjs for a Twine runtime, a Yarn Spinner runtime, or a pure LLM conversation — same bus interface.
+- **Minigames don't need special iframe `postMessage` protocols** — they are bus modules with the same topic structure.
+- **The voice pipeline** (ASR → classify → TTS) subscribes to `module/*/content` and `module/*/choices` — it doesn't need to know it's Ink underneath.
+- **Spatial audio mixer** subscribes to `sync/spatial` — doesn't care who emitted the scene descriptor.
+- **ESP32 clients** subscribe to the same topics but ignore spatial. WebXR subscribes and renders fully. Device capability just determines which subscriptions matter.
+
+### What It Costs
+
+Indirection. Right now `ink-pipeline.ts` calls `inkSession.choose()` directly and reads the result. With the bus, it publishes a `choose` message and waits for `content` messages to arrive. That's an async boundary where there wasn't one before. For a single-process server this is overhead with no benefit — you're just routing messages to yourself. It only pays off when modules actually run in different contexts (client vs server, iframe vs main thread).
+
+**The pragmatic approach:** don't build a real MQTT broker for this. Build the topic/message contract as a TypeScript interface. Implement it as direct function calls in-process for now. Swap in actual pub/sub transport later if and when modules genuinely run across boundaries. The abstraction is the value, not the infrastructure.
+
+---
+
+## Temporal Tiers: Story Time, Session Time, Wall Time
+
+### The Problem
+
+> "We have to watch that we don't crappily try to mutate Ink into a real-time game. It is about story. And yet we are allowing the story to intersperse with potentially intensely real-time episodes and media items — gaussian splats, videos, minigames, music, moody audio, songs and foley and 3D audio and so on."
+> — danbri
+
+> "These immersives must stay somehow optional and icing on the cake, since many environments won't allow them all, including accessibility concerns too. So if a Quest WebXR headset has direction of view, it only ought to be exploited when, for example, a 3D splat scene showing the valley, or a panorama, is shown."
+> — danbri
+
+> "So there is also something subtle going on with respect to time. Firstly, games loop and reset and play is paused and so on routinely. Core game, this is fine — like putting down a book. The more immersive widgets are used, the more time gets more complex, for example some might be multiplayer."
+> — danbri
+
+There are two different time regimes colliding here, and the architecture must acknowledge that explicitly rather than papering over it.
+
+**Ink time is discrete.** It advances by turns. You `Continue()`, you get text, you choose, you `Continue()` again. Between turns, time doesn't exist. The story is frozen. Put down the book, pick it up a week later — nothing changed. This is the bedrock and it must stay this way.
+
+**Immersive time is continuous.** A gaussian splat scene has a render loop. A minigame has a game clock. Multiplayer has wall-clock coordination. Audio has playback position. These things tick whether you're paying attention or not (or they *could*).
+
+The obvious mistake would be tightly coupling them — making Ink's turn progression depend on real-time events, or making real-time modules block on Ink choices. But the relationship between these time regimes is subtler than a clean separation, as the variable sync discussion below shows. This is still being figured out.
+
+### Ink as Conductor (Tentative Model)
+
+One way to think about the relationship: Ink cues immersives but doesn't synchronise with them. Whether this holds up cleanly in practice is an open question — the live variable sync from widgets (see below) blurs the line.
+
+```ink
+The valley opens before you. # scene:valley_splat # mode:spatial
+
++ [Look closer at the ruins]
+  ~ viewed_ruins = true
+  The stones are ancient...
+
++ [Continue along the path]
+  You press on.
+```
+
+The `# scene:valley_splat` tag **cues** the splat viewer module. But Ink doesn't wait for it to load, doesn't track the user's gaze direction, doesn't care how long they look around. Ink issued the cue and is now sitting at a choice point, frozen, timeless, as it should be.
+
+The splat viewer runs in its own time regime. It might notice the user looked at the ruins and *highlight* that choice in the UI. But it doesn't *make* the choice. Ink remains the authority on narrative progression. (At least, that's the current thinking — the interaction between live widget state and Ink's turn structure may need more nuance.)
+
+### The Three Tiers (Working Model)
+
+A provisional framing — useful for thinking about the problem, but the boundaries may shift as real content tests them:
+
+```
+Tier 0: Story time (discrete, turn-based)
+  - Ink advances by explicit action only
+  - Saves/restores perfectly (it's just state)
+  - "Put down the book" always works
+  - ALL narrative progression lives here
+
+Tier 1: Session time (bounded continuous)
+  - Minigames, splat viewers, audio playback
+  - Has a start, runs, has an end
+  - Cued by Tier 0, variables sync back to Tier 0 incrementally
+  - Can be interrupted/abandoned — Ink handles gracefully
+  - "I skipped the minigame" is always a valid outcome
+  - But live sync means Tier 0 state changes during Tier 1 — the tiers leak
+
+Tier 2: Wall time (unbounded continuous)
+  - Multiplayer sessions, live events
+  - Exists independently of any single player
+  - Ink can acknowledge it but never depend on it
+  - "The festival was happening when you passed through"
+```
+
+The working hypothesis: **information flows upward (Tier 2 → 1 → 0) as discrete variable-sync events.** A minigame runs continuously (Tier 1) and syncs variables back to Ink (Tier 0) as they change — gem by gem, not just a summary at the end. The bus carries each `gems_collected += 1` as it happens, so the story's variable state stays live even while the widget runs. There may also be a summary when the widget closes, but the incremental sync is the preferred model — it means the story can react at any point, and if the widget is interrupted or abandoned, whatever was collected so far is already in Ink's state. A multiplayer lobby exists in wall time (Tier 2) but Ink only sees variables like `other_players_present = true`. The exact boundaries between tiers, and how much live sync is appropriate, are still being worked out.
+
+### On the Bus
+
+```
+# Ink cues an immersive (Tier 0 → Tier 1)
+module/ink/cue          { target: "splat/valley", mode: "spatial" }
+
+# Splat runs in its own time, publishes hints
+module/splat/hint       { gaze_target: "ruins", confidence: 0.8 }
+
+# UI can use hints to style choices — but Ink doesn't see these
+# Eventually the player chooses (Tier 0 event)
+module/ink/choose       { index: 0 }
+
+# Minigame cued, runs, syncs variables live as they change
+module/minigame/sync    { deltas: { gems_collected: +1 } }
+module/minigame/sync    { deltas: { gems_collected: +1 } }
+module/minigame/sync    { deltas: { gems_collected: +1 } }
+# Each gem syncs individually — story state stays current
+# Optional summary on close, but incremental sync is primary
+module/minigame/close   { final: { gems_collected: 3, completed: true } }
+```
+
+### Capability Fallback
+
+A Tier 1 module that can't run (no WebXR, no GPU, screen reader active) just doesn't. Ink cued it, nobody answered, that's fine. The choice UI still works. The story still works. The valley scene becomes a text description instead of a splat. The minigame becomes "you found 3 gems" as a default outcome or a simpler fallback.
+
+```
+# Module capability negotiation on the bus
+module/splat/status     { available: false, reason: "no-webxr" }
+
+# Supervisor falls back
+module/ink/set_var      { name: "scene_mode", value: "text" }
+# Ink can branch on this if it wants, or just continue
+```
+
+The working principle is that immersives are **decorators on the story**, not structural dependencies — the story should be complete without them. When present, they enrich: a splat scene gives spatial presence, a minigame gives agency, spatial audio gives mood. When absent, Ink carries on. How well this holds when widgets are syncing variables live (not just delivering a final result) is something the diamond mine stories are currently testing in practice.
+
+### Multiplayer: The Genuinely Hard Case
+
+Tier 2 is where the "put down the book" contract breaks, because multiplayer introduces the one thing Ink can't have: time pressure. "Another player is waiting for you" creates urgency that violates the discrete-time guarantee.
+
+The answer: multiplayer moments are explicitly opt-in, bounded in duration, and Ink always has a timeout path. If you walk away, the story continues with a default. The festival happened without you. That's fine. That's a story too.
+
+---
+
+## Accessible Alt Paths: Widgets as Variable Suppliers
+
+### What We Actually Have
+
+The current finkosphere content tells this story concretely. Two diamond mine Ink files are linked to each other, and both are cutely tied to a Hampstead story — revisiting locations with new themes revealed through shared variables. Hampstead has no immersives currently except one easter egg video clip. The diamond mines have two trivial immersives — essentially the same widget with different configurations — whose impact on the finkosphere is basically supplying you with variables.
+
+> "We therefore need a way for authors and storytelling users of these widgets to easily rely on accessible alt paths that render through the game's core UX — choices and text. So a starter kit of logic puzzles, dice rolls, quizzes — toki pona, morse, knowledge of topics — should be available alongside the delivery engine and fink format. Would do the job here. Storytelling in this world involves a lot of letting go."
+> — danbri
+
+This is the decorator principle from the temporal tiers made practical. A widget's effect on the story flows through variables — but not as a single lump at the end. In the diamond mines, variables sync live, gem by gem. The accessible fallback needs to satisfy the same variable contract through choices and text, and similarly updates incrementally (each choice sets a variable). The widget is a *flavour* of the interaction, not the interaction itself — or at least, that's the aspiration. How much of the experience is "flavour" versus "the point" probably varies by widget and by story.
+
+### The Letting Go Principle
+
+> "Storytelling in this world involves a lot of letting go."
+> — danbri
+
+The implication: authors write stories that work without their immersives. A radio play works without the listener seeing the actors. A novel works without illustrations. A fink story works without its gaussian splats, minigames, and spatial audio. These enrich; they do not carry.
+
+In practice this suggests every widget should declare its **variable contract**: what it writes back to the story. A gem-matching minigame writes `gems_collected: int` and `puzzle_solved: bool`. In the diamond mine stories, those variables sync gem by gem as the player collects them — the story's state is always current, not waiting for a final summary. Everything else — the animations, the scoring, the spatial audio — is presentation. The story only sees the variables. (Whether this clean separation always holds, or whether some immersives are more deeply entangled with the story experience than "just variables", is an open question.)
+
+### Starter Kit: Core Fallback Interactions
+
+A library of text-and-choice-based fallback interactions that any fink story can use in place of (or alongside) immersive widgets:
+
+| Fallback type | How it works in choices and text | Variables it supplies |
+|---------------|----------------------------------|---------------------|
+| **Logic puzzle** | Present a riddle or sequence puzzle as narrated text. Choices are candidate answers. Wrong answers loop with hints. | `solved: bool`, `attempts: int` |
+| **Dice roll** | "You reach into the dark. Let's see what luck brings." Choice: "Roll the dice." System generates outcome, narrates result. | `roll: int`, `outcome: string` |
+| **Quiz (knowledge)** | Narrator asks a question about a topic. Choices are multiple-choice answers. Can draw from tagged question banks. | `correct: bool`, `score: int` |
+| **Quiz (toki pona)** | "The inscription reads: *telo li pona*. What does it mean?" Choices translate. Teaches through play. | `understood: bool`, `words_learned: int` |
+| **Quiz (morse)** | "The signal flashes: ·· ·—· ·—·· ·—·· ··· You tap out a reply." Choice selects the decoded word. | `decoded: bool`, `message: string` |
+| **Timed choice** | A standard Ink choice point with `# timer:Ns:default`. No widget needed — the timer is in the protocol. | `chose_in_time: bool`, `choice_index: int` |
+| **Accumulator** | "You search the cave." Multiple sticky choices let you pick up items one by one, then "Done." | `items: string[]`, `count: int` |
+
+These are not lesser experiences. A well-written quiz about the history of Hampstead Heath, delivered through voice with characterful narration, can be more engaging than a flashy but shallow drag-and-drop widget. The text-and-choice path is the *primary* path. The widget is the optional upgrade.
+
+### Authoring Contract
+
+For a fink story to use this pattern:
+
+```ink
+// The widget path (when available)
+{ widget_available("gem-cave") }:
+  # WIDGET:gem-cave config:easy
+  // Widget runs, syncs gems_collected incrementally as player collects
+  // Sets puzzle_solved on completion or abandonment
+
+// The fallback path (always available)
+{ not widget_available("gem-cave") }:
+  -> gem_cave_text_version
+
+=== gem_cave_text_version ===
+The cave glitters with embedded crystals.
+You'll need to work out which ones are real diamonds.
+
++ [Test the clear crystal] # voice_hint:clear, transparent
+  It scratches glass. That's a diamond.
+  ~ gems_collected = gems_collected + 1
+  -> gem_cave_text_version
+
++ [Test the cloudy stone] # voice_hint:cloudy, dull
+  ite crumbles. Just quartz.
+  -> gem_cave_text_version
+
++ [You've collected enough] # voice_hint:done, enough, finished
+  ~ puzzle_solved = (gems_collected >= 3)
+  -> gem_cave_done
+```
+
+Both paths write the same variables. Both paths are complete experiences. The widget path is richer for clients that support it. The text path works everywhere — ESP32, phone, screen reader, Twilio, plain terminal.
+
+### Delivery
+
+The starter kit fallbacks ship as part of the fink format tooling, not as individual story assets. An author tags a widget point in their story; the tooling generates the fallback scaffolding (or the author writes their own). The delivery engine checks client capability at runtime and routes to the appropriate path. The story's variable contract is satisfied either way.
+
+This is one reading of what "storytelling in this world involves a lot of letting go" means in practice: let go of assuming your audience has a screen, a GPU, spatial audio, or even sight. Write for the variables. Let the surfaces handle the rest. Whether this is the whole picture, or whether there's more to "letting go" than capability fallback, is worth sitting with.
+
+---
+
+## The Fink Shell: UI as Module Container
+
+> "Can we imagine the current finkapp HTML UI rebuilt as a container/event bus for these interacting modules? Each module will be a web component, probably heavily sandboxed with iframes. Sometimes the same WC might have multiple instantiations, for example images. Most of it might have a social web timeline feed look. There may be display widgets to hook into, something like a currently active apps list, and so on. Each instantiated module might be running or not. But they only interact via the event bus. This means the framework can be split into thin client (ESP32) and middleware (worzel) later. We'll figure out how streams and auth fit in too."
+> — danbri
+
+This reframes the entire UI layer. The current worzel web-client (`<worzel-app>`) is a monolithic component tree: `worzel-app` owns `WsClient`, receives events, and calls methods directly on child components (`worzel-chat`, `worzel-audio`, etc.). The finkapp is similarly monolithic — `FinkInkEngine` drives `FinkUI` which drives DOM elements. In both cases, everything knows about everything else.
+
+The proposal: rebuild the UI as a **shell** — a container that manages module lifecycle, layout, and bus routing. The shell doesn't know what's inside the modules. The modules don't know about each other. They only know the bus.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        FINK SHELL                                   │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                      MODULE BAR                                │ │
+│  │  [ Ink: Manor ]  [ Gems: playing ]  [ Audio: ambient ]  ...  │ │
+│  │  running ●        running ●          running ●                │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌──────────────────────────────────────┬──────────────────────┐   │
+│  │          FEED / TIMELINE             │   ACTIVE MODULE      │   │
+│  │  ┌──────────────────────────────┐    │   ┌──────────────┐   │   │
+│  │  │ ░ narration segment          │    │   │              │   │   │
+│  │  │   "The manor stands..."      │    │   │  <iframe>    │   │   │
+│  │  └──────────────────────────────┘    │   │  gem-cave    │   │   │
+│  │  ┌──────────────────────────────┐    │   │  minigame    │   │   │
+│  │  │ ░ image: manor-entrance.jpg  │    │   │              │   │   │
+│  │  │   [rendered inline]          │    │   │              │   │   │
+│  │  └──────────────────────────────┘    │   │              │   │   │
+│  │  ┌──────────────────────────────┐    │   └──────────────┘   │   │
+│  │  │ ░ user choice                │    │                      │   │
+│  │  │   "I'll explore the cave"    │    │   ┌──────────────┐   │   │
+│  │  └──────────────────────────────┘    │   │ gems: 3      │   │   │
+│  │  ┌──────────────────────────────┐    │   │ best: 7      │   │   │
+│  │  │ ░ narration segment          │    │   │ ──────────── │   │   │
+│  │  │   "Crystals line the walls"  │    │   │ sync/vars:   │   │   │
+│  │  └──────────────────────────────┘    │   │ diamonds: 3  │   │   │
+│  │  ┌──────────────────────────────┐    │   └──────────────┘   │   │
+│  │  │ ░ choices                    │    │     module status     │   │
+│  │  │   [A] Dig deeper             │    │                      │   │
+│  │  │   [B] Return to manor        │    │                      │   │
+│  │  └──────────────────────────────┘    │                      │   │
+│  └──────────────────────────────────────┴──────────────────────┘   │
+│                                                                     │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                    BACKGROUND MODULES                          │ │
+│  │  🔊 ambient-garden (playing, ducked)   🎤 mic (recording)     │ │
+│  │  📡 worzel-ws (connected)              🔔 notifications (2)   │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ═══════════════════  EVENT BUS  ════════════════════════════════   │
+│    topic://module/ink/content     topic://module/gems/sync          │
+│    topic://module/ink/choices     topic://sync/variables             │
+│    topic://module/audio/state    topic://shell/focus                 │
+│    topic://module/mic/audio      topic://shell/layout               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### The Shell's Responsibilities
+
+The shell is a window manager for modules. It handles:
+
+```
+┌──────────────┐
+│              │   1. MODULE LIFECYCLE
+│    SHELL     │      register, instantiate, start, suspend, destroy
+│              │      (same WC type can have multiple instances)
+│   manages:   │
+│              │   2. LAYOUT / FOCUS
+│   modules    │      which module has the main panel
+│   layout     │      feed vs. split vs. fullscreen vs. mini
+│   bus        │      module bar shows what's running
+│   sandbox    │
+│              │   3. BUS ROUTING
+│              │      in-process MessageChannel or BroadcastChannel
+│              │      iframe ↔ shell via postMessage, bridged to bus
+│              │      every message has a topic, source, timestamp
+│              │
+│              │   4. SANDBOXING
+│              │      iframes with sandbox="allow-scripts"
+│              │      CSP headers per module trust tier
+│              │      no direct DOM access between modules
+│              │
+└──────────────┘
+```
+
+The shell does NOT:
+- Know what Ink is
+- Parse story content
+- Render narration (that's the feed module's job)
+- Mix audio (that's the audio module's job)
+- Handle voice (that's the mic/ASR module's job)
+
+### Modules as Web Components
+
+Every module is a web component with the same lifecycle interface:
+
+```
+┌──────────────────────────────────────────────────────┐
+│ <fink-module> interface                               │
+│                                                       │
+│  Attributes:                                          │
+│    module-id="ink-manor"                              │
+│    module-type="ink"                                  │
+│    state="running|suspended|stopped"                  │
+│                                                       │
+│  Lifecycle:                                           │
+│    connectedCallback()  → register with shell bus     │
+│    start()              → begin publishing events     │
+│    suspend()            → pause, retain state         │
+│    resume()             → continue from suspended     │
+│    destroy()            → clean up, unsubscribe       │
+│                                                       │
+│  Bus (only interface to outside world):               │
+│    this.publish(topic, data)                          │
+│    this.subscribe(topic, handler)                     │
+│    this.unsubscribe(topic)                            │
+│                                                       │
+│  No other API. No parent references. No sibling       │
+│  queries. No shared globals. Just the bus.            │
+└──────────────────────────────────────────────────────┘
+```
+
+Some modules are lightweight web components (narration feed, image display, choice cards). Some are sandboxed iframes (minigames, third-party widgets). The shell bridges both to the same bus.
+
+### Module Types (Initial Set)
+
+```
+MODULE TYPE          INSTANCES    SANDBOXED?   VISIBLE?   NOTES
+─────────────────────────────────────────────────────────────────
+ink-engine           1 per story  no           no         headless, publishes content/choices
+feed                 1            no           yes        timeline of narration, images, choices
+choice-panel         1            no           yes        renders current choices, relays selection
+image-display        0..n         no           yes        inline images in feed, or fullscreen
+audio-ambient        0..n         no           no         background audio playback
+audio-foley          0..n         no           no         one-shot sound effects
+minigame             0..n         YES (iframe)  yes        sandboxed interactive widget
+splat-viewer         0..1         YES (iframe)  yes        3D gaussian splat scene
+video-player         0..1         no           yes        inline or overlay video
+mic-input            1            no           no         microphone capture, sends audio
+asr-bridge           1            no           no         speech-to-text (local or via worzel)
+tts-bridge           1            no           no         text-to-speech playback
+worzel-transport     0..1         no           no         WebSocket/MQTT link to server
+notification         1            no           yes        toasts, alerts, system messages
+```
+
+Note: `image-display` can have multiple instances — three images in a story means three `<fink-image>` elements in the feed timeline. Same web component, different data. This is normal for a social-feed-style layout.
+
+### The Feed as a Module
+
+The feed/timeline is itself a module. It subscribes to `module/*/content` and renders each content event as a card in a scrolling list — like a social media timeline but for story events:
+
+```
+FEED MODULE subscribes to:
+  module/ink/content        → narration cards
+  module/ink/choices        → choice card (interactive)
+  module/*/sync             → variable-change indicators (optional)
+  module/minigame/result    → "you scored 3 gems" summary card
+  shell/notification        → system messages
+
+FEED MODULE renders:
+  ┌─────────────────────────────┐
+  │ 📖 The manor stands at the  │  ← narration card
+  │    edge of the heath...     │
+  ├─────────────────────────────┤
+  │ 🖼 [manor-entrance.jpg]     │  ← image card (or <fink-image> WC)
+  ├─────────────────────────────┤
+  │ 👤 "I'll take the path"     │  ← user action card
+  ├─────────────────────────────┤
+  │ 📖 The path winds down      │  ← narration card
+  │    into a crystal cave...   │
+  ├─────────────────────────────┤
+  │ 💎 Gem cave: found 3        │  ← minigame result card
+  ├─────────────────────────────┤
+  │ ┌─────────┐ ┌─────────┐    │  ← choice card (interactive)
+  │ │ Dig     │ │ Return  │    │
+  │ │ deeper  │ │ to manor│    │
+  │ └─────────┘ └─────────┘    │
+  └─────────────────────────────┘
+```
+
+Each card type is itself a small web component (`<fink-narration-card>`, `<fink-choice-card>`, `<fink-image-card>`, etc.). The feed module just appends them to a scrolling container. Social web timeline, but for interactive fiction.
+
+### Bus Implementation (In-Process)
+
+For the browser, the bus is an in-process message router. No actual MQTT needed yet:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    FinkBus                           │
+│                                                      │
+│  Backing: MessageChannel / BroadcastChannel          │
+│  (or just a Map<topic, Set<handler>> for now)        │
+│                                                      │
+│  publish(topic, data, source)                        │
+│    → fan out to all subscribers of that topic         │
+│    → wildcard support: module/*/content               │
+│    → iframe modules: postMessage bridge               │
+│                                                      │
+│  subscribe(topic, handler)                           │
+│  unsubscribe(topic, handler)                         │
+│                                                      │
+│  Supervisor middleware:                               │
+│    → intercepts sync/variables                        │
+│    → validates trust tiers                            │
+│    → applies deltas, broadcasts canonical values      │
+│    → logs all events (optional, for debug/replay)     │
+│                                                      │
+│  Bridge to worzel (when connected):                  │
+│    → selected topics forward to WebSocket/MQTT        │
+│    → server-side modules appear as bus participants    │
+│    → thin client: ALL modules on server, bus bridges   │
+│                                                      │
+└─────────────────────────────────────────────────────┘
+```
+
+### The Thin Client Split
+
+> "This means the framework can be split into thin client (ESP32) and middleware (worzel) later."
+> — danbri
+
+This is the key architectural payoff. If modules only talk via the bus, then WHERE a module runs is a deployment decision, not an architectural one:
+
+```
+THICK CLIENT (browser, capable device):
+┌──────────────────────────────────┐
+│ SHELL + BUS (in-process)         │
+│  ├── ink-engine (local inkjs)    │
+│  ├── feed (local DOM)            │
+│  ├── minigame (local iframe)     │
+│  ├── audio (local Web Audio)     │
+│  ├── mic (local MediaStream)     │
+│  ├── asr (local Whisper or API)  │
+│  └── tts (local speechSynthesis) │
+└──────────────────────────────────┘
+  Everything runs locally.
+  No server needed for basic stories.
+
+THIN CLIENT (ESP32, minimal browser, phone widget):
+┌──────────────────┐          ┌──────────────────────┐
+│ SHELL + BUS      │  MQTT/   │ WORZEL (server)      │
+│  (on device)     │  WS      │  ├── ink-engine      │
+│  ├── audio-out   │◄════════►│  ├── asr             │
+│  ├── mic-in      │  bridge  │  ├── tts             │
+│  ├── led-display │          │  ├── minigame-proxy   │
+│  └── button-input│          │  └── supervisor       │
+└──────────────────┘          └──────────────────────┘
+  Only I/O modules run locally.
+  Everything else is on the server.
+  Same bus topics. Same message format.
+
+HYBRID (browser + server for heavy modules):
+┌──────────────────────────────────┐
+│ SHELL + BUS (in-process)         │
+│  ├── feed (local)                │
+│  ├── minigame (local iframe)     │
+│  ├── audio-out (local)           │
+│  ├── mic-in (local)              │
+│  │                               │
+│  ├── [bridge to worzel] ═══════════► ink-engine (server)
+│  │                               │    asr (server, better model)
+│  │                               │    tts (server, ElevenLabs)
+│  └───────────────────────────────│
+└──────────────────────────────────┘
+  I/O and rendering local.
+  Intelligence on server.
+  Modules don't know or care.
+```
+
+The bus bridge is the seam. Any topic can be local or remote. The shell decides based on device capability what runs where.
+
+### Module Instantiation and the App List
+
+The shell tracks all module instances in a registry:
+
+```
+┌─────────────────────────────────────────────────┐
+│ MODULE REGISTRY (shell-managed)                  │
+│                                                   │
+│ ID               TYPE           STATE    VISIBLE  │
+│ ──────────────── ────────────── ──────── ──────── │
+│ ink-manor        ink-engine     running  no       │
+│ ink-diamond-1    ink-engine     suspend  no       │
+│ feed-main        feed           running  yes      │
+│ gems-cave-1      minigame       running  yes      │
+│ ambient-garden   audio-ambient  running  no       │
+│ img-manor-01     image-display  running  yes      │
+│ img-manor-02     image-display  running  yes      │
+│ img-cave-01      image-display  stopped  no       │
+│ mic-0            mic-input      running  no       │
+│ worzel-link      transport      running  no       │
+│                                                   │
+│ Rendered in module bar as:                        │
+│ [Manor ●] [Diamond Mine ◐] [Gems ●] [🔊 ●]      │
+└─────────────────────────────────────────────────┘
+```
+
+Multiple instances of the same type (two `ink-engine` instances for linked stories, three `image-display` instances for different images) are normal. The module bar gives the user an OS-taskbar-like view of what's running. Clicking one could foreground it, show its status, or allow suspending it.
+
+### Sandbox Model
+
+Trust tiers determine sandboxing:
+
+```
+TIER 1 — CORE (no sandbox, full bus access):
+  ink-engine, feed, choice-panel, audio-*, mic-*, transport
+  These are part of the platform. They run as regular web components
+  in the shell's shadow DOM.
+
+TIER 2 — TRUSTED (iframe, same-origin, limited bus topics):
+  First-party minigames, splat viewer, known widgets.
+  Run in <iframe sandbox="allow-scripts allow-same-origin">
+  Bus access via postMessage bridge. Can publish to module/{self}/*
+  and subscribe to sync/variables. Cannot access other modules' topics.
+
+TIER 3 — UNTRUSTED (iframe, cross-origin, minimal bus access):
+  Third-party widgets, user-contributed games.
+  Run in <iframe sandbox="allow-scripts"> (NO same-origin).
+  Severely limited bus access: can only publish module/{self}/result
+  and receive module/{self}/control. All variable writes go through
+  supervisor validation.
+```
+
+### What This Means for the Existing Code
+
+The current `<worzel-app>` component tree would dissolve. Instead:
+
+- `worzel-chat` → becomes the **feed module** (subscribes to content, renders timeline)
+- `worzel-audio` → becomes the **mic-input module** (publishes audio to bus)
+- `worzel-connect` → becomes the **transport module** (bridges bus to server)
+- `worzel-status` → becomes part of the **shell chrome** (reads bus state)
+- `worzel-settings` → becomes part of the **shell chrome**
+- `WsClient` → moves inside the transport module, invisible to other modules
+
+No module imports another module. The shell wires them via bus topics at startup based on configuration and device capability.
+
+### Open Questions (Unresolved)
+
+These are noted here because they're real and we haven't figured them out yet:
+
+1. **Streams.** Audio is continuous data, not discrete events. How does audio flow on the bus? Probably: bus carries control messages (start/stop/level), actual PCM/Opus frames flow via a separate `MessagePort` or `ReadableStream` between the mic module and the transport module. The bus coordinates; the stream carries data. But the details need working out.
+
+2. **Auth.** Module trust tiers imply auth. Who decides what tier a module gets? The shell, based on module provenance (same-origin = tier 2, cross-origin = tier 3, built-in = tier 1). But auth for the worzel connection (OTA token, device ID) is a separate concern from module sandboxing. How these intersect is unclear.
+
+3. **State persistence.** If the user navigates away and comes back, which modules resume? The shell would need to serialize module registry state. Ink state serialisation already exists (`InkStateStore`). But minigame state, audio playback position, feed scroll position — all need thought.
+
+4. **Performance.** A bus with wildcard subscriptions and a supervisor intercepting every variable write could become a bottleneck during active minigame play (frequent syncs). Probably fine for the event rates we'll actually see, but worth measuring.
+
+5. **Module discovery and loading.** How does the shell know what modules are available? A manifest file per story? A registry endpoint on worzel? Dynamic import of web component bundles? This is the "app store" question and it's not trivial.
+
+---
+
 ## Operational Expectations
 
 Components and capabilities are documented above. This section defines what a working session must **survive** — the contract that tests, contributors, and AI agents should build against.
