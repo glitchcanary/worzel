@@ -248,8 +248,272 @@ Components and capabilities are documented above. This section defines what a wo
 
 ---
 
+## Finkapp and the Client-Middleware Lesson
+
+### What Finkapp Is Today
+
+Finkapp is a pure client-side interactive fiction player hosted as static files. It runs entirely in the browser with no server or middleware layer. Its modules — all attached to `window` — include:
+
+- **FinkInkEngine** — compiles raw Ink source in-browser via inkjs, processes tags (`IMAGE:`, `BG:`, `FINK:`, `MINIGAME:`, `FOLEY:`, `AUDIO:`, `speaker:`, `voice:`), manages story state and knot tracking
+- **FinkPlayer** — coordination layer: initialises modules, loads stories via HTTP fetch, handles bookmarks and restart
+- **FinkUI** — DOM rendering: narrative paragraphs, tappable choice cards, image/video display, stats bar
+- **FinkSandbox** — fetches external `.fink` files with duplicate-load detection
+- **FinkNavigation** — URL hash-based deep linking and knot-level navigation
+- **FinkBreadcrumb** — visual trail of visited knots and FINK file transitions
+- **FinkFoley** — synthesised sound effects via Web Audio API
+- **FinkAudio** — audio file playback for soundtrack and ambient audio
+- **FinkMinigames** — embedded games (chess, gems, gridluck) with a slider window for sizing/pausing
+- **FinkDevPanel** — developer tools with swimlane event logging, state inspection, log filtering
+
+Interaction is visual and tap-based. There is no voice input, no LLM classification, and no TTS. Stories are fetched as raw `.fink` (Ink source) files and compiled client-side. Tag processing — including `speaker:` and `voice:` tags that would drive TTS in a voice context — is handled entirely inside `FinkInkEngine.continueStory()`.
+
+### The Architectural Problem
+
+Finkapp is a monolith. The Ink engine, tag interpretation, navigation logic, media handling, and visual rendering are all fused into one browser application. This means:
+
+1. **No voice client can share the story engine.** Worzel's Fink reimplements Ink session management, tag parsing, and choice handling server-side because there's nothing to import from finkapp.
+2. **No accessible client can be built on top.** A screen-reader-friendly or voice-only interface would need to reimplement all of finkapp's story logic — or become another monolith.
+3. **ESP32 boards with displays can't participate.** A small colour TFT on an ESP32 is a legitimate rendering surface for interactive fiction, but it can't run a browser-based monolith. Without a middleware layer, it gets nothing.
+4. **Tag semantics are locked to one rendering mode.** `speaker:` and `voice:` tags are parsed but only used for visual display. `FOLEY:` tags trigger Web Audio synthesis. On a different surface these same tags should drive TTS voice selection, hardware audio playback, or character portraits on a small screen — but the interpretation is hardcoded.
+
+### The Worzel Lesson: Client-Middleware Separation
+
+Worzel already demonstrates the right pattern. Its architecture cleanly separates:
+
+- **Middleware** — InkSession, InkRouter (three-tier utterance classification), voice profile resolution, tag parsing, story state management, TTS pipeline, LLM-powered discussion and meta-query modes
+- **Clients** — browser web client, ESP32 hardware client, Twilio phone bridge — all connecting to the same middleware over the same WebSocket protocol
+
+The same story, the same `speaker:`/`voice:`/`mood:` tags, the same discussion mode, the same choice matching logic serves every client. A bug fix to InkRouter improves voice matching on the phone, the browser, and the ESP32 simultaneously.
+
+### What Finkapp Should Become
+
+Finkapp should adopt the same client-middleware split:
+
+**Story middleware** (shared, runs server-side or as a portable engine):
+- Ink compilation and session management
+- Tag parsing and semantic interpretation (`speaker:`, `voice:`, `mood:`, `IMAGE:`, `FOLEY:`, `MINIGAME:`, `AUDIO:`, `BG:`)
+- Navigation logic (FINK cross-story links, backstack, deep linking)
+- State management (bookmarks, inventory, story variables)
+- Choice presentation (what the choices are, not how they look)
+- InkRouter-style classification (for voice clients) and discussion/meta-query modes
+
+**Visual client** (the current finkapp, refactored):
+- DOM rendering of narrative text with animation
+- Image and video display
+- Tappable choice cards
+- Minigame embedding and slider window
+- Theme and CSS
+- Dev panel
+
+**Voice client** (worzel's Fink, connecting to shared middleware):
+- Voice input via ASR
+- InkRouter classification of utterances against choices
+- Multi-character TTS driven by `speaker:`/`voice:`/`mood:` tags
+- Discussion and meta-query modes for non-visual story exploration
+- Foley and audio playback via server-side or hardware audio
+
+**Hardware clients** (ESP32 variants):
+- Headless ESP32 with speaker — voice-only, same as voice client
+- ESP32 with colour TFT — renders narrative text, character portraits, choice list on small screen; voice or button input
+- ESP32 with e-ink — static story text and choices; button input
+
+### Accessibility Falls Out of the Architecture
+
+The point isn't to build a separate "accessible version." It's that once the story engine is middleware, accessibility is just another client surface:
+
+- **Blind users** get the voice client: multi-character TTS distinguishes speakers, discussion mode explains context, meta-query mode describes choices naturally. The `speaker:`/`voice:`/`mood:` tags aren't decorative — they're accessibility infrastructure.
+- **Low-vision users** get the visual client with standard screen reader support, because the client only handles rendering (which can be made ARIA-compliant) rather than also being the story engine.
+- **Users on constrained devices** get the ESP32 client that matches their hardware — colour display, e-ink, or audio-only.
+- **Phone users** get the same stories via the Twilio bridge.
+
+The tags in the Ink stories serve every surface: `speaker:` drives TTS voice selection on voice clients, character name display on visual clients, and portrait selection on ESP32 TFTs. `FOLEY:` drives Web Audio synthesis in the browser, hardware audio on ESP32, and server-side audio mixing on voice clients. One authored story, many rendering surfaces, no rewrites.
+
+The architecture makes "any human, any device, same stories" possible. A monolith makes it impossible.
+
+### The Counter-Argument: Edge-First and the Web Platform
+
+The previous section overstates the case for server-side middleware. Worzel has its own problems: it requires a costly central server running Node.js, WebSocket infrastructure, LLM API keys, and TTS services. Every concurrent session burns compute. Finkapp, by contrast, runs on a CDN for pennies — the entire story engine executes in the user's browser with zero server cost.
+
+**The web platform is catching up.** Browser-native capabilities increasingly cover what worzel does server-side:
+
+- **Web Speech API** provides ASR and TTS directly in the browser — no server roundtrip, no API keys, no per-minute billing. Voice quality is improving rapidly.
+- **WebLLM / on-device models** can run small language models client-side for utterance classification, discussion mode, and meta-queries. The InkRouter's three-tier classification doesn't inherently require a server.
+- **Web Audio API** already powers finkapp's foley system with zero latency. Server-side audio mixing adds latency for no gain on capable devices.
+
+**The `ooOO` format is designed for the edge.** FINK's `ooOO\`...\`` tagged template literal is a modernised JSONP: it wraps raw Ink source in executable JavaScript that can be served from any static host, loaded cross-origin, and executed in a sandboxed V8 context (32MB memory, 5-second timeout). No server compilation step, no API endpoint — just a `.fink.js` file on a CDN. This is a deliberate architectural choice that favours distribution over centralisation.
+
+The honest position: **the middleware doesn't have to be a server.** It could be a shared JavaScript module — an importable story engine that runs in the browser for visual clients, on Node.js for voice clients that need server-side TTS, and compiled to WASM for ESP32. The separation is between "story logic" and "rendering surface," not between "server" and "client."
+
+### The Real Unsolved Problem: Temporal Coordination
+
+The deeper architectural gap — felt in both worzel and finkapp — is the absence of a shared temporal model. Interactive fiction with embedded media is fundamentally a timing problem, and neither system has a principled answer.
+
+**Where timing matters today:**
+
+In finkapp, timing is managed through scattered `setTimeout` calls with hardcoded delays:
+- Text paragraphs stagger at 150ms intervals (`fink-ink-engine.js`)
+- Minigame launch waits 800ms after tag processing
+- Window state transitions animate over 350ms CSS durations
+- Narrative resumption after minigame completion delays 100ms for DOM settlement
+
+In worzel, timing is equally ad hoc:
+- Audio packets pace at 60ms intervals after an initial 5-packet burst (`audio-rate-controller.ts`)
+- Story loading delays 100ms before fetch
+- Interrupt handling (user speaks while TTS is playing) aborts via `AbortController` but has no model of "what was the user interrupting" or "how far through the current segment were we"
+
+**Where timing will break:**
+
+The hallmark-parody story in `hampstead.fink.js` already demonstrates the problem: a `# VIDEO:` tag embeds an MP4 clip mid-narrative. The video has its own duration. The narrative has text that should appear after the video. But there's no coordination — the story engine doesn't know when the video ends, doesn't pause narrative flow during playback, and can't synchronise foley or audio cues to video timestamps.
+
+As stories get richer, this gets worse:
+- A character speaks while a background video plays — the `speaker:` TTS and the video audio need mixing, or the video needs to pause during speech
+- A minigame runs in "mini-live" mode (the slider's embedded state) while narrative continues — two temporal streams running simultaneously, each potentially generating audio and visual events
+- A foley cue (`# FOLEY: thunder`) should coincide with a specific moment in a video or animation, not just fire-and-forget at tag-processing time
+- An interrupt (user taps a choice, or speaks over TTS) needs to know what's currently playing to decide what to cancel, what to fade, and what to keep
+
+**What a temporal model needs:**
+
+The system needs a lightweight scheduler that tracks concurrent media streams and their relationships:
+
+1. **Streams** — each active medium (narrative text animation, TTS playback, video, minigame, foley, background audio) is a named stream with a known or estimated duration
+2. **Sequencing** — `after(stream)`, `with(stream)`, `at(stream, timestamp)` — declarative relationships between streams, not hardcoded `setTimeout` values
+3. **Interrupts** — when the user acts (taps choice, speaks, presses button), the model knows which streams are active, can cancel/fade/pause them by policy, and can record the interrupt point for resumption or logging
+4. **Surface-independence** — the temporal model describes *what happens when*, not *how it renders*. A visual client animates text over 150ms; a voice client speaks it over 2 seconds; an e-ink client displays it instantly. The model accommodates all three without surface-specific timing constants
+
+This isn't a rendering framework or a media player. It's a coordination layer that sits between the story engine (which produces events with temporal semantics) and the client surface (which renders them with surface-specific timing). It's the piece that both worzel and finkapp are missing.
+
+### Minigames Are Not Black Boxes
+
+The finkapp minigame integration reveals a related architectural tension. Minigames communicate with the story engine via a well-defined postMessage protocol:
+
+- **Story → Minigame:** launch with parameters (`# MINIGAME: mudslider mode=cave controls=dpad`), pause/resume signals
+- **Minigame → Story:** completion events with result payloads (`{ success, score, variables }`), which update Ink story variables (diamonds, chess_won) and trigger narrative continuation
+
+This protocol is good — it's the right pattern for decoupling. But it treats minigames as opaque: the story engine doesn't know what's happening *inside* the minigame. It can't:
+
+- Synchronise narrative events with minigame state (e.g., a character comments when the player reaches a certain score)
+- Coordinate audio between the minigame's own sound and the story's foley/audio layers
+- Present minigame progress to non-visual clients (a voice client can't describe a gems board it can't see)
+
+The slider window design (full / embed / mini-live / mini-paused) acknowledges this tension — it gives the user control over how much screen space the minigame occupies relative to the narrative. But it's a visual solution to what is partly a temporal and informational problem.
+
+For multi-surface support, minigames need to expose a richer event stream: state summaries that a voice client can narrate, audio channel declarations that a mixer can balance, and timing signals that the temporal model can coordinate with narrative flow. The postMessage protocol is the right transport — it just needs a richer vocabulary.
+
+---
+
+## Xiaozhi Protocol Compatibility
+
+### Background
+
+[Xiaozhi](https://github.com/78/xiaozhi-esp32) (小智) is an open-source ESP32 voice assistant platform with a large Chinese developer community (44k+ GitHub stars). It defines a WebSocket protocol for ESP32 ↔ server communication that has become a de facto standard for ESP32 voice hardware. The official console is at [xiaozhi.me](https://xiaozhi.me); developer docs at [xiaozhi.dev](https://xiaozhi.dev/en/docs/).
+
+Worzel's WebSocket protocol is already substantially compatible with Xiaozhi's. This is architecturally significant: it means Xiaozhi-compatible ESP32 hardware — dozens of board designs, cases, and accessories from the Chinese maker ecosystem — can potentially connect to a worzel server with minimal adaptation.
+
+### Protocol Comparison
+
+**Identical or directly compatible:**
+
+| Message | Xiaozhi | Worzel | Notes |
+|---------|---------|--------|-------|
+| Handshake | `{type: "hello", version: 1, transport: "websocket", audio_params: {format: "opus", sample_rate: 16000, channels: 1, frame_duration: 60}}` | Same structure, same fields | Feature negotiation differs slightly (`features: {mcp: true}` vs `features: ["tts", "stt"]`) |
+| Binary audio | Raw Opus frames, 16kHz mono, 60ms | Raw Opus frames, 16kHz mono, 60ms | **Identical wire format** (Xiaozhi v1) |
+| Listen control | `{type: "listen", state: "start"/"stop"/"detect", mode: "auto"/"manual"/"realtime"}` | Same structure, same states | **Identical** |
+| ASR result | `{type: "stt", text: "..."}` | `{type: "stt", text: "..."}` | **Identical** |
+| TTS lifecycle | `{type: "tts", state: "start"/"stop"/"sentence_start"}` | Same, plus `"sentence_end"` | Worzel superset; Xiaozhi clients ignore unknown states |
+| Abort | `{type: "abort", reason: "..."}` | `{type: "abort", reason: "..."}` | **Identical** |
+| MCP/IoT | `{type: "mcp", payload: {jsonrpc: "2.0", method, params, id}}` | `{type: "mcp", method, id, params}` — also `{type: "iot", descriptors}` | Same intent, envelope differs |
+
+**Xiaozhi-only messages:**
+
+| Message | Purpose | Worzel equivalent |
+|---------|---------|-------------------|
+| `{type: "llm", emotion: "happy"}` | Drive facial expression on device display | None — worzel uses `mood:` Ink tags, but doesn't send emotion to device |
+| `{type: "system", command: "reboot"}` | Remote device management | None |
+| Protocol v2/v3 binary framing | Structured binary wrapper with timestamps | Worzel uses raw Opus (equivalent to Xiaozhi v1) |
+
+**Worzel-only messages:**
+
+| Message | Purpose | Xiaozhi equivalent |
+|---------|---------|-------------------|
+| `{type: "goodbye", reason}` | Graceful disconnect | Not documented; connection just closes |
+| `{type: "error", code, message}` | Structured error reporting | Not documented |
+| `{type: "input_ignored", reason}` | Explain why input was skipped (empty ASR, low audio) | Not documented |
+| `{type: "tts", state: "sentence_end"}` | Mark end of sentence audio segment | Not present; only `sentence_start` and `stop` |
+| `ping`/`pong` | Application-level keepalive | Uses WebSocket-level ping/pong or server timeout |
+
+**Authentication differs but is bridgeable:**
+
+| | Xiaozhi | Worzel |
+|--|---------|--------|
+| **Step 1** | Device calls OTA endpoint with MAC address | Client calls `POST /api/ota` with `device_id` |
+| **Step 2** | Bearer token in `Authorization` header; `Device-Id` and `Client-Id` in headers | JWT in URL query parameter `?token=...` |
+| **Binding** | 6-digit activation code flow via xiaozhi.me console | Direct token issuance |
+
+### Server Architecture Comparison
+
+Both systems follow the same pipeline pattern but diverge in orchestration:
+
+```
+Xiaozhi:  Device → WebSocket → VAD → ASR → Intent → LLM → TTS → Device
+Worzel:   Device → WebSocket →       ASR → InkRouter/LLM → TTS → Device
+```
+
+Key differences:
+
+| Aspect | Xiaozhi | Worzel |
+|--------|---------|--------|
+| **VAD** | Server-side SileroVAD before ASR | Client-side (listen start/stop signals) |
+| **Intent** | Dedicated intent classifier between ASR and LLM | InkRouter's three-tier classification (exact/fuzzy/LLM) integrated with Ink story state |
+| **Story engine** | None — general-purpose chatbot | InkSession manages narrative state, knots, choices, cross-story navigation |
+| **Speaker ID** | 3D-Speaker voiceprint recognition | None |
+| **Memory** | Short-term + mem0ai cloud | Ink story variables + session state |
+| **TTS providers** | 10+ Chinese providers (Volcano, iFlytek, CosyVoice, etc.) | Google Cloud TTS, with voice profile system |
+| **ASR providers** | FunASR, SherpaASR, Alibaba/Tencent/Baidu cloud | Google Cloud Speech-to-Text |
+| **LLM** | Qwen, DeepSeek, ChatGLM, Gemini, Ollama | Claude, with discussion and meta-query modes |
+| **Deployment** | Python server + Java management API + Vue UI | Node.js/TypeScript monolith |
+
+### What Compatibility Means in Practice
+
+**A Xiaozhi ESP32 board connecting to worzel would need:**
+
+1. **Auth adaptation** — either worzel accepts Xiaozhi-style `Authorization` headers, or the ESP32 firmware is configured to pass the token as a URL parameter. This is a thin translation layer.
+
+2. **Feature negotiation** — worzel's hello response should advertise capabilities the Xiaozhi firmware understands. The `features` field format differs (`{mcp: true}` vs `["mcp"]`) but the semantics overlap.
+
+3. **Emotion/expression mapping** — Xiaozhi devices with displays expect `{type: "llm", emotion: "happy"}` messages to show facial expressions. Worzel could map its `mood:` Ink tags to these emotion messages, giving ESP32 displays character-appropriate expressions driven by the story.
+
+4. **No VAD change needed** — Xiaozhi firmware already sends `listen` start/stop, which is what worzel expects. Server-side VAD is optional in both systems.
+
+**What worzel gains:**
+
+- Access to 70+ ESP32 board configurations from the Xiaozhi ecosystem
+- Hardware designs with displays (round LCDs, TFTs), speakers, microphones, and cases already manufactured and available
+- A large community of firmware developers familiar with the protocol
+- The `{type: "llm", emotion}` message as a channel for driving device displays from Ink `mood:` tags — character expressions on hardware screens
+
+**What the Xiaozhi ecosystem gains:**
+
+- Interactive fiction as a use case beyond general-purpose chatbot
+- Multi-character voice with `speaker:`/`voice:` tag-driven TTS profiles
+- Narrative state management (save/restore, bookmarks, cross-story navigation)
+- InkRouter's structured choice matching instead of free-form LLM chat
+
+### Compatibility Roadmap
+
+1. **Immediate (no protocol changes):** A Xiaozhi ESP32 board can connect to worzel today if auth is adapted. The hello/listen/stt/tts/abort lifecycle and Opus audio framing already match. The board won't show emotions or use MCP, but voice interaction works.
+
+2. **Short-term:** Add `{type: "llm", emotion}` output to worzel, mapped from Ink `mood:` tags. This lights up Xiaozhi displays with story-driven expressions. Accept Xiaozhi-style auth headers alongside URL-param tokens.
+
+3. **Medium-term:** Align MCP message envelopes. Xiaozhi wraps JSON-RPC in `{type: "mcp", payload: {...}}` while worzel flattens it to `{type: "mcp", method, params, id}`. Either adopt Xiaozhi's envelope (it's cleaner) or support both.
+
+4. **Longer-term:** Explore Xiaozhi's MQTT+UDP transport as an alternative for constrained networks. MQTT for control plane, UDP for audio — this matters for cellular-connected ESP32 boards (ML307 4G) where WebSocket overhead is significant.
+
+---
+
 ## Next Steps
 
 1. Turn the "what exists" section into a typed internal schema and interface spec. The current TypeScript types (Session, DialogueEntry, AudioParams, NarrationSegment, InkChoice) are adequate for today but won't support scenes, multi-participant, or media without extension.
 2. Extract shared audio module from duplicated web client code.
 3. Add session-level integration tests that simulate multi-turn Fink sessions with ASR-realistic input.
+4. Prototype Xiaozhi ESP32 board connecting to worzel — validate auth bridging and confirm the hello/listen/tts lifecycle works end-to-end with real hardware.
+5. Map Ink `mood:` tags to Xiaozhi `{type: "llm", emotion}` messages for display-equipped ESP32 boards.

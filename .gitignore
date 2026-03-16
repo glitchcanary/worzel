@@ -13,3 +13,7 @@ managed_components/
 opus-staged/
 esp32-client/CMakeLists.txt
 esp32-client/simulator/build/
+
+# third_party binary artifacts (download via scripts/fetch-third-party.sh)
+third_party/**/*.onnx
+third_party/libopus/src/
