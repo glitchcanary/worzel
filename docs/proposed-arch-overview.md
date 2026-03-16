@@ -439,6 +439,82 @@ The answer: multiplayer moments are explicitly opt-in, bounded in duration, and 
 
 ---
 
+## Accessible Alt Paths: Widgets as Variable Suppliers
+
+### What We Actually Have
+
+The current finkosphere content tells this story concretely. Two diamond mine Ink files are linked to each other, and both are cutely tied to a Hampstead story — revisiting locations with new themes revealed through shared variables. Hampstead has no immersives currently except one easter egg video clip. The diamond mines have two trivial immersives — essentially the same widget with different configurations — whose impact on the finkosphere is basically supplying you with variables.
+
+> "We therefore need a way for authors and storytelling users of these widgets to easily rely on accessible alt paths that render through the game's core UX — choices and text. So a starter kit of logic puzzles, dice rolls, quizzes — toki pona, morse, knowledge of topics — should be available alongside the delivery engine and fink format. Would do the job here. Storytelling in this world involves a lot of letting go."
+> — danbri
+
+This is the decorator principle from the temporal tiers made practical. If a widget's net effect on the story is *setting some variables* — you found 3 diamonds, you passed the logic gate, you learned the morse phrase — then the accessible fallback is anything that sets those same variables through choices and text. The widget is a *flavour* of the interaction, not the interaction itself.
+
+### The Letting Go Principle
+
+Authors must write stories that work without their immersives. This is not a limitation — it is the medium. A radio play works without the listener seeing the actors. A novel works without illustrations. A fink story works without its gaussian splats, minigames, and spatial audio. These enrich; they do not carry.
+
+This means every widget must declare its **variable contract**: what it writes back to the story. A gem-matching minigame writes `gems_collected: int` and `puzzle_solved: bool`. That's it. Everything else — the animations, the scoring, the spatial audio — is Tier 1 decoration. The Tier 0 story only sees the variables.
+
+### Starter Kit: Core Fallback Interactions
+
+A library of text-and-choice-based fallback interactions that any fink story can use in place of (or alongside) immersive widgets:
+
+| Fallback type | How it works in choices and text | Variables it supplies |
+|---------------|----------------------------------|---------------------|
+| **Logic puzzle** | Present a riddle or sequence puzzle as narrated text. Choices are candidate answers. Wrong answers loop with hints. | `solved: bool`, `attempts: int` |
+| **Dice roll** | "You reach into the dark. Let's see what luck brings." Choice: "Roll the dice." System generates outcome, narrates result. | `roll: int`, `outcome: string` |
+| **Quiz (knowledge)** | Narrator asks a question about a topic. Choices are multiple-choice answers. Can draw from tagged question banks. | `correct: bool`, `score: int` |
+| **Quiz (toki pona)** | "The inscription reads: *telo li pona*. What does it mean?" Choices translate. Teaches through play. | `understood: bool`, `words_learned: int` |
+| **Quiz (morse)** | "The signal flashes: ·· ·—· ·—·· ·—·· ··· You tap out a reply." Choice selects the decoded word. | `decoded: bool`, `message: string` |
+| **Timed choice** | A standard Ink choice point with `# timer:Ns:default`. No widget needed — the timer is in the protocol. | `chose_in_time: bool`, `choice_index: int` |
+| **Accumulator** | "You search the cave." Multiple sticky choices let you pick up items one by one, then "Done." | `items: string[]`, `count: int` |
+
+These are not lesser experiences. A well-written quiz about the history of Hampstead Heath, delivered through voice with characterful narration, can be more engaging than a flashy but shallow drag-and-drop widget. The text-and-choice path is the *primary* path. The widget is the optional upgrade.
+
+### Authoring Contract
+
+For a fink story to use this pattern:
+
+```ink
+// The widget path (when available)
+{ widget_available("gem-cave") }:
+  # WIDGET:gem-cave config:easy
+  // Widget runs, sets gems_collected and puzzle_solved
+  // Story resumes when widget publishes result
+
+// The fallback path (always available)
+{ not widget_available("gem-cave") }:
+  -> gem_cave_text_version
+
+=== gem_cave_text_version ===
+The cave glitters with embedded crystals.
+You'll need to work out which ones are real diamonds.
+
++ [Test the clear crystal] # voice_hint:clear, transparent
+  It scratches glass. That's a diamond.
+  ~ gems_collected = gems_collected + 1
+  -> gem_cave_text_version
+
++ [Test the cloudy stone] # voice_hint:cloudy, dull
+  ite crumbles. Just quartz.
+  -> gem_cave_text_version
+
++ [You've collected enough] # voice_hint:done, enough, finished
+  ~ puzzle_solved = (gems_collected >= 3)
+  -> gem_cave_done
+```
+
+Both paths write the same variables. Both paths are complete experiences. The widget path is richer for clients that support it. The text path works everywhere — ESP32, phone, screen reader, Twilio, plain terminal.
+
+### Delivery
+
+The starter kit fallbacks ship as part of the fink format tooling, not as individual story assets. An author tags a widget point in their story; the tooling generates the fallback scaffolding (or the author writes their own). The delivery engine checks client capability at runtime and routes to the appropriate path. The story's variable contract is satisfied either way.
+
+This is what "storytelling in this world involves a lot of letting go" means in practice: let go of assuming your audience has a screen, a GPU, spatial audio, or even sight. Write for the variables. Let the surfaces handle the rest.
+
+---
+
 ## Operational Expectations
 
 Components and capabilities are documented above. This section defines what a working session must **survive** — the contract that tests, contributors, and AI agents should build against.
