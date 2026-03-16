@@ -525,6 +525,359 @@ This is one reading of what "storytelling in this world involves a lot of lettin
 
 ---
 
+## The Fink Shell: UI as Module Container
+
+> "Can we imagine the current finkapp HTML UI rebuilt as a container/event bus for these interacting modules? Each module will be a web component, probably heavily sandboxed with iframes. Sometimes the same WC might have multiple instantiations, for example images. Most of it might have a social web timeline feed look. There may be display widgets to hook into, something like a currently active apps list, and so on. Each instantiated module might be running or not. But they only interact via the event bus. This means the framework can be split into thin client (ESP32) and middleware (worzel) later. We'll figure out how streams and auth fit in too."
+> — danbri
+
+This reframes the entire UI layer. The current worzel web-client (`<worzel-app>`) is a monolithic component tree: `worzel-app` owns `WsClient`, receives events, and calls methods directly on child components (`worzel-chat`, `worzel-audio`, etc.). The finkapp is similarly monolithic — `FinkInkEngine` drives `FinkUI` which drives DOM elements. In both cases, everything knows about everything else.
+
+The proposal: rebuild the UI as a **shell** — a container that manages module lifecycle, layout, and bus routing. The shell doesn't know what's inside the modules. The modules don't know about each other. They only know the bus.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        FINK SHELL                                   │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                      MODULE BAR                                │ │
+│  │  [ Ink: Manor ]  [ Gems: playing ]  [ Audio: ambient ]  ...  │ │
+│  │  running ●        running ●          running ●                │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌──────────────────────────────────────┬──────────────────────┐   │
+│  │          FEED / TIMELINE             │   ACTIVE MODULE      │   │
+│  │  ┌──────────────────────────────┐    │   ┌──────────────┐   │   │
+│  │  │ ░ narration segment          │    │   │              │   │   │
+│  │  │   "The manor stands..."      │    │   │  <iframe>    │   │   │
+│  │  └──────────────────────────────┘    │   │  gem-cave    │   │   │
+│  │  ┌──────────────────────────────┐    │   │  minigame    │   │   │
+│  │  │ ░ image: manor-entrance.jpg  │    │   │              │   │   │
+│  │  │   [rendered inline]          │    │   │              │   │   │
+│  │  └──────────────────────────────┘    │   │              │   │   │
+│  │  ┌──────────────────────────────┐    │   └──────────────┘   │   │
+│  │  │ ░ user choice                │    │                      │   │
+│  │  │   "I'll explore the cave"    │    │   ┌──────────────┐   │   │
+│  │  └──────────────────────────────┘    │   │ gems: 3      │   │   │
+│  │  ┌──────────────────────────────┐    │   │ best: 7      │   │   │
+│  │  │ ░ narration segment          │    │   │ ──────────── │   │   │
+│  │  │   "Crystals line the walls"  │    │   │ sync/vars:   │   │   │
+│  │  └──────────────────────────────┘    │   │ diamonds: 3  │   │   │
+│  │  ┌──────────────────────────────┐    │   └──────────────┘   │   │
+│  │  │ ░ choices                    │    │     module status     │   │
+│  │  │   [A] Dig deeper             │    │                      │   │
+│  │  │   [B] Return to manor        │    │                      │   │
+│  │  └──────────────────────────────┘    │                      │   │
+│  └──────────────────────────────────────┴──────────────────────┘   │
+│                                                                     │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                    BACKGROUND MODULES                          │ │
+│  │  🔊 ambient-garden (playing, ducked)   🎤 mic (recording)     │ │
+│  │  📡 worzel-ws (connected)              🔔 notifications (2)   │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ═══════════════════  EVENT BUS  ════════════════════════════════   │
+│    topic://module/ink/content     topic://module/gems/sync          │
+│    topic://module/ink/choices     topic://sync/variables             │
+│    topic://module/audio/state    topic://shell/focus                 │
+│    topic://module/mic/audio      topic://shell/layout               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### The Shell's Responsibilities
+
+The shell is a window manager for modules. It handles:
+
+```
+┌──────────────┐
+│              │   1. MODULE LIFECYCLE
+│    SHELL     │      register, instantiate, start, suspend, destroy
+│              │      (same WC type can have multiple instances)
+│   manages:   │
+│              │   2. LAYOUT / FOCUS
+│   modules    │      which module has the main panel
+│   layout     │      feed vs. split vs. fullscreen vs. mini
+│   bus        │      module bar shows what's running
+│   sandbox    │
+│              │   3. BUS ROUTING
+│              │      in-process MessageChannel or BroadcastChannel
+│              │      iframe ↔ shell via postMessage, bridged to bus
+│              │      every message has a topic, source, timestamp
+│              │
+│              │   4. SANDBOXING
+│              │      iframes with sandbox="allow-scripts"
+│              │      CSP headers per module trust tier
+│              │      no direct DOM access between modules
+│              │
+└──────────────┘
+```
+
+The shell does NOT:
+- Know what Ink is
+- Parse story content
+- Render narration (that's the feed module's job)
+- Mix audio (that's the audio module's job)
+- Handle voice (that's the mic/ASR module's job)
+
+### Modules as Web Components
+
+Every module is a web component with the same lifecycle interface:
+
+```
+┌──────────────────────────────────────────────────────┐
+│ <fink-module> interface                               │
+│                                                       │
+│  Attributes:                                          │
+│    module-id="ink-manor"                              │
+│    module-type="ink"                                  │
+│    state="running|suspended|stopped"                  │
+│                                                       │
+│  Lifecycle:                                           │
+│    connectedCallback()  → register with shell bus     │
+│    start()              → begin publishing events     │
+│    suspend()            → pause, retain state         │
+│    resume()             → continue from suspended     │
+│    destroy()            → clean up, unsubscribe       │
+│                                                       │
+│  Bus (only interface to outside world):               │
+│    this.publish(topic, data)                          │
+│    this.subscribe(topic, handler)                     │
+│    this.unsubscribe(topic)                            │
+│                                                       │
+│  No other API. No parent references. No sibling       │
+│  queries. No shared globals. Just the bus.            │
+└──────────────────────────────────────────────────────┘
+```
+
+Some modules are lightweight web components (narration feed, image display, choice cards). Some are sandboxed iframes (minigames, third-party widgets). The shell bridges both to the same bus.
+
+### Module Types (Initial Set)
+
+```
+MODULE TYPE          INSTANCES    SANDBOXED?   VISIBLE?   NOTES
+─────────────────────────────────────────────────────────────────
+ink-engine           1 per story  no           no         headless, publishes content/choices
+feed                 1            no           yes        timeline of narration, images, choices
+choice-panel         1            no           yes        renders current choices, relays selection
+image-display        0..n         no           yes        inline images in feed, or fullscreen
+audio-ambient        0..n         no           no         background audio playback
+audio-foley          0..n         no           no         one-shot sound effects
+minigame             0..n         YES (iframe)  yes        sandboxed interactive widget
+splat-viewer         0..1         YES (iframe)  yes        3D gaussian splat scene
+video-player         0..1         no           yes        inline or overlay video
+mic-input            1            no           no         microphone capture, sends audio
+asr-bridge           1            no           no         speech-to-text (local or via worzel)
+tts-bridge           1            no           no         text-to-speech playback
+worzel-transport     0..1         no           no         WebSocket/MQTT link to server
+notification         1            no           yes        toasts, alerts, system messages
+```
+
+Note: `image-display` can have multiple instances — three images in a story means three `<fink-image>` elements in the feed timeline. Same web component, different data. This is normal for a social-feed-style layout.
+
+### The Feed as a Module
+
+The feed/timeline is itself a module. It subscribes to `module/*/content` and renders each content event as a card in a scrolling list — like a social media timeline but for story events:
+
+```
+FEED MODULE subscribes to:
+  module/ink/content        → narration cards
+  module/ink/choices        → choice card (interactive)
+  module/*/sync             → variable-change indicators (optional)
+  module/minigame/result    → "you scored 3 gems" summary card
+  shell/notification        → system messages
+
+FEED MODULE renders:
+  ┌─────────────────────────────┐
+  │ 📖 The manor stands at the  │  ← narration card
+  │    edge of the heath...     │
+  ├─────────────────────────────┤
+  │ 🖼 [manor-entrance.jpg]     │  ← image card (or <fink-image> WC)
+  ├─────────────────────────────┤
+  │ 👤 "I'll take the path"     │  ← user action card
+  ├─────────────────────────────┤
+  │ 📖 The path winds down      │  ← narration card
+  │    into a crystal cave...   │
+  ├─────────────────────────────┤
+  │ 💎 Gem cave: found 3        │  ← minigame result card
+  ├─────────────────────────────┤
+  │ ┌─────────┐ ┌─────────┐    │  ← choice card (interactive)
+  │ │ Dig     │ │ Return  │    │
+  │ │ deeper  │ │ to manor│    │
+  │ └─────────┘ └─────────┘    │
+  └─────────────────────────────┘
+```
+
+Each card type is itself a small web component (`<fink-narration-card>`, `<fink-choice-card>`, `<fink-image-card>`, etc.). The feed module just appends them to a scrolling container. Social web timeline, but for interactive fiction.
+
+### Bus Implementation (In-Process)
+
+For the browser, the bus is an in-process message router. No actual MQTT needed yet:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    FinkBus                           │
+│                                                      │
+│  Backing: MessageChannel / BroadcastChannel          │
+│  (or just a Map<topic, Set<handler>> for now)        │
+│                                                      │
+│  publish(topic, data, source)                        │
+│    → fan out to all subscribers of that topic         │
+│    → wildcard support: module/*/content               │
+│    → iframe modules: postMessage bridge               │
+│                                                      │
+│  subscribe(topic, handler)                           │
+│  unsubscribe(topic, handler)                         │
+│                                                      │
+│  Supervisor middleware:                               │
+│    → intercepts sync/variables                        │
+│    → validates trust tiers                            │
+│    → applies deltas, broadcasts canonical values      │
+│    → logs all events (optional, for debug/replay)     │
+│                                                      │
+│  Bridge to worzel (when connected):                  │
+│    → selected topics forward to WebSocket/MQTT        │
+│    → server-side modules appear as bus participants    │
+│    → thin client: ALL modules on server, bus bridges   │
+│                                                      │
+└─────────────────────────────────────────────────────┘
+```
+
+### The Thin Client Split
+
+> "This means the framework can be split into thin client (ESP32) and middleware (worzel) later."
+> — danbri
+
+This is the key architectural payoff. If modules only talk via the bus, then WHERE a module runs is a deployment decision, not an architectural one:
+
+```
+THICK CLIENT (browser, capable device):
+┌──────────────────────────────────┐
+│ SHELL + BUS (in-process)         │
+│  ├── ink-engine (local inkjs)    │
+│  ├── feed (local DOM)            │
+│  ├── minigame (local iframe)     │
+│  ├── audio (local Web Audio)     │
+│  ├── mic (local MediaStream)     │
+│  ├── asr (local Whisper or API)  │
+│  └── tts (local speechSynthesis) │
+└──────────────────────────────────┘
+  Everything runs locally.
+  No server needed for basic stories.
+
+THIN CLIENT (ESP32, minimal browser, phone widget):
+┌──────────────────┐          ┌──────────────────────┐
+│ SHELL + BUS      │  MQTT/   │ WORZEL (server)      │
+│  (on device)     │  WS      │  ├── ink-engine      │
+│  ├── audio-out   │◄════════►│  ├── asr             │
+│  ├── mic-in      │  bridge  │  ├── tts             │
+│  ├── led-display │          │  ├── minigame-proxy   │
+│  └── button-input│          │  └── supervisor       │
+└──────────────────┘          └──────────────────────┘
+  Only I/O modules run locally.
+  Everything else is on the server.
+  Same bus topics. Same message format.
+
+HYBRID (browser + server for heavy modules):
+┌──────────────────────────────────┐
+│ SHELL + BUS (in-process)         │
+│  ├── feed (local)                │
+│  ├── minigame (local iframe)     │
+│  ├── audio-out (local)           │
+│  ├── mic-in (local)              │
+│  │                               │
+│  ├── [bridge to worzel] ═══════════► ink-engine (server)
+│  │                               │    asr (server, better model)
+│  │                               │    tts (server, ElevenLabs)
+│  └───────────────────────────────│
+└──────────────────────────────────┘
+  I/O and rendering local.
+  Intelligence on server.
+  Modules don't know or care.
+```
+
+The bus bridge is the seam. Any topic can be local or remote. The shell decides based on device capability what runs where.
+
+### Module Instantiation and the App List
+
+The shell tracks all module instances in a registry:
+
+```
+┌─────────────────────────────────────────────────┐
+│ MODULE REGISTRY (shell-managed)                  │
+│                                                   │
+│ ID               TYPE           STATE    VISIBLE  │
+│ ──────────────── ────────────── ──────── ──────── │
+│ ink-manor        ink-engine     running  no       │
+│ ink-diamond-1    ink-engine     suspend  no       │
+│ feed-main        feed           running  yes      │
+│ gems-cave-1      minigame       running  yes      │
+│ ambient-garden   audio-ambient  running  no       │
+│ img-manor-01     image-display  running  yes      │
+│ img-manor-02     image-display  running  yes      │
+│ img-cave-01      image-display  stopped  no       │
+│ mic-0            mic-input      running  no       │
+│ worzel-link      transport      running  no       │
+│                                                   │
+│ Rendered in module bar as:                        │
+│ [Manor ●] [Diamond Mine ◐] [Gems ●] [🔊 ●]      │
+└─────────────────────────────────────────────────┘
+```
+
+Multiple instances of the same type (two `ink-engine` instances for linked stories, three `image-display` instances for different images) are normal. The module bar gives the user an OS-taskbar-like view of what's running. Clicking one could foreground it, show its status, or allow suspending it.
+
+### Sandbox Model
+
+Trust tiers determine sandboxing:
+
+```
+TIER 1 — CORE (no sandbox, full bus access):
+  ink-engine, feed, choice-panel, audio-*, mic-*, transport
+  These are part of the platform. They run as regular web components
+  in the shell's shadow DOM.
+
+TIER 2 — TRUSTED (iframe, same-origin, limited bus topics):
+  First-party minigames, splat viewer, known widgets.
+  Run in <iframe sandbox="allow-scripts allow-same-origin">
+  Bus access via postMessage bridge. Can publish to module/{self}/*
+  and subscribe to sync/variables. Cannot access other modules' topics.
+
+TIER 3 — UNTRUSTED (iframe, cross-origin, minimal bus access):
+  Third-party widgets, user-contributed games.
+  Run in <iframe sandbox="allow-scripts"> (NO same-origin).
+  Severely limited bus access: can only publish module/{self}/result
+  and receive module/{self}/control. All variable writes go through
+  supervisor validation.
+```
+
+### What This Means for the Existing Code
+
+The current `<worzel-app>` component tree would dissolve. Instead:
+
+- `worzel-chat` → becomes the **feed module** (subscribes to content, renders timeline)
+- `worzel-audio` → becomes the **mic-input module** (publishes audio to bus)
+- `worzel-connect` → becomes the **transport module** (bridges bus to server)
+- `worzel-status` → becomes part of the **shell chrome** (reads bus state)
+- `worzel-settings` → becomes part of the **shell chrome**
+- `WsClient` → moves inside the transport module, invisible to other modules
+
+No module imports another module. The shell wires them via bus topics at startup based on configuration and device capability.
+
+### Open Questions (Unresolved)
+
+These are noted here because they're real and we haven't figured them out yet:
+
+1. **Streams.** Audio is continuous data, not discrete events. How does audio flow on the bus? Probably: bus carries control messages (start/stop/level), actual PCM/Opus frames flow via a separate `MessagePort` or `ReadableStream` between the mic module and the transport module. The bus coordinates; the stream carries data. But the details need working out.
+
+2. **Auth.** Module trust tiers imply auth. Who decides what tier a module gets? The shell, based on module provenance (same-origin = tier 2, cross-origin = tier 3, built-in = tier 1). But auth for the worzel connection (OTA token, device ID) is a separate concern from module sandboxing. How these intersect is unclear.
+
+3. **State persistence.** If the user navigates away and comes back, which modules resume? The shell would need to serialize module registry state. Ink state serialisation already exists (`InkStateStore`). But minigame state, audio playback position, feed scroll position — all need thought.
+
+4. **Performance.** A bus with wildcard subscriptions and a supervisor intercepting every variable write could become a bottleneck during active minigame play (frequent syncs). Probably fine for the event rates we'll actually see, but worth measuring.
+
+5. **Module discovery and loading.** How does the shell know what modules are available? A manifest file per story? A registry endpoint on worzel? Dynamic import of web component bundles? This is the "app store" question and it's not trivial.
+
+---
+
 ## Operational Expectations
 
 Components and capabilities are documented above. This section defines what a working session must **survive** — the contract that tests, contributors, and AI agents should build against.
