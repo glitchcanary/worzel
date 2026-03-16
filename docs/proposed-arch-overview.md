@@ -219,6 +219,226 @@ The provider registry already supports local models (Ollama) alongside cloud pro
 
 ---
 
+## Event Bus Architecture: MQTT-ifying the Ink Engine
+
+### The Minimal API Insight
+
+> "The external API for a simple web ink player is basically pulling a chunk of content versus presenting a choice to the user and relaying. While Ink has much more to it, something like this seems the essence of Ink's minimal engine's interaction with its immediate implementation environment, right? Plus other engines and variable sync events. Can we MQTT-ify it into being event bus based?"
+> — danbri
+
+This observation cuts to the heart of it. The entire inkjs API surface used across both worzel and finkapp reduces to six calls:
+
+```
+canContinue        → bool
+Continue()         → string (+ side-effect: currentTags)
+currentChoices     → Choice[]
+ChooseChoiceIndex  → void
+variablesState[]   → get/set
+state.ToJson/LoadJson → serialize/restore
+```
+
+Everything else — tags, voices, routing, prompts — is built on top of those six calls. The core loop is:
+
+```
+while canContinue → emit content chunks
+when !canContinue && choices → present choices, wait
+when choice received → ChooseChoiceIndex, loop
+when !canContinue && !choices → story ended
+```
+
+MQTT-ified, this becomes topic-based messages on the bus:
+
+```
+# Engine → Bus (outbound)
+module/{id}/content     { text, speaker, tags, environment, spatial }
+module/{id}/choices     { choices: [{index, text, tags}], awaiting: true }
+module/{id}/state       { variables: {delta}, turnCount, ended }
+module/{id}/lifecycle   { status: "ready|suspended|ended" }
+
+# Bus → Engine (inbound)
+module/{id}/choose      { index: 2 }
+module/{id}/set_var     { name: "diamonds", value: 15, source: "minigame/gem-cave" }
+module/{id}/control     { action: "save|restore|suspend|resume" }
+
+# Cross-module (supervisor-mediated)
+sync/variables          { source: "ink/manor", deltas: {diamonds: +3} }
+sync/spatial            { source: "ink/manor", scene: {facing, sources, environment} }
+sync/focus              { active: "ink/manor", previous: "game/gem-cave" }
+```
+
+Every module — ink, minigame, inventory, ambient audio — speaks the same topic structure. The ink-specific internals (`Continue()`, `ChooseChoiceIndex`) are *inside* the module, invisible to the bus. From outside, ink is just a thing that emits content, presents choices, and accepts selections. Same as a dialogue tree. Same as a quiz widget. Same as a vibe-coded choose-your-own-adventure that doesn't use Ink at all.
+
+### The Ink Module Adapter
+
+The bus-facing surface of the ink module is tiny:
+
+```typescript
+class InkModule implements ModuleBusAdapter {
+  private story: Story          // inkjs internals, hidden
+  private session: InkSession   // tags, voices, hidden
+
+  handleChoose(msg) {
+    this.session.choose(msg.index)     // ChooseChoiceIndex inside
+    this.drainContent()                 // while canContinue, publish chunks
+  }
+
+  drainContent() {
+    while (this.story.canContinue) {
+      const text = this.story.Continue()
+      const tags = parseTags(this.story.currentTags)
+      this.publish(`module/${this.id}/content`, { text, ...tags })
+    }
+    if (this.story.currentChoices.length > 0) {
+      this.publish(`module/${this.id}/choices`, { choices: ... })
+    } else {
+      this.publish(`module/${this.id}/lifecycle`, { status: "ended" })
+    }
+  }
+}
+```
+
+A minigame module has the same shape — it just publishes `content` (frame updates, score) and `choices` (player actions) differently inside. The bus doesn't care.
+
+### Variable Sync on the Bus
+
+The delta-tracking approach generalises cleanly to cross-module variable synchronisation:
+
+```
+1. Ink module sets diamonds = 18
+2. Publishes: sync/variables { source: "ink/manor", deltas: {diamonds: +3} }
+3. Supervisor receives, checks trust tier (can ink/manor write diamonds? yes)
+4. Supervisor publishes: sync/variables { source: "supervisor", diamonds: 18 }
+5. Minigame module receives, updates its local view
+6. Minigame awards 2 gems
+7. Publishes: sync/variables { source: "game/gems", deltas: {diamonds: +2} }
+8. Supervisor receives, checks trust tier, applies delta (18+2=20)
+9. Publishes updated canonical value to all subscribers
+```
+
+The supervisor is the **only** authority on the merged variable state. Modules propose deltas. The supervisor applies or rejects based on trust tier, then broadcasts the canonical value.
+
+### What This Buys
+
+- **Ink engine becomes replaceable.** Swap inkjs for a Twine runtime, a Yarn Spinner runtime, or a pure LLM conversation — same bus interface.
+- **Minigames don't need special iframe `postMessage` protocols** — they are bus modules with the same topic structure.
+- **The voice pipeline** (ASR → classify → TTS) subscribes to `module/*/content` and `module/*/choices` — it doesn't need to know it's Ink underneath.
+- **Spatial audio mixer** subscribes to `sync/spatial` — doesn't care who emitted the scene descriptor.
+- **ESP32 clients** subscribe to the same topics but ignore spatial. WebXR subscribes and renders fully. Device capability just determines which subscriptions matter.
+
+### What It Costs
+
+Indirection. Right now `ink-pipeline.ts` calls `inkSession.choose()` directly and reads the result. With the bus, it publishes a `choose` message and waits for `content` messages to arrive. That's an async boundary where there wasn't one before. For a single-process server this is overhead with no benefit — you're just routing messages to yourself. It only pays off when modules actually run in different contexts (client vs server, iframe vs main thread).
+
+**The pragmatic approach:** don't build a real MQTT broker for this. Build the topic/message contract as a TypeScript interface. Implement it as direct function calls in-process for now. Swap in actual pub/sub transport later if and when modules genuinely run across boundaries. The abstraction is the value, not the infrastructure.
+
+---
+
+## Temporal Tiers: Story Time, Session Time, Wall Time
+
+### The Problem
+
+> "We have to watch that we don't crappily try to mutate Ink into a real-time game. It is about story. And yet we are allowing the story to intersperse with potentially intensely real-time episodes and media items — gaussian splats, videos, minigames, music, moody audio, songs and foley and 3D audio and so on."
+> — danbri
+
+> "These immersives must stay somehow optional and icing on the cake, since many environments won't allow them all, including accessibility concerns too. So if a Quest WebXR headset has direction of view, it only ought to be exploited when, for example, a 3D splat scene showing the valley, or a panorama, is shown."
+> — danbri
+
+> "So there is also something subtle going on with respect to time. Firstly, games loop and reset and play is paused and so on routinely. Core game, this is fine — like putting down a book. The more immersive widgets are used, the more time gets more complex, for example some might be multiplayer."
+> — danbri
+
+There are two different time regimes colliding here, and the architecture must acknowledge that explicitly rather than papering over it.
+
+**Ink time is discrete.** It advances by turns. You `Continue()`, you get text, you choose, you `Continue()` again. Between turns, time doesn't exist. The story is frozen. Put down the book, pick it up a week later — nothing changed. This is the bedrock and it must stay this way.
+
+**Immersive time is continuous.** A gaussian splat scene has a render loop. A minigame has a game clock. Multiplayer has wall-clock coordination. Audio has playback position. These things tick whether you're paying attention or not (or they *could*).
+
+The mistake would be coupling them — making Ink's turn progression depend on real-time events, or making real-time modules block on Ink choices.
+
+### Ink as Conductor
+
+Ink cues immersives; it doesn't synchronise with them.
+
+```ink
+The valley opens before you. # scene:valley_splat # mode:spatial
+
++ [Look closer at the ruins]
+  ~ viewed_ruins = true
+  The stones are ancient...
+
++ [Continue along the path]
+  You press on.
+```
+
+The `# scene:valley_splat` tag **cues** the splat viewer module. But Ink doesn't wait for it to load, doesn't track the user's gaze direction, doesn't care how long they look around. Ink issued the cue and is now sitting at a choice point, frozen, timeless, as it should be.
+
+The splat viewer runs in its own time regime. It might notice the user looked at the ruins and *highlight* that choice in the UI. But it doesn't *make* the choice. Ink remains the authority on narrative progression.
+
+### The Three Tiers
+
+```
+Tier 0: Story time (discrete, turn-based)
+  - Ink advances by explicit action only
+  - Saves/restores perfectly (it's just state)
+  - "Put down the book" always works
+  - ALL narrative progression lives here
+
+Tier 1: Session time (bounded continuous)
+  - Minigames, splat viewers, audio playback
+  - Has a start, runs, has an end
+  - Cued by Tier 0, results reported back to Tier 0
+  - Can be interrupted/abandoned — Ink handles gracefully
+  - "I skipped the minigame" is always a valid outcome
+
+Tier 2: Wall time (unbounded continuous)
+  - Multiplayer sessions, live events
+  - Exists independently of any single player
+  - Ink can acknowledge it but never depend on it
+  - "The festival was happening when you passed through"
+```
+
+The key constraint: **information flows upward (Tier 2 → 1 → 0) only as discrete events.** A minigame runs continuously (Tier 1) but reports a single result to Ink (Tier 0): you scored 3 gems. A multiplayer lobby exists in wall time (Tier 2) but Ink only sees `other_players_present = true` as a variable.
+
+### On the Bus
+
+```
+# Ink cues an immersive (Tier 0 → Tier 1)
+module/ink/cue          { target: "splat/valley", mode: "spatial" }
+
+# Splat runs in its own time, publishes hints
+module/splat/hint       { gaze_target: "ruins", confidence: 0.8 }
+
+# UI can use hints to style choices — but Ink doesn't see these
+# Eventually the player chooses (Tier 0 event)
+module/ink/choose       { index: 0 }
+
+# Minigame cued, runs, finishes — single result back
+module/minigame/result  { score: 3, completed: true }
+# Ink receives as variable: gems_collected = 3
+```
+
+### Capability Fallback
+
+A Tier 1 module that can't run (no WebXR, no GPU, screen reader active) just doesn't. Ink cued it, nobody answered, that's fine. The choice UI still works. The story still works. The valley scene becomes a text description instead of a splat. The minigame becomes "you found 3 gems" as a default outcome or a simpler fallback.
+
+```
+# Module capability negotiation on the bus
+module/splat/status     { available: false, reason: "no-webxr" }
+
+# Supervisor falls back
+module/ink/set_var      { name: "scene_mode", value: "text" }
+# Ink can branch on this if it wants, or just continue
+```
+
+The immersives are **decorators on the story**, not structural dependencies. The story must be complete without them. When present, they enrich — a splat scene gives spatial presence, a minigame gives agency, spatial audio gives mood. When absent, Ink carries on because Ink's time is self-contained.
+
+### Multiplayer: The Genuinely Hard Case
+
+Tier 2 is where the "put down the book" contract breaks, because multiplayer introduces the one thing Ink can't have: time pressure. "Another player is waiting for you" creates urgency that violates the discrete-time guarantee.
+
+The answer: multiplayer moments are explicitly opt-in, bounded in duration, and Ink always has a timeout path. If you walk away, the story continues with a default. The festival happened without you. That's fine. That's a story too.
+
+---
+
 ## Operational Expectations
 
 Components and capabilities are documented above. This section defines what a working session must **survive** — the contract that tests, contributors, and AI agents should build against.
