@@ -6,8 +6,8 @@
   <title>finkapp — Ink Story Navigator</title>
   <link rel="icon" href="./favicon.ico" />
 
-  <!-- inkjs full (includes compiler) -->
-  <script src="https://cdn.jsdelivr.net/npm/inkjs@2.3.2/dist/ink-full.js"></script>
+  <!-- inkjs full (includes compiler) — vendored from node_modules/inkjs/dist -->
+  <script src="./ink-full.js"></script>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -261,40 +261,7 @@
 <body>
 
 <div id="app"></div>
-
-<script type="module">
-import { FinkPlayer } from './fink-player.js';
-
-const app = document.getElementById('app');
-const player = new FinkPlayer(app);
-
-// Check URL params for story source
-const params = new URLSearchParams(window.location.search);
-const storyUrl = params.get('story');
-const storyId = params.get('id');
-
-if (storyUrl) {
-  // Direct story URL: ?story=/path/to/story.ink
-  player.loadFromUrl(storyUrl, storyId);
-} else if (storyId) {
-  // Story by ID: ?id=test-garden (loads from /stories/{id}/story.ink)
-  player.loadFromUrl(`/stories/${storyId}/story.ink`, storyId);
-} else {
-  // Default: try to load the story list from the API
-  player.loadStoryList().catch(() => {
-    // If no API available, show a helpful message
-    player.ui.setStatus('Pass ?story=URL or ?id=NAME to load a story', 'muted');
-    player.ui.addNarration([{
-      text: 'No story loaded. Use ?story=path/to/story.ink or ?id=story-name to open a story.',
-      speaker: 'narrator',
-      tags: { foaf: {}, raw: [] },
-    }]);
-  });
-}
-
-// Expose player globally for dev console access
-window.finkPlayer = player;
-</script>
+<script type="module" src="./finkapp-boot.js"></script>
 
 </body>
 </html>

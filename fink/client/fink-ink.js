@@ -81,7 +81,12 @@ export function parseTags(tags) {
     }
 
     const ci = trimmed.indexOf(':');
-    if (ci <= 0) continue;
+    if (ci <= 0) {
+      // Valueless tags (e.g. STOP_AUDIO)
+      const bare = trimmed.toLowerCase();
+      if (bare === 'stop_audio') result.stopAudio = true;
+      continue;
+    }
 
     const key = trimmed.slice(0, ci).trim().toLowerCase();
     const value = trimmed.slice(ci + 1).trim();
@@ -94,20 +99,23 @@ export function parseTags(tags) {
     }
 
     switch (key) {
-      case 'speaker':   result.speaker = value; break;
-      case 'voice':     result.voice = value; break;
-      case 'mood':      result.mood = value; break;
+      case 'speaker':    result.speaker = value; break;
+      case 'voice':      result.voice = value; break;
+      case 'mood':       result.mood = value; break;
       case 'voice_hint': result.voiceHints = value.split(',').map(h => h.trim().toLowerCase()).filter(Boolean); break;
-      case 'input':     if (value === 'freeform') result.inputMode = 'freeform'; break;
-      case 'pause':     result.pauseMs = parseInt(value, 10) || undefined; break;
-      case 'fink':      result.finkLink = value; break;
-      case 'image':     result.image = value; break;
-      case 'basehref':  result.basehref = value; break;
-      case 'vizprom':   result.vizprom = value; break;
-      case 'audio':     result.audio = value; break;
-      case 'video':     result.video = value; break;
-      case 'foley':     result.foley = value; break;
-      case 'bg':        result.bg = value; break;
+      case 'input':      if (value === 'freeform') result.inputMode = 'freeform'; break;
+      case 'pause':      result.pauseMs = parseInt(value, 10) || undefined; break;
+      case 'fink':       result.finkLink = value; break;
+      case 'image':      result.image = value; break;
+      case 'basehref':   result.basehref = value; break;
+      case 'vizprom':    result.vizprom = value; break;
+      case 'audio':      result.audio = value; break;
+      case 'video':      result.video = value; break;
+      case 'foley':      result.foley = value; break;
+      case 'bg':         result.bg = value; break;
+      case 'class':      result.cssClass = value; break;
+      case 'minigame':   result.minigame = value; break;
+      case 'stop_audio': result.stopAudio = true; break;
     }
   }
 

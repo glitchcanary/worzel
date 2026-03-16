@@ -8,10 +8,11 @@ const CSP_HEADER = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'", // unsafe-inline needed for Web Components Shadow DOM
-  "img-src 'self' data:",
-  "connect-src 'self' wss: ws:", // Allow WebSocket connections
-  "media-src 'self' blob:",
+  "img-src 'self' data: https:",  // Stories may reference external images
+  "connect-src 'self' wss: ws: https:", // WebSocket + fetch for .fink.js files
+  "media-src 'self' blob: https:",  // Stories may reference external audio/video
   "font-src 'self'",
+  "frame-src 'self'",  // Allow sandboxed iframes for .fink.js execution
   "object-src 'none'",
   "frame-ancestors 'none'",
   "base-uri 'self'",

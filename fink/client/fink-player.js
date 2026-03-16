@@ -1,20 +1,23 @@
 // FinkPlayer — coordination layer for finkapp
 //
 // Wires FinkInk (engine) to FinkUI (rendering). Handles:
-// - Story loading from URL (.ink or .ink.json) or inline source
+// - Story loading from URL (.ink, .ink.json, or .fink.js via sandbox)
 // - Fetching the story list from the /fink/api/stories endpoint
 // - Advance loop (continue → render → await choice → continue)
+// - FINK: cross-story links (loads external .fink.js files)
+// - BASEHREF: media path resolution for images/audio
 // - Bookmarks (save/restore via localStorage)
 // - Keyboard shortcuts (number keys for choices)
-// - FINK: cross-story links
 //
 // Usage:
 //   const player = new FinkPlayer(document.getElementById('app'));
 //   await player.loadFromUrl('/stories/test-garden/story.ink');
+//   await player.loadFinkJs('https://example.com/story.fink.js');
 //   // or: await player.loadStoryList(); player.start();
 
 import { FinkInk } from './fink-ink.js';
 import { FinkUI } from './fink-ui.js';
+import { loadFinkJs, clearLoadRecord } from './fink-sandbox.js';
 
 const BOOKMARK_PREFIX = 'finkapp-bookmark-';
 
@@ -25,6 +28,12 @@ export class FinkPlayer {
   /** @type {string|null} */ #storyId = null;
   /** @type {string|null} */ #storySource = null;
   /** @type {string|null} */ #apiBase = null;
+
+  /** @type {string|null} - Current story URL (for resolving relative FINK: links) */
+  #currentStoryUrl = null;
+
+  /** @type {string|null} - Media base path from BASEHREF tag */
+  #mediaBasePath = null;
 
   /**
    * @param {HTMLElement} root - container element
@@ -50,7 +59,7 @@ export class FinkPlayer {
   // ── Story loading ──────────────────────────────────────────────────
 
   /**
-   * Load a story from a URL. Detects .ink vs .ink.json by extension.
+   * Load a story from a URL. Detects .fink.js, .ink.json, .ink by extension.
    * @param {string} url
    * @param {string} [storyId]
    */
@@ -59,9 +68,16 @@ export class FinkPlayer {
     this.#ui.setStatus('Loading story...', 'info');
 
     try {
+      if (url.endsWith('.fink.js')) {
+        await this.#loadFinkJsUrl(url);
+        return;
+      }
+
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
       const text = await resp.text();
+
+      this.#currentStoryUrl = url;
 
       if (url.endsWith('.json') || url.endsWith('.ink.json')) {
         this.#engine.loadJson(text);
@@ -71,11 +87,22 @@ export class FinkPlayer {
       }
 
       this.#ui.setTitle(this.#storyId ?? 'finkapp');
+      this.#ui.clearNarration();
       this.#advance();
     } catch (err) {
       this.#ui.setStatus(`Load failed: ${err.message}`, 'error');
       this.#ui.showErrors([err.message]);
     }
+  }
+
+  /**
+   * Load a .fink.js file via the sandbox loader.
+   * @param {string} url - URL of the .fink.js file
+   */
+  async loadFinkJs(url) {
+    this.#storyId = urlToId(url);
+    this.#ui.setStatus(`Loading ${url.split('/').pop()}...`, 'info');
+    await this.#loadFinkJsUrl(url);
   }
 
   /**
@@ -90,6 +117,7 @@ export class FinkPlayer {
     try {
       this.#engine.compileAndLoad(source);
       this.#ui.setTitle(storyId);
+      this.#ui.clearNarration();
       this.#advance();
     } catch (err) {
       this.#ui.setStatus(`Compile failed: ${err.message}`, 'error');
@@ -108,6 +136,7 @@ export class FinkPlayer {
     try {
       this.#engine.loadJson(json);
       this.#ui.setTitle(storyId);
+      this.#ui.clearNarration();
       this.#advance();
     } catch (err) {
       this.#ui.setStatus(`Load failed: ${err.message}`, 'error');
@@ -153,13 +182,11 @@ export class FinkPlayer {
       this.#ui.addNarration([{ text: 'Choose a story:', speaker: 'narrator', tags: { foaf: {}, raw: [] } }]);
       this.#ui.setStatus(`${stories.length} stories available`, 'info');
 
-      // We abuse the choice UI for the story picker
       const fakeChoices = stories.map((s, i) => ({
         index: i,
         text: s.title || s.id,
         tags: { foaf: {}, raw: [] },
         voiceHints: [],
-        _storyId: s.id,
       }));
 
       this.#ui.setChoices(fakeChoices);
@@ -178,15 +205,40 @@ export class FinkPlayer {
     }
   }
 
+  // ── Internal loaders ───────────────────────────────────────────────
+
+  /**
+   * Load a .fink.js URL via sandbox.
+   * @param {string} url
+   */
+  async #loadFinkJsUrl(url) {
+    try {
+      const inkSource = await loadFinkJs(url);
+      if (inkSource === null) {
+        // Duplicate load skipped
+        this.#ui.setStatus('Already loaded', 'muted');
+        return;
+      }
+
+      this.#currentStoryUrl = url;
+      this.#storySource = inkSource;
+      this.#mediaBasePath = null;
+      this.#engine.compileAndLoad(inkSource);
+      this.#ui.setTitle(this.#storyId ?? 'finkapp');
+      this.#ui.clearNarration();
+      this.#advance();
+    } catch (err) {
+      this.#ui.setStatus(`Load failed: ${err.message}`, 'error');
+      this.#ui.showErrors([err.message]);
+    }
+  }
+
   /**
    * Load a specific story from the server's stories directory.
    * Tries .ink.json first, falls back to .ink.
    * @param {string} storyId
    */
   async #loadServerStory(storyId) {
-    // The stories are not served via the API — they're on disk.
-    // For the client-side player we need them served as static files.
-    // Try common paths: /stories/{id}/story.ink.json, /stories/{id}/story.ink
     const base = this.#storiesBase();
 
     for (const file of ['story.ink.json', 'story.ink']) {
@@ -196,6 +248,8 @@ export class FinkPlayer {
         if (resp.ok) {
           const text = await resp.text();
           this.#storyId = storyId;
+          this.#currentStoryUrl = url;
+          this.#mediaBasePath = null;
           if (file.endsWith('.json')) {
             this.#engine.loadJson(text);
           } else {
@@ -203,6 +257,7 @@ export class FinkPlayer {
             this.#engine.compileAndLoad(text);
           }
           this.#ui.setTitle(storyId);
+          this.#ui.clearNarration();
           this.#advance();
           return;
         }
@@ -221,11 +276,39 @@ export class FinkPlayer {
       this.#ui.showErrors(state.errors);
     }
 
+    // Process media tags from narration (BASEHREF, BG, etc.)
+    let finkLink = null;
+    for (const seg of state.narration) {
+      if (seg.tags?.basehref) {
+        this.#mediaBasePath = seg.tags.basehref;
+        if (!this.#mediaBasePath.endsWith('/')) this.#mediaBasePath += '/';
+      }
+      if (seg.tags?.finkLink) {
+        finkLink = seg.tags.finkLink;
+      }
+      // Resolve relative image/audio/video URLs against BASEHREF
+      if (seg.tags?.image) {
+        seg.tags.image = this.#resolveMediaUrl(seg.tags.image);
+      }
+      if (seg.tags?.audio) {
+        seg.tags.audio = this.#resolveMediaUrl(seg.tags.audio);
+      }
+      if (seg.tags?.video) {
+        seg.tags.video = this.#resolveMediaUrl(seg.tags.video);
+      }
+    }
+
     if (state.narration.length > 0) {
       this.#ui.addNarration(state.narration);
     }
 
     this.#ui.setKnot(state.currentKnot);
+
+    // If a FINK: tag was hit during narration, load the external story
+    if (finkLink) {
+      this.#handleFinkLink(finkLink);
+      return;
+    }
 
     if (state.ended) {
       this.#ui.showEnded();
@@ -249,12 +332,48 @@ export class FinkPlayer {
     if (!this.#engine.loaded) return;
     this.#ui.clearNarration();
     this.#clearBookmark();
+    this.#mediaBasePath = null;
 
-    // Re-compile from source if available, otherwise reload JSON
     if (this.#storySource) {
       this.#engine.compileAndLoad(this.#storySource);
     }
     this.#advance();
+  }
+
+  // ── FINK: cross-story navigation ──────────────────────────────────
+
+  /**
+   * Handle a FINK: tag — load the referenced .fink.js file.
+   * @param {string} finkRef - filename or relative URL from the FINK: tag
+   */
+  async #handleFinkLink(finkRef) {
+    const baseUrl = this.#currentStoryUrl ?? window.location.href;
+    const resolvedUrl = new URL(finkRef, baseUrl).href;
+
+    this.#ui.setStatus(`Loading ${finkRef}...`, 'info');
+
+    // Clear duplicate detection for intentional navigation
+    clearLoadRecord(resolvedUrl);
+
+    try {
+      const inkSource = await loadFinkJs(resolvedUrl);
+      if (inkSource === null) {
+        this.#ui.setStatus('Already loaded', 'muted');
+        return;
+      }
+
+      this.#storyId = urlToId(resolvedUrl);
+      this.#currentStoryUrl = resolvedUrl;
+      this.#storySource = inkSource;
+      this.#mediaBasePath = null;
+      this.#engine.compileAndLoad(inkSource);
+      this.#ui.setTitle(this.#storyId);
+      this.#ui.clearNarration();
+      this.#advance();
+    } catch (err) {
+      this.#ui.setStatus(`FINK load failed: ${err.message}`, 'error');
+      this.#ui.showErrors([`Failed to load ${finkRef}: ${err.message}`]);
+    }
   }
 
   // ── Events ─────────────────────────────────────────────────────────
@@ -269,28 +388,54 @@ export class FinkPlayer {
     });
 
     this.#root.addEventListener('finkapp-link', async (e) => {
-      const storyId = e.detail.storyId;
-      this.#ui.clearNarration();
-      await this.#loadServerStory(storyId);
+      const ref = e.detail.storyId;
+      // Detect whether this is a .fink.js reference or a server story ID
+      if (ref.endsWith('.fink.js') || ref.includes('/')) {
+        await this.#handleFinkLink(ref);
+      } else {
+        this.#ui.clearNarration();
+        await this.#loadServerStory(ref);
+      }
     });
   }
 
   #bindKeyboard() {
     document.addEventListener('keydown', (e) => {
-      // Ignore if typing in an input
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
       const n = parseInt(e.key);
       if (!isNaN(n) && n >= 1 && n <= 9) {
-        // Number keys select choices (1-indexed)
         this.#choose(n - 1);
       }
       if (e.key === 'r' && (e.ctrlKey || e.metaKey)) {
-        // Ctrl+R restarts (prevent browser reload)
         e.preventDefault();
         this.#restart();
       }
     });
+  }
+
+  // ── Media URL resolution ───────────────────────────────────────────
+
+  /**
+   * Resolve a media URL against the current BASEHREF or story URL.
+   * @param {string} path
+   * @returns {string}
+   */
+  #resolveMediaUrl(path) {
+    if (!path) return path;
+    // Already absolute
+    if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('data:')) {
+      return path;
+    }
+    // Resolve against BASEHREF if set
+    if (this.#mediaBasePath) {
+      try { return new URL(path, this.#mediaBasePath).href; } catch { /* fall through */ }
+    }
+    // Resolve against current story URL
+    if (this.#currentStoryUrl) {
+      try { return new URL(path, this.#currentStoryUrl).href; } catch { /* fall through */ }
+    }
+    return path;
   }
 
   // ── Bookmarks ──────────────────────────────────────────────────────
@@ -332,29 +477,26 @@ export class FinkPlayer {
   // ── Helpers ────────────────────────────────────────────────────────
 
   #detectApiBase() {
-    // If served from /fink/, the API is at /fink/api
     const path = window.location.pathname;
     if (path.startsWith('/fink/') || path === '/fink') return '/fink/api';
-    // Standalone mode: API at /api
     return '/api';
   }
 
   #storiesBase() {
-    // Stories are expected to be served as static files.
-    // In the unified server, the fink module serves from /fink/ prefix,
-    // but stories are a separate directory. We try /stories/ as the default.
     return '/stories';
   }
 }
 
 function urlToId(url) {
-  // Extract a story ID from a URL path like /stories/test-garden/story.ink
   const parts = url.split('/').filter(Boolean);
-  // Find the directory name before story.ink or story.ink.json
+  // For .fink.js files, use the filename without extension
+  const last = parts[parts.length - 1] ?? 'unknown';
+  if (last.endsWith('.fink.js')) return last.replace('.fink.js', '');
+  // For story.ink, use parent directory name
   for (let i = parts.length - 1; i >= 0; i--) {
     if (parts[i].startsWith('story.')) {
       return parts[i - 1] ?? 'unknown';
     }
   }
-  return parts[parts.length - 1]?.replace(/\.ink(\.json)?$/, '') ?? 'unknown';
+  return last.replace(/\.ink(\.json)?$/, '') ?? 'unknown';
 }
