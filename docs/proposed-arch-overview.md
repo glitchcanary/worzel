@@ -352,11 +352,11 @@ There are two different time regimes colliding here, and the architecture must a
 
 **Immersive time is continuous.** A gaussian splat scene has a render loop. A minigame has a game clock. Multiplayer has wall-clock coordination. Audio has playback position. These things tick whether you're paying attention or not (or they *could*).
 
-The mistake would be coupling them — making Ink's turn progression depend on real-time events, or making real-time modules block on Ink choices.
+The obvious mistake would be tightly coupling them — making Ink's turn progression depend on real-time events, or making real-time modules block on Ink choices. But the relationship between these time regimes is subtler than a clean separation, as the variable sync discussion below shows. This is still being figured out.
 
-### Ink as Conductor
+### Ink as Conductor (Tentative Model)
 
-Ink cues immersives; it doesn't synchronise with them.
+One way to think about the relationship: Ink cues immersives but doesn't synchronise with them. Whether this holds up cleanly in practice is an open question — the live variable sync from widgets (see below) blurs the line.
 
 ```ink
 The valley opens before you. # scene:valley_splat # mode:spatial
@@ -371,9 +371,11 @@ The valley opens before you. # scene:valley_splat # mode:spatial
 
 The `# scene:valley_splat` tag **cues** the splat viewer module. But Ink doesn't wait for it to load, doesn't track the user's gaze direction, doesn't care how long they look around. Ink issued the cue and is now sitting at a choice point, frozen, timeless, as it should be.
 
-The splat viewer runs in its own time regime. It might notice the user looked at the ruins and *highlight* that choice in the UI. But it doesn't *make* the choice. Ink remains the authority on narrative progression.
+The splat viewer runs in its own time regime. It might notice the user looked at the ruins and *highlight* that choice in the UI. But it doesn't *make* the choice. Ink remains the authority on narrative progression. (At least, that's the current thinking — the interaction between live widget state and Ink's turn structure may need more nuance.)
 
-### The Three Tiers
+### The Three Tiers (Working Model)
+
+A provisional framing — useful for thinking about the problem, but the boundaries may shift as real content tests them:
 
 ```
 Tier 0: Story time (discrete, turn-based)
@@ -385,9 +387,10 @@ Tier 0: Story time (discrete, turn-based)
 Tier 1: Session time (bounded continuous)
   - Minigames, splat viewers, audio playback
   - Has a start, runs, has an end
-  - Cued by Tier 0, results reported back to Tier 0
+  - Cued by Tier 0, variables sync back to Tier 0 incrementally
   - Can be interrupted/abandoned — Ink handles gracefully
   - "I skipped the minigame" is always a valid outcome
+  - But live sync means Tier 0 state changes during Tier 1 — the tiers leak
 
 Tier 2: Wall time (unbounded continuous)
   - Multiplayer sessions, live events
@@ -396,7 +399,7 @@ Tier 2: Wall time (unbounded continuous)
   - "The festival was happening when you passed through"
 ```
 
-The key constraint: **information flows upward (Tier 2 → 1 → 0) only as discrete events.** A minigame runs continuously (Tier 1) but reports a single result to Ink (Tier 0): you scored 3 gems. A multiplayer lobby exists in wall time (Tier 2) but Ink only sees `other_players_present = true` as a variable.
+The working hypothesis: **information flows upward (Tier 2 → 1 → 0) as discrete variable-sync events.** A minigame runs continuously (Tier 1) and syncs variables back to Ink (Tier 0) as they change — gem by gem, not just a summary at the end. The bus carries each `gems_collected += 1` as it happens, so the story's variable state stays live even while the widget runs. There may also be a summary when the widget closes, but the incremental sync is the preferred model — it means the story can react at any point, and if the widget is interrupted or abandoned, whatever was collected so far is already in Ink's state. A multiplayer lobby exists in wall time (Tier 2) but Ink only sees variables like `other_players_present = true`. The exact boundaries between tiers, and how much live sync is appropriate, are still being worked out.
 
 ### On the Bus
 
@@ -411,9 +414,13 @@ module/splat/hint       { gaze_target: "ruins", confidence: 0.8 }
 # Eventually the player chooses (Tier 0 event)
 module/ink/choose       { index: 0 }
 
-# Minigame cued, runs, finishes — single result back
-module/minigame/result  { score: 3, completed: true }
-# Ink receives as variable: gems_collected = 3
+# Minigame cued, runs, syncs variables live as they change
+module/minigame/sync    { deltas: { gems_collected: +1 } }
+module/minigame/sync    { deltas: { gems_collected: +1 } }
+module/minigame/sync    { deltas: { gems_collected: +1 } }
+# Each gem syncs individually — story state stays current
+# Optional summary on close, but incremental sync is primary
+module/minigame/close   { final: { gems_collected: 3, completed: true } }
 ```
 
 ### Capability Fallback
@@ -429,7 +436,7 @@ module/ink/set_var      { name: "scene_mode", value: "text" }
 # Ink can branch on this if it wants, or just continue
 ```
 
-The immersives are **decorators on the story**, not structural dependencies. The story must be complete without them. When present, they enrich — a splat scene gives spatial presence, a minigame gives agency, spatial audio gives mood. When absent, Ink carries on because Ink's time is self-contained.
+The working principle is that immersives are **decorators on the story**, not structural dependencies — the story should be complete without them. When present, they enrich: a splat scene gives spatial presence, a minigame gives agency, spatial audio gives mood. When absent, Ink carries on. How well this holds when widgets are syncing variables live (not just delivering a final result) is something the diamond mine stories are currently testing in practice.
 
 ### Multiplayer: The Genuinely Hard Case
 
@@ -448,13 +455,16 @@ The current finkosphere content tells this story concretely. Two diamond mine In
 > "We therefore need a way for authors and storytelling users of these widgets to easily rely on accessible alt paths that render through the game's core UX — choices and text. So a starter kit of logic puzzles, dice rolls, quizzes — toki pona, morse, knowledge of topics — should be available alongside the delivery engine and fink format. Would do the job here. Storytelling in this world involves a lot of letting go."
 > — danbri
 
-This is the decorator principle from the temporal tiers made practical. If a widget's net effect on the story is *setting some variables* — you found 3 diamonds, you passed the logic gate, you learned the morse phrase — then the accessible fallback is anything that sets those same variables through choices and text. The widget is a *flavour* of the interaction, not the interaction itself.
+This is the decorator principle from the temporal tiers made practical. A widget's effect on the story flows through variables — but not as a single lump at the end. In the diamond mines, variables sync live, gem by gem. The accessible fallback needs to satisfy the same variable contract through choices and text, and similarly updates incrementally (each choice sets a variable). The widget is a *flavour* of the interaction, not the interaction itself — or at least, that's the aspiration. How much of the experience is "flavour" versus "the point" probably varies by widget and by story.
 
 ### The Letting Go Principle
 
-Authors must write stories that work without their immersives. This is not a limitation — it is the medium. A radio play works without the listener seeing the actors. A novel works without illustrations. A fink story works without its gaussian splats, minigames, and spatial audio. These enrich; they do not carry.
+> "Storytelling in this world involves a lot of letting go."
+> — danbri
 
-This means every widget must declare its **variable contract**: what it writes back to the story. A gem-matching minigame writes `gems_collected: int` and `puzzle_solved: bool`. That's it. Everything else — the animations, the scoring, the spatial audio — is Tier 1 decoration. The Tier 0 story only sees the variables.
+The implication: authors write stories that work without their immersives. A radio play works without the listener seeing the actors. A novel works without illustrations. A fink story works without its gaussian splats, minigames, and spatial audio. These enrich; they do not carry.
+
+In practice this suggests every widget should declare its **variable contract**: what it writes back to the story. A gem-matching minigame writes `gems_collected: int` and `puzzle_solved: bool`. In the diamond mine stories, those variables sync gem by gem as the player collects them — the story's state is always current, not waiting for a final summary. Everything else — the animations, the scoring, the spatial audio — is presentation. The story only sees the variables. (Whether this clean separation always holds, or whether some immersives are more deeply entangled with the story experience than "just variables", is an open question.)
 
 ### Starter Kit: Core Fallback Interactions
 
@@ -480,8 +490,8 @@ For a fink story to use this pattern:
 // The widget path (when available)
 { widget_available("gem-cave") }:
   # WIDGET:gem-cave config:easy
-  // Widget runs, sets gems_collected and puzzle_solved
-  // Story resumes when widget publishes result
+  // Widget runs, syncs gems_collected incrementally as player collects
+  // Sets puzzle_solved on completion or abandonment
 
 // The fallback path (always available)
 { not widget_available("gem-cave") }:
@@ -511,7 +521,7 @@ Both paths write the same variables. Both paths are complete experiences. The wi
 
 The starter kit fallbacks ship as part of the fink format tooling, not as individual story assets. An author tags a widget point in their story; the tooling generates the fallback scaffolding (or the author writes their own). The delivery engine checks client capability at runtime and routes to the appropriate path. The story's variable contract is satisfied either way.
 
-This is what "storytelling in this world involves a lot of letting go" means in practice: let go of assuming your audience has a screen, a GPU, spatial audio, or even sight. Write for the variables. Let the surfaces handle the rest.
+This is one reading of what "storytelling in this world involves a lot of letting go" means in practice: let go of assuming your audience has a screen, a GPU, spatial audio, or even sight. Write for the variables. Let the surfaces handle the rest. Whether this is the whole picture, or whether there's more to "letting go" than capability fallback, is worth sitting with.
 
 ---
 
