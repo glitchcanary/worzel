@@ -51,7 +51,7 @@ export const TtsMessageSchema = z.object({
 // --- Input ignored: server intentionally skipped a turn (server → client) ---
 export const InputIgnoredMessageSchema = z.object({
   type: z.literal('input_ignored'),
-  reason: z.enum(['low_audio', 'empty_asr']),
+  reason: z.enum(['low_audio', 'empty_asr', 'ack_junk']),
   session_id: z.string().optional(),
 });
 

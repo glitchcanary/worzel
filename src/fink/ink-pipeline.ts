@@ -198,7 +198,7 @@ export class InkPipeline {
         this.logger.info({ text: asrText, audioLevel }, 'Ignoring low-value ASR text');
         await transport.sendText(JSON.stringify({
           type: 'input_ignored',
-          reason: 'empty_asr',
+          reason: 'ack_junk',
           session_id: session.id,
         }));
         return;

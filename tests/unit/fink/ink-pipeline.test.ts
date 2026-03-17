@@ -216,7 +216,7 @@ describe('InkPipeline', () => {
       expect(transport.getMessages('stt').length).toBe(0);
       expect(transport.getMessages('ink_state').length).toBe(0);
       expect(transport.getMessages('input_ignored')).toEqual([
-        expect.objectContaining({ reason: 'empty_asr' }),
+        expect.objectContaining({ reason: 'ack_junk' }),
       ]);
       expect(tts.synthesizeCalls.length).toBe(0);
     });

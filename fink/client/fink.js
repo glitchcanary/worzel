@@ -1182,6 +1182,8 @@ class FinkApp extends HTMLElement {
       mic.setPipelineState('idle');
       if (msg.reason === 'low_audio') {
         story.setStatus('Too quiet to follow. Try again when ready.', 'info');
+      } else if (msg.reason === 'ack_junk') {
+        story.setStatus('Ignoring stray speech. Your next move is open.', 'info');
       } else {
         story.setStatus('No words caught there. Try again when ready.', 'info');
       }
