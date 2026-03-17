@@ -43,4 +43,20 @@ describe('Session spoken output tracking', () => {
     const overlaps = session.getSpokenOutputOverlapping(now - 1_000, now + 200);
     expect(overlaps.map(entry => entry.text)).toEqual(['First line', 'Second line']);
   });
+
+  it('tracks the most recent recording window', () => {
+    const session = new Session('test-device');
+    const startedAt = Date.now() - 750;
+
+    session.startRecordingWindow(startedAt);
+    session.finishRecordingWindow(startedAt + 500, 0.08);
+
+    expect(session.lastRecordingWindow).toEqual({
+      startedAt,
+      stoppedAt: startedAt + 500,
+      durationMs: 500,
+      audioLevel: 0.08,
+    });
+    expect(session.currentRecordingStartedAt).toBeNull();
+  });
 });

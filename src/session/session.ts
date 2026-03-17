@@ -19,6 +19,13 @@ export interface SpokenOutputEntry {
   finishedAtEstimate: number;
 }
 
+export interface RecordingWindow {
+  startedAt: number;
+  stoppedAt: number;
+  durationMs: number;
+  audioLevel?: number;
+}
+
 /**
  * Per-device session state.
  * Structured like an XMPP JID: device-id@worzel.local
@@ -44,6 +51,12 @@ export class Session {
 
   /** Peak RMS audio energy (0.0–1.0) from the last recording chunk. */
   lastAudioLevel: number | undefined;
+
+  /** Current recording start time, if the session is actively recording. */
+  currentRecordingStartedAt: number | null = null;
+
+  /** Most recent completed recording window. */
+  lastRecordingWindow: RecordingWindow | null = null;
 
   /** Recent spoken output windows for overlap-aware ASR cleanup. */
   recentSpokenOutput: SpokenOutputEntry[] = [];
@@ -112,6 +125,21 @@ export class Session {
     );
   }
 
+  startRecordingWindow(startedAt: number = Date.now()): void {
+    this.currentRecordingStartedAt = startedAt;
+  }
+
+  finishRecordingWindow(stoppedAt: number = Date.now(), audioLevel?: number): void {
+    const startedAt = this.currentRecordingStartedAt ?? stoppedAt;
+    this.lastRecordingWindow = {
+      startedAt,
+      stoppedAt,
+      durationMs: Math.max(0, stoppedAt - startedAt),
+      audioLevel,
+    };
+    this.currentRecordingStartedAt = null;
+  }
+
   private pruneSpokenOutput(): void {
     const cutoff = Date.now() - 2 * 60_000;
     this.recentSpokenOutput = this.recentSpokenOutput
@@ -125,5 +153,7 @@ export class Session {
     this.abortController?.abort();
     this.dialogue = [];
     this.recentSpokenOutput = [];
+    this.currentRecordingStartedAt = null;
+    this.lastRecordingWindow = null;
   }
 }

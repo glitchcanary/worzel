@@ -195,8 +195,20 @@ export class InkPipeline {
       }
 
       const asrText = asrResult.text.trim();
+      const overlappingSpokenOutput = session.lastRecordingWindow
+        ? session.getSpokenOutputOverlapping(
+            session.lastRecordingWindow.startedAt,
+            session.lastRecordingWindow.stoppedAt,
+          )
+        : [];
+
       if (this.isIgnorableAsrText(asrText)) {
-        this.logger.info({ text: asrText, audioLevel }, 'Ignoring low-value ASR text');
+        this.logger.info({
+          text: asrText,
+          audioLevel,
+          overlapCount: overlappingSpokenOutput.length,
+          overlapTexts: overlappingSpokenOutput.map(entry => entry.text).slice(0, 3),
+        }, 'Ignoring low-value ASR text');
         await transport.sendText(JSON.stringify({
           type: 'input_ignored',
           reason: 'ack_junk',
@@ -204,7 +216,12 @@ export class InkPipeline {
         }));
         return;
       }
-      this.logger.info({ text: asrText, audioLevel }, 'ASR result');
+      this.logger.info({
+        text: asrText,
+        audioLevel,
+        overlapCount: overlappingSpokenOutput.length,
+        overlapTexts: overlappingSpokenOutput.map(entry => entry.text).slice(0, 3),
+      }, 'ASR result');
 
       // Record user utterance in dialogue history
       session.addDialogue('user', asrText);
