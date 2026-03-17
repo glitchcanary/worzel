@@ -67,6 +67,26 @@ interface CarryoverSuggestion {
   confidence: number;
 }
 
+const IGNORABLE_ASR_PHRASES = new Set([
+  'thank you',
+  'thanks',
+  'thanks a lot',
+  'okay',
+  'ok',
+  'okay then',
+  'hello',
+  'hi',
+  'hey',
+  'uh',
+  'um',
+  'hmm',
+  'mm',
+  'mhm',
+  'huh',
+  'oh',
+  'well',
+]);
+
 export class InkPipeline {
   private readonly asr: ASRProvider;
   private readonly llm: LLMProvider;
@@ -174,6 +194,15 @@ export class InkPipeline {
       }
 
       const asrText = asrResult.text.trim();
+      if (this.isIgnorableAsrText(asrText)) {
+        this.logger.info({ text: asrText, audioLevel }, 'Ignoring low-value ASR text');
+        await transport.sendText(JSON.stringify({
+          type: 'input_ignored',
+          reason: 'empty_asr',
+          session_id: session.id,
+        }));
+        return;
+      }
       this.logger.info({ text: asrText, audioLevel }, 'ASR result');
 
       // Record user utterance in dialogue history
@@ -343,6 +372,35 @@ export class InkPipeline {
       cacheTtlMs?: number;
     },
   ): Promise<{ result: Awaited<ReturnType<TTSProvider['synthesize']>>; provider: string; fallback: boolean }> {
+    if (options.cacheScope === 'volatile' && this.ttsFallback) {
+      this.logger.info({
+        provider: this.tts.provider ?? this.tts.name,
+        fallbackProvider: this.ttsFallback.provider ?? this.ttsFallback.name,
+        cacheScope: options.cacheScope,
+        textLength: text.length,
+      }, 'Routing volatile TTS to fallback provider');
+      try {
+        const result = await this.ttsFallback.synthesize(text, {
+          voice: options.fallbackVoice,
+          speed: options.speed,
+          cacheScope: options.cacheScope,
+          cacheTtlMs: options.cacheTtlMs,
+        });
+        return {
+          result,
+          provider: this.ttsFallback.provider ?? this.ttsFallback.name,
+          fallback: true,
+        };
+      } catch (err) {
+        this.logger.warn({
+          provider: this.ttsFallback.provider ?? this.ttsFallback.name,
+          primaryProvider: this.tts.provider ?? this.tts.name,
+          err: err instanceof Error ? err.message : String(err),
+          text,
+        }, 'Volatile TTS fallback provider failed, retrying primary');
+      }
+    }
+
     try {
       const result = await this.tts.synthesize(text, {
         voice: options.primaryVoice,
@@ -589,7 +647,7 @@ export class InkPipeline {
     if (state.choices.length === 0) {
       await this.speakText(
         session, transport, opusEncoder,
-        "I didn't catch a matching move.", signal,
+        "I didn't catch a matching move.", signal, 'volatile',
       );
       return;
     }
@@ -598,7 +656,7 @@ export class InkPipeline {
       ? "I didn't catch a matching move. You can say help if you want the options again."
       : "I still didn't catch a matching move. Say help if you want the options read again.";
 
-    await this.speakText(session, transport, opusEncoder, redirectText, signal);
+    await this.speakText(session, transport, opusEncoder, redirectText, signal, 'volatile');
     session.addDialogue('assistant', `[NoMatch] ${redirectText}`);
   }
 
@@ -933,6 +991,24 @@ export class InkPipeline {
     await transport.sendText(JSON.stringify({
       type: 'tts', state: 'stop', session_id: session.id,
     }));
+  }
+
+  private isIgnorableAsrText(text: string): boolean {
+    const normalized = text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!normalized) return true;
+    if (IGNORABLE_ASR_PHRASES.has(normalized)) return true;
+
+    const words = normalized.split(' ').filter(Boolean);
+    if (words.length <= 2 && words.every(word => IGNORABLE_ASR_PHRASES.has(word))) {
+      return true;
+    }
+
+    return false;
   }
 
   /**

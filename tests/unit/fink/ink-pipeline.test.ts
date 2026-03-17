@@ -30,6 +30,7 @@ class MockLLM implements LLMProvider {
 
 class MockTTS implements TTSProvider {
   readonly name = 'mock-tts';
+  readonly provider = 'mock-tts';
   synthesizeCalls: { text: string; voice?: string }[] = [];
 
   async synthesize(text: string, options?: { voice?: string }): Promise<TTSResult> {
@@ -40,6 +41,11 @@ class MockTTS implements TTSProvider {
       format: 'pcm',
     };
   }
+}
+
+class MockFallbackTTS extends MockTTS {
+  override readonly name = 'mock-fallback-tts';
+  override readonly provider = 'mock-fallback-tts';
 }
 
 class MockTransport implements Transport {
@@ -88,6 +94,23 @@ function createTestSetup() {
   inkSession.continue();
 
   return { asr, llm, tts, pipeline, session, transport, inkSession };
+}
+
+function createTestSetupWithFallback() {
+  const asr = new MockASR();
+  const llm = new MockLLM();
+  const tts = new MockTTS();
+  const ttsFallback = new MockFallbackTTS();
+  const logger = createLogger('silent');
+  const pipeline = new InkPipeline({ asr, llm, tts, ttsFallback, logger });
+  const session = new Session('test-device');
+  session.state = 'ready';
+  session.audioParams = { format: 'pcm', sample_rate: 16000, channels: 1, frame_duration: 60 };
+  const transport = new MockTransport();
+  const inkSession = new InkSession('test-garden', storyJson);
+  inkSession.continue();
+
+  return { asr, llm, tts, ttsFallback, pipeline, session, transport, inkSession };
 }
 
 describe('InkPipeline', () => {
@@ -180,6 +203,48 @@ describe('InkPipeline', () => {
       // Should NOT have advanced story
       const inkStates = transport.getMessages('ink_state');
       expect(inkStates.length).toBe(0);
+    });
+
+    it('ignores acknowledgment junk before classification', async () => {
+      const { asr, tts, pipeline, session, transport, inkSession } = createTestSetup();
+
+      asr.transcribeResponse = 'Thank you.';
+
+      pipeline.pushAudio(Buffer.alloc(3200));
+      await pipeline.process(session, transport, inkSession);
+
+      expect(transport.getMessages('stt').length).toBe(0);
+      expect(transport.getMessages('ink_state').length).toBe(0);
+      expect(transport.getMessages('input_ignored')).toEqual([
+        expect.objectContaining({ reason: 'empty_asr' }),
+      ]);
+      expect(tts.synthesizeCalls.length).toBe(0);
+    });
+
+    it('does not ignore short meaningful choices like yes and no', async () => {
+      const { asr, tts, pipeline, session, transport, inkSession } = createTestSetup();
+
+      asr.transcribeResponse = 'Yes.';
+
+      pipeline.pushAudio(Buffer.alloc(3200));
+      await pipeline.process(session, transport, inkSession);
+
+      expect(transport.getMessages('stt').length).toBe(1);
+      expect(transport.getMessages('input_ignored').length).toBe(0);
+      expect(tts.synthesizeCalls.length).toBeGreaterThan(0);
+    });
+
+    it('routes volatile no-match speech to fallback TTS first', async () => {
+      const { asr, tts, ttsFallback, pipeline, session, transport, inkSession } = createTestSetupWithFallback();
+
+      asr.transcribeResponse = 'I like pizza';
+
+      pipeline.pushAudio(Buffer.alloc(3200));
+      await pipeline.process(session, transport, inkSession);
+
+      expect(ttsFallback.synthesizeCalls.length).toBeGreaterThan(0);
+      expect(tts.synthesizeCalls.length).toBe(0);
+      expect(transport.getMessages('ink_state').length).toBe(0);
     });
   });
 });
