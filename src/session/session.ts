@@ -10,6 +10,15 @@ export interface DialogueEntry {
   timestamp: number;
 }
 
+export interface SpokenOutputEntry {
+  text: string;
+  provider?: string;
+  cacheScope?: 'persistent' | 'volatile' | 'none';
+  startedAt: number;
+  estimatedDurationMs: number;
+  finishedAtEstimate: number;
+}
+
 /**
  * Per-device session state.
  * Structured like an XMPP JID: device-id@worzel.local
@@ -35,6 +44,9 @@ export class Session {
 
   /** Peak RMS audio energy (0.0–1.0) from the last recording chunk. */
   lastAudioLevel: number | undefined;
+
+  /** Recent spoken output windows for overlap-aware ASR cleanup. */
+  recentSpokenOutput: SpokenOutputEntry[] = [];
 
   /** Abort controller for interrupting pipeline operations */
   abortController: AbortController | null = null;
@@ -78,10 +90,40 @@ export class Session {
     return this.dialogue.slice(-maxEntries).map(({ role, content }) => ({ role, content }));
   }
 
+  addSpokenOutput(entry: Omit<SpokenOutputEntry, 'finishedAtEstimate'>): void {
+    const boundedDuration = Math.max(150, Math.min(entry.estimatedDurationMs, 120_000));
+    const fullEntry: SpokenOutputEntry = {
+      ...entry,
+      estimatedDurationMs: boundedDuration,
+      finishedAtEstimate: entry.startedAt + boundedDuration,
+    };
+    this.recentSpokenOutput.push(fullEntry);
+    this.pruneSpokenOutput();
+  }
+
+  getRecentSpokenOutput(windowMs: number = 30_000): SpokenOutputEntry[] {
+    const cutoff = Date.now() - windowMs;
+    return this.recentSpokenOutput.filter(entry => entry.finishedAtEstimate >= cutoff);
+  }
+
+  getSpokenOutputOverlapping(startAt: number, endAt: number): SpokenOutputEntry[] {
+    return this.recentSpokenOutput.filter(entry =>
+      entry.startedAt <= endAt && entry.finishedAtEstimate >= startAt,
+    );
+  }
+
+  private pruneSpokenOutput(): void {
+    const cutoff = Date.now() - 2 * 60_000;
+    this.recentSpokenOutput = this.recentSpokenOutput
+      .filter(entry => entry.finishedAtEstimate >= cutoff)
+      .slice(-50);
+  }
+
   /** Clean up session resources */
   destroy(): void {
     this.state = 'closed';
     this.abortController?.abort();
     this.dialogue = [];
+    this.recentSpokenOutput = [];
   }
 }

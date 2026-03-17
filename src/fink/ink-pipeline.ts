@@ -29,6 +29,7 @@ import { stripThinkTags } from '../utils/sanitize.js';
 import { TextSegmenter } from '../pipeline/text-segmenter.js';
 import { AudioRateController } from '../pipeline/audio-rate-controller.js';
 import { VoiceResolver } from '../ink/voice-resolver.js';
+import type { TTSResult } from '../providers/interface.js';
 
 /** Parent story state saved before a FINK link switch. */
 export interface ParentStoryState {
@@ -845,6 +846,7 @@ export class InkPipeline {
           fallback,
         }));
 
+        this.rememberSpokenOutput(session, seg.text, provider, 'persistent', ttsResult);
         rateController.reset();
         await this.sendOpusAudio(
           ttsResult.audio, opusEncoder, transport, rateController, signal,
@@ -910,6 +912,7 @@ export class InkPipeline {
         provider,
         fallback,
       }));
+      this.rememberSpokenOutput(session, choiceText, provider, 'persistent', ttsResult);
       rateController.reset();
       await this.sendOpusAudio(
         ttsResult.audio, opusEncoder, transport, rateController, signal,
@@ -954,6 +957,7 @@ export class InkPipeline {
         provider,
         fallback,
       }));
+      this.rememberSpokenOutput(session, text, provider, cacheScope, ttsResult);
       rateController.reset();
       await this.sendOpusAudio(
         ttsResult.audio, opusEncoder, transport, rateController, signal,
@@ -1009,6 +1013,32 @@ export class InkPipeline {
     }
 
     return false;
+  }
+
+  private rememberSpokenOutput(
+    session: Session,
+    text: string,
+    provider: string,
+    cacheScope: 'persistent' | 'volatile' | 'none',
+    ttsResult: TTSResult,
+  ): void {
+    session.addSpokenOutput({
+      text,
+      provider,
+      cacheScope,
+      startedAt: Date.now(),
+      estimatedDurationMs: this.estimatePlaybackDurationMs(text, ttsResult),
+    });
+  }
+
+  private estimatePlaybackDurationMs(text: string, ttsResult: TTSResult): number {
+    if (ttsResult.format === 'pcm' && ttsResult.sampleRate > 0) {
+      const samples = ttsResult.audio.length / 2;
+      return Math.round((samples / ttsResult.sampleRate) * 1000);
+    }
+
+    const words = text.trim().split(/\s+/).filter(Boolean).length;
+    return Math.max(600, words * 450);
   }
 
   /**

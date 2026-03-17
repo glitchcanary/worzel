@@ -167,6 +167,7 @@ describe('InkPipeline', () => {
 
       // Should have done TTS
       expect(tts.synthesizeCalls.length).toBeGreaterThan(0);
+      expect(session.recentSpokenOutput.length).toBeGreaterThan(0);
     });
 
     it('classifies meta query and uses LLM', async () => {
