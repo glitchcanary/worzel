@@ -2,38 +2,40 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Fink Infrastructure Demo</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
+html, body { height: 100%; overflow: hidden; }
 body {
   background: #0e1118;
   color: #d8dce6;
   font-family: 'Georgia', 'Palatino Linotype', serif;
   display: flex;
   justify-content: center;
-  padding: 16px;
+  padding: 0;
 }
 
 /* ── Layout ────────────────────────────────────────────── */
 .app {
   width: 100%;
-  max-width: 900px;
+  max-width: 1100px;
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
-  gap: 0;
 }
 
 /* ── Top bar ───────────────────────────────────────────── */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
+  gap: 8px;
+  padding: 8px 16px;
   background: #181c28;
   border-bottom: 1px solid #2d3348;
-  border-radius: 6px 6px 0 0;
+  flex-shrink: 0;
+  z-index: 10;
 }
 .topbar-logo {
   font-size: 15px;
@@ -46,13 +48,18 @@ body {
   color: #5a5f74;
   font-style: italic;
 }
-.topbar-tabs {
+.topbar-right {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.topbar-tabs {
   display: flex;
   gap: 4px;
 }
 .topbar-tab {
-  padding: 5px 14px;
+  padding: 5px 12px;
   font-size: 11px;
   font-family: inherit;
   background: transparent;
@@ -65,6 +72,29 @@ body {
 .topbar-tab:hover { border-color: #c97040; color: #c97040; }
 .topbar-tab.active { background: #252a3a; border-color: #c97040; color: #c97040; }
 
+.topbar-divider {
+  width: 1px;
+  height: 20px;
+  background: #2d3348;
+  margin: 0 4px;
+}
+
+.mode-toggle {
+  padding: 4px 10px;
+  font-size: 10px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  letter-spacing: 0.06em;
+  background: transparent;
+  border: 1px solid #2d3348;
+  border-radius: 3px;
+  color: #5a6080;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-transform: uppercase;
+}
+.mode-toggle:hover { border-color: #5a80b0; color: #5a80b0; }
+.mode-toggle.debug-active { background: #1a2a3a; border-color: #5a80b0; color: #8bb4e0; }
+
 /* ── Main panels ───────────────────────────────────────── */
 .main {
   display: flex;
@@ -76,8 +106,8 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #2d3348;
   min-width: 0;
+  min-height: 0;
 }
 .panel-infra {
   width: 320px;
@@ -86,13 +116,21 @@ body {
   flex-direction: column;
   overflow-y: auto;
   background: #181c28;
+  border-left: 1px solid #2d3348;
   scrollbar-width: thin;
   scrollbar-color: #2d3348 transparent;
+  transition: width 0.25s ease, opacity 0.2s ease;
+}
+.app:not(.debug-mode) .panel-infra {
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+  border-left: none;
 }
 
 /* ── Story header ──────────────────────────────────────── */
 .story-header {
-  padding: 10px 16px;
+  padding: 8px 16px;
   background: #1e2333;
   border-bottom: 1px solid #2d3348;
   display: flex;
@@ -101,7 +139,7 @@ body {
   flex-shrink: 0;
 }
 .story-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: #c97040;
   letter-spacing: 0.04em;
@@ -111,6 +149,7 @@ body {
   color: #4a4e63;
   font-style: italic;
 }
+.app:not(.debug-mode) .story-knot { display: none; }
 
 /* ── Scene image ───────────────────────────────────────── */
 .scene-image {
@@ -121,15 +160,16 @@ body {
   align-items: center;
   background: #14171f;
   border-bottom: 1px solid #2d3348;
-  min-height: 180px;
-  max-height: 220px;
+  min-height: 160px;
+  max-height: 240px;
   overflow: hidden;
   position: relative;
+  transition: max-height 0.3s ease;
 }
 .scene-image svg {
   width: 100%;
   height: 100%;
-  max-height: 220px;
+  max-height: 240px;
 }
 .scene-image .media-badge {
   position: absolute;
@@ -144,21 +184,23 @@ body {
   letter-spacing: 0.06em;
   font-family: monospace;
 }
+.app:not(.debug-mode) .scene-image .media-badge { display: none; }
 
 /* ── Narration ─────────────────────────────────────────── */
 .narration {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   scrollbar-width: thin;
   scrollbar-color: #2d3348 transparent;
+  -webkit-overflow-scrolling: touch;
 }
 .para {
-  font-size: 15px;
-  line-height: 1.65;
+  font-size: 16px;
+  line-height: 1.7;
   opacity: 0;
   transform: translateY(4px);
   animation: fadeUp 0.3s ease forwards;
@@ -172,7 +214,7 @@ body {
   text-transform: uppercase;
   color: #8bb4e0;
   display: block;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
 }
 
 .para[data-mood="tense"]      { color: #d8c8a0; }
@@ -182,6 +224,11 @@ body {
 .para[data-mood="noir"]       { color: #c8b898; }
 .para[data-mood="peaceful"]   { color: #a0d8b8; font-style: italic; }
 .para[data-mood="warm"]       { color: #d8c0a0; }
+.para[data-mood="melancholy"] { color: #b0b0d0; font-style: italic; }
+.para[data-mood="hopeful"]    { color: #c8d8a0; }
+.para[data-mood="dark"]       { color: #8a8a9a; }
+.para[data-mood="whimsical"]  { color: #d0b8e0; }
+.para[data-mood="resolute"]   { color: #d8d0c0; font-weight: 500; }
 
 .vizprom {
   font-size: 11px;
@@ -192,49 +239,100 @@ body {
   border-left: 2px solid #2d3348;
   border-radius: 2px;
 }
+.app:not(.debug-mode) .vizprom { display: none; }
+
+/* ── Inline images in narration ────────────────────────── */
+.narration-image {
+  align-self: center;
+  max-width: 80%;
+  border-radius: 4px;
+  overflow: hidden;
+  opacity: 0;
+  animation: fadeUp 0.4s ease 0.2s forwards;
+}
+.narration-image svg {
+  width: 100%;
+  display: block;
+}
+.narration-image-caption {
+  font-size: 10px;
+  color: #4a4e63;
+  text-align: center;
+  padding: 4px;
+  font-style: italic;
+}
+
+/* ── Media indicators (normal mode) ────────────────────── */
+.media-indicator {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+.media-chip {
+  font-size: 9px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-family: 'SF Mono', monospace;
+  letter-spacing: 0.04em;
+}
+.media-chip.audio { background: rgba(90,154,106,0.15); color: #5a9a6a; border: 1px solid rgba(90,154,106,0.3); }
+.media-chip.foley { background: rgba(176,112,80,0.15); color: #b07050; border: 1px solid rgba(176,112,80,0.3); }
+.media-chip.image { background: rgba(176,160,80,0.15); color: #b0a050; border: 1px solid rgba(176,160,80,0.3); }
+.app.debug-mode .media-indicator { display: none; }
 
 /* ── Choices ────────────────────────────────────────────── */
 .choices {
   flex-shrink: 0;
   padding: 12px 16px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
   border-top: 1px solid #2d3348;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-height: 40%;
+  gap: 8px;
+  max-height: 45%;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .choice-btn {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   width: 100%;
   text-align: left;
-  padding: 10px 14px;
+  padding: 12px 16px;
   background: #252a3a;
   border: 1px solid #2d3348;
-  border-radius: 4px;
+  border-radius: 6px;
   color: #d8dce6;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.4;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background 0.12s, border-color 0.12s, transform 0.1s;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 .choice-btn:hover {
   background: #2e3450;
   border-color: #8a5030;
 }
+.choice-btn:active {
+  transform: scale(0.98);
+  background: #353a50;
+}
 .choice-num {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: #c97040;
-  min-width: 14px;
+  min-width: 18px;
+  text-align: center;
 }
 .choice-text { flex: 1; }
 .choice-tags {
   display: flex;
   gap: 4px;
+  flex-wrap: wrap;
 }
 .choice-tag {
   font-size: 9px;
@@ -245,24 +343,23 @@ body {
 }
 .choice-tag.risk-high { background: rgba(220,80,80,0.15); color: #d88080; border: 1px solid rgba(220,80,80,0.3); }
 .choice-tag.risk-medium { background: rgba(220,180,80,0.15); color: #d8c080; border: 1px solid rgba(220,180,80,0.3); }
+.choice-tag.risk-low { background: rgba(80,180,80,0.15); color: #80c080; border: 1px solid rgba(80,180,80,0.3); }
 .choice-tag.skill { background: rgba(80,160,220,0.15); color: #80b8d8; border: 1px solid rgba(80,160,220,0.3); }
 .choice-tag.mood { background: rgba(160,80,220,0.12); color: #b898d8; border: 1px solid rgba(160,80,220,0.25); }
+.app:not(.debug-mode) .choice-tags { display: none; }
 
 .teaser {
-  font-size: 12px;
+  font-size: 13px;
   color: #3a3e53;
   font-style: italic;
-  padding: 8px 14px;
+  padding: 10px 14px;
   border: 1px dashed #2d3348;
-  border-radius: 4px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.teaser-lock {
-  font-size: 14px;
-  opacity: 0.4;
-}
+.teaser-lock { font-size: 14px; opacity: 0.4; }
 
 /* ── Timer bar ─────────────────────────────────────────── */
 .timer-bar {
@@ -278,7 +375,7 @@ body {
   transition: width 0.1s linear;
 }
 
-/* ── Infra panel ───────────────────────────────────────── */
+/* ── Infra panel sections ─────────────────────────────── */
 .infra-section {
   padding: 12px 14px;
   border-bottom: 1px solid #2d3348;
@@ -333,7 +430,6 @@ body {
   background: #14171f;
   border-radius: 2px;
   overflow: hidden;
-  position: relative;
 }
 .stream-fill {
   height: 100%;
@@ -375,25 +471,10 @@ body {
   background: #232838;
 }
 .voice-avatar svg { width: 100%; height: 100%; }
-.voice-info {
-  flex: 1;
-  min-width: 0;
-}
-.voice-name {
-  font-size: 11px;
-  font-weight: 700;
-  color: #c97040;
-}
-.voice-desc {
-  font-size: 10px;
-  color: #5a6080;
-  margin-top: 2px;
-}
-.voice-providers {
-  display: flex;
-  gap: 4px;
-  margin-top: 4px;
-}
+.voice-info { flex: 1; min-width: 0; }
+.voice-name { font-size: 11px; font-weight: 700; color: #c97040; }
+.voice-desc { font-size: 10px; color: #5a6080; margin-top: 2px; }
+.voice-providers { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
 .voice-provider {
   font-size: 8px;
   padding: 1px 5px;
@@ -406,21 +487,61 @@ body {
 /* ── Status bar ────────────────────────────────────────── */
 .statusbar {
   padding: 6px 16px;
+  padding-bottom: max(6px, env(safe-area-inset-bottom));
   font-size: 10px;
   letter-spacing: 0.04em;
   color: #4a4e63;
   background: #181c28;
   border-top: 1px solid #2d3348;
-  border-radius: 0 0 6px 6px;
   display: flex;
   gap: 16px;
+  flex-shrink: 0;
 }
 
-/* ── Responsive ────────────────────────────────────────── */
+/* ── Responsive: tablets ──────────────────────────────── */
+@media (max-width: 900px) {
+  .panel-infra { width: 280px; }
+}
+
+/* ── Responsive: mobile ───────────────────────────────── */
 @media (max-width: 700px) {
+  body { padding: 0; }
+  .topbar { padding: 8px 12px; gap: 6px; flex-wrap: wrap; }
+  .topbar-sub { display: none; }
+  .topbar-tab { padding: 5px 10px; font-size: 10px; }
+  .mode-toggle { padding: 4px 8px; font-size: 9px; }
+
   .main { flex-direction: column; }
-  .panel-infra { width: 100%; max-height: 300px; border-top: 1px solid #2d3348; }
-  .panel-story { border-right: none; }
+  .app.debug-mode .panel-story { flex: 1; min-height: 40vh; }
+  .panel-infra { width: 100% !important; border-left: none !important; border-top: 1px solid #2d3348; }
+  .app.debug-mode .panel-infra {
+    width: 100% !important;
+    opacity: 1;
+    max-height: 35vh;
+    overflow-y: auto;
+  }
+  .app:not(.debug-mode) .panel-infra {
+    width: 0 !important;
+    height: 0;
+    max-height: 0;
+  }
+
+  .scene-image { min-height: 120px; max-height: 160px; }
+  .scene-image svg { max-height: 160px; }
+  .narration { padding: 14px 16px; gap: 10px; }
+  .para { font-size: 15px; line-height: 1.6; }
+  .choices { padding: 10px 12px; gap: 6px; }
+  .choice-btn { padding: 12px 14px; font-size: 14px; border-radius: 8px; }
+  .narration-image { max-width: 95%; }
+  .statusbar { padding: 5px 12px; font-size: 9px; }
+  .story-header { padding: 6px 12px; }
+}
+
+/* ── Very small phones ────────────────────────────────── */
+@media (max-width: 380px) {
+  .topbar-tab { padding: 4px 8px; font-size: 9px; }
+  .choice-btn { padding: 10px 12px; font-size: 13px; }
+  .para { font-size: 14px; }
 }
 </style>
 </head>
@@ -428,10 +549,14 @@ body {
 <div class="app" id="app">
   <div class="topbar">
     <span class="topbar-logo">FINK</span>
-    <span class="topbar-sub">infrastructure demo</span>
-    <div class="topbar-tabs">
-      <button class="topbar-tab active" data-story="garden">Enchanted Garden</button>
-      <button class="topbar-tab" data-story="bigtop">Bigtop Briefing</button>
+    <span class="topbar-sub">interactive fiction</span>
+    <div class="topbar-right">
+      <div class="topbar-tabs">
+        <button class="topbar-tab active" data-story="garden">Garden</button>
+        <button class="topbar-tab" data-story="bigtop">Bigtop</button>
+      </div>
+      <span class="topbar-divider"></span>
+      <button class="mode-toggle" id="modeToggle" title="Toggle debug panel">debug</button>
     </div>
   </div>
 
@@ -466,14 +591,32 @@ body {
   </div>
 
   <div class="statusbar">
-    <span id="statusText">ready — tap a choice or switch stories</span>
+    <span id="statusText">tap a choice to begin</span>
     <span style="margin-left:auto" id="statusStreams"></span>
   </div>
 </div>
 
 <script>
 // ═══════════════════════════════════════════════════════════
-//  SVG Scene Art (vibe-drawn replacements for real images)
+//  Debug mode toggle
+// ═══════════════════════════════════════════════════════════
+
+let debugMode = false;
+const appEl = document.getElementById("app");
+const modeBtn = document.getElementById("modeToggle");
+
+modeBtn.addEventListener("click", () => {
+  debugMode = !debugMode;
+  appEl.classList.toggle("debug-mode", debugMode);
+  modeBtn.classList.toggle("debug-active", debugMode);
+  modeBtn.textContent = debugMode ? "debug on" : "debug";
+  // re-render current knot to update visibility
+  if (currentKnotKey) enterKnot(currentKnotKey, true);
+});
+
+
+// ═══════════════════════════════════════════════════════════
+//  SVG Scene Art
 // ═══════════════════════════════════════════════════════════
 
 const SVG = {
@@ -483,20 +626,23 @@ const SVG = {
         <stop offset="0%" stop-color="#1a1a3e"/>
         <stop offset="100%" stop-color="#2a2848"/>
       </linearGradient>
+      <radialGradient id="moonglow" cx="0.85" cy="0.15" r="0.3">
+        <stop offset="0%" stop-color="#e8e4c8" stop-opacity="0.3"/>
+        <stop offset="100%" stop-color="#1a1a3e" stop-opacity="0"/>
+      </radialGradient>
     </defs>
     <rect fill="url(#sky1)" width="400" height="200"/>
+    <rect fill="url(#moonglow)" width="400" height="200"/>
     <circle cx="340" cy="30" r="14" fill="#e8e4c8" opacity="0.8"/>
-    <!-- stars -->
     <circle cx="50" cy="20" r="1" fill="#fff" opacity="0.6"/>
     <circle cx="120" cy="45" r="1.2" fill="#fff" opacity="0.5"/>
     <circle cx="200" cy="15" r="1" fill="#fff" opacity="0.7"/>
     <circle cx="280" cy="35" r="0.8" fill="#fff" opacity="0.4"/>
-    <!-- ground -->
+    <circle cx="370" cy="55" r="0.9" fill="#fff" opacity="0.5"/>
+    <circle cx="30" cy="50" r="0.7" fill="#fff" opacity="0.3"/>
     <path d="M0 160 Q100 150 200 155 Q300 160 400 150 L400 200 L0 200Z" fill="#1a2a1a"/>
-    <!-- gate posts -->
     <rect x="155" y="80" width="8" height="90" fill="#3a3a3a" rx="2"/>
     <rect x="237" y="80" width="8" height="90" fill="#3a3a3a" rx="2"/>
-    <!-- gate bars -->
     <line x1="163" y1="85" x2="237" y2="85" stroke="#4a4a4a" stroke-width="3"/>
     <line x1="163" y1="165" x2="237" y2="165" stroke="#4a4a4a" stroke-width="3"/>
     <line x1="175" y1="85" x2="175" y2="165" stroke="#4a4a4a" stroke-width="2"/>
@@ -504,56 +650,139 @@ const SVG = {
     <line x1="200" y1="85" x2="200" y2="165" stroke="#4a4a4a" stroke-width="2"/>
     <line x1="210" y1="85" x2="210" y2="165" stroke="#4a4a4a" stroke-width="2"/>
     <line x1="225" y1="85" x2="225" y2="165" stroke="#4a4a4a" stroke-width="2"/>
-    <!-- gate arch -->
     <path d="M155 85 Q200 55 245 85" fill="none" stroke="#4a4a4a" stroke-width="3"/>
-    <!-- ivy -->
     <circle cx="152" cy="100" r="5" fill="#2a5a2a" opacity="0.7"/>
     <circle cx="148" cy="110" r="6" fill="#2a6a2a" opacity="0.6"/>
     <circle cx="155" cy="120" r="4" fill="#3a6a3a" opacity="0.7"/>
     <circle cx="245" cy="95" r="5" fill="#2a5a2a" opacity="0.7"/>
     <circle cx="248" cy="108" r="6" fill="#2a6a2a" opacity="0.6"/>
     <circle cx="243" cy="118" r="4" fill="#3a6a3a" opacity="0.8"/>
-    <!-- path beyond -->
     <path d="M180 165 Q200 150 220 165" fill="#1a3a1a" opacity="0.5"/>
-    <!-- distant trees -->
     <ellipse cx="100" cy="140" rx="30" ry="35" fill="#1a3a1a" opacity="0.5"/>
     <ellipse cx="300" cy="135" rx="35" ry="38" fill="#1a3a1a" opacity="0.5"/>
-    <!-- glowing flowers -->
     <circle cx="130" cy="165" r="2" fill="#a0d8a0" opacity="0.6"/>
     <circle cx="270" cy="162" r="2" fill="#a0c8d0" opacity="0.5"/>
     <circle cx="145" cy="170" r="1.5" fill="#d0a0d0" opacity="0.5"/>
   </svg>`,
 
+  garden_gate_open: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="sky1b" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#1a1a3e"/>
+        <stop offset="100%" stop-color="#2a2848"/>
+      </linearGradient>
+    </defs>
+    <rect fill="url(#sky1b)" width="400" height="200"/>
+    <circle cx="340" cy="30" r="14" fill="#e8e4c8" opacity="0.8"/>
+    <circle cx="50" cy="20" r="1" fill="#fff" opacity="0.6"/>
+    <circle cx="200" cy="15" r="1" fill="#fff" opacity="0.7"/>
+    <circle cx="280" cy="35" r="0.8" fill="#fff" opacity="0.4"/>
+    <path d="M0 160 Q100 150 200 155 Q300 160 400 150 L400 200 L0 200Z" fill="#1a2a1a"/>
+    <rect x="145" y="80" width="8" height="90" fill="#3a3a3a" rx="2"/>
+    <rect x="247" y="80" width="8" height="90" fill="#3a3a3a" rx="2"/>
+    <!-- left gate swung open (perspective) -->
+    <g transform="translate(153,85)">
+      <line x1="0" y1="0" x2="25" y2="8" stroke="#4a4a4a" stroke-width="2"/>
+      <line x1="0" y1="80" x2="25" y2="72" stroke="#4a4a4a" stroke-width="2"/>
+      <line x1="8" y1="2" x2="8" y2="78" stroke="#4a4a4a" stroke-width="1.5" opacity="0.7"/>
+      <line x1="16" y1="5" x2="16" y2="75" stroke="#4a4a4a" stroke-width="1.5" opacity="0.6"/>
+      <line x1="24" y1="8" x2="24" y2="72" stroke="#4a4a4a" stroke-width="1.5" opacity="0.5"/>
+    </g>
+    <!-- right gate swung open -->
+    <g transform="translate(247,85)">
+      <line x1="0" y1="0" x2="-25" y2="8" stroke="#4a4a4a" stroke-width="2"/>
+      <line x1="0" y1="80" x2="-25" y2="72" stroke="#4a4a4a" stroke-width="2"/>
+      <line x1="-8" y1="2" x2="-8" y2="78" stroke="#4a4a4a" stroke-width="1.5" opacity="0.7"/>
+      <line x1="-16" y1="5" x2="-16" y2="75" stroke="#4a4a4a" stroke-width="1.5" opacity="0.6"/>
+    </g>
+    <path d="M145 85 Q200 55 255 85" fill="none" stroke="#4a4a4a" stroke-width="3"/>
+    <circle cx="142" cy="100" r="5" fill="#2a5a2a" opacity="0.7"/>
+    <circle cx="138" cy="112" r="6" fill="#2a6a2a" opacity="0.6"/>
+    <circle cx="255" cy="95" r="5" fill="#2a5a2a" opacity="0.7"/>
+    <circle cx="258" cy="108" r="6" fill="#2a6a2a" opacity="0.6"/>
+    <!-- path visible beyond -->
+    <path d="M180 165 Q200 140 220 165" fill="#1a3a1a" opacity="0.4"/>
+    <path d="M185 155 Q200 135 215 155" fill="#1e3e1e" opacity="0.3"/>
+    <ellipse cx="100" cy="140" rx="30" ry="35" fill="#1a3a1a" opacity="0.5"/>
+    <ellipse cx="300" cy="135" rx="35" ry="38" fill="#1a3a1a" opacity="0.5"/>
+    <circle cx="130" cy="165" r="2" fill="#a0d8a0" opacity="0.6"/>
+    <circle cx="270" cy="162" r="2" fill="#a0c8d0" opacity="0.5"/>
+  </svg>`,
+
+  garden_dark: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <rect fill="#0e0e1e" width="400" height="200"/>
+    <circle cx="340" cy="30" r="12" fill="#c8c4a8" opacity="0.4"/>
+    <circle cx="50" cy="20" r="1" fill="#fff" opacity="0.3"/>
+    <circle cx="200" cy="15" r="0.8" fill="#fff" opacity="0.4"/>
+    <path d="M0 155 Q100 148 200 152 Q300 156 400 150 L400 200 L0 200Z" fill="#0e1a0e"/>
+    <!-- dark shapes moving -->
+    <ellipse cx="80" cy="130" rx="40" ry="45" fill="#0e1e0e" opacity="0.7"/>
+    <ellipse cx="320" cy="125" rx="45" ry="50" fill="#0e1e0e" opacity="0.6"/>
+    <ellipse cx="200" cy="120" rx="25" ry="30" fill="#0e1e0e" opacity="0.5"/>
+    <!-- faint path -->
+    <path d="M150 170 Q200 160 250 170" fill="#121e12" opacity="0.3"/>
+    <!-- shadows suggesting movement -->
+    <ellipse cx="130" cy="145" rx="10" ry="15" fill="#0a1a0a" opacity="0.4"/>
+    <ellipse cx="270" cy="140" rx="12" ry="18" fill="#0a1a0a" opacity="0.3"/>
+    <!-- barely visible flowers -->
+    <circle cx="160" cy="168" r="1.5" fill="#506050" opacity="0.3"/>
+    <circle cx="240" cy="165" r="1.5" fill="#505060" opacity="0.3"/>
+  </svg>`,
+
+  garden_lantern: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="lanternglow" cx="0.3" cy="0.6" r="0.5">
+        <stop offset="0%" stop-color="#c0a040" stop-opacity="0.25"/>
+        <stop offset="60%" stop-color="#c0a040" stop-opacity="0.08"/>
+        <stop offset="100%" stop-color="#1a1a2e" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <rect fill="#1a1a2e" width="400" height="200"/>
+    <rect fill="url(#lanternglow)" width="400" height="200"/>
+    <circle cx="340" cy="30" r="14" fill="#e8e4c8" opacity="0.6"/>
+    <circle cx="50" cy="20" r="1" fill="#fff" opacity="0.5"/>
+    <circle cx="200" cy="15" r="1" fill="#fff" opacity="0.6"/>
+    <path d="M0 155 Q100 148 200 152 Q300 156 400 150 L400 200 L0 200Z" fill="#1a2a1a"/>
+    <!-- lantern on post -->
+    <rect x="118" y="100" width="4" height="60" fill="#4a3a2a"/>
+    <rect x="112" y="90" width="16" height="14" fill="#6a5a40" rx="2"/>
+    <circle cx="120" cy="97" r="5" fill="#e0c060" opacity="0.9"/>
+    <circle cx="120" cy="97" r="12" fill="#e0c060" opacity="0.2"/>
+    <circle cx="120" cy="97" r="25" fill="#e0c060" opacity="0.08"/>
+    <!-- path now visible in warm light -->
+    <path d="M100 165 Q200 150 300 165" fill="#1e3e1e" opacity="0.4"/>
+    <!-- trees now visible -->
+    <ellipse cx="80" cy="130" rx="30" ry="35" fill="#1a3a1a" opacity="0.6"/>
+    <ellipse cx="320" cy="125" rx="35" ry="40" fill="#1a3a1a" opacity="0.5"/>
+    <!-- flowers now visible in warm light -->
+    <circle cx="140" cy="162" r="2.5" fill="#d0a0d0" opacity="0.5"/>
+    <circle cx="200" cy="158" r="2" fill="#a0d8a0" opacity="0.6"/>
+    <circle cx="260" cy="160" r="2" fill="#a0c8d0" opacity="0.5"/>
+    <circle cx="170" cy="166" r="1.5" fill="#ffd0a0" opacity="0.4"/>
+  </svg>`,
+
   garden_deep: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
     <rect fill="#1a1a2e" width="400" height="200"/>
-    <!-- oak tree -->
     <rect x="195" y="100" width="12" height="70" fill="#3a2a1a" rx="3"/>
     <ellipse cx="200" cy="85" rx="65" ry="50" fill="#1a3a1a" opacity="0.7"/>
     <ellipse cx="185" cy="80" rx="40" ry="35" fill="#2a4a2a" opacity="0.6"/>
     <ellipse cx="220" cy="78" rx="35" ry="30" fill="#1a4a2a" opacity="0.5"/>
-    <!-- bench -->
     <rect x="160" y="155" width="80" height="6" fill="#5a4a3a" rx="2"/>
     <rect x="165" y="161" width="5" height="10" fill="#5a4a3a"/>
     <rect x="230" y="161" width="5" height="10" fill="#5a4a3a"/>
-    <!-- cat silhouette on bench -->
     <ellipse cx="210" cy="148" rx="10" ry="7" fill="#2a2a3a"/>
     <circle cx="215" cy="142" r="6" fill="#2a2a3a"/>
     <path d="M211 136 L213 140 L215 136" fill="#2a2a3a"/>
     <path d="M215 136 L217 140 L219 136" fill="#2a2a3a"/>
-    <!-- cat eyes -->
     <circle cx="213" cy="141" r="1.5" fill="#40d860"/>
     <circle cx="217" cy="141" r="1.5" fill="#40d860"/>
-    <!-- tail -->
     <path d="M200 152 Q188 145 192 135" fill="none" stroke="#2a2a3a" stroke-width="3" stroke-linecap="round"/>
-    <!-- ground -->
     <path d="M0 170 Q200 165 400 170 L400 200 L0 200Z" fill="#1a2a1a"/>
-    <!-- glowing flowers -->
     <circle cx="100" cy="175" r="3" fill="#d0a0ff" opacity="0.4"/>
     <circle cx="120" cy="178" r="2" fill="#a0d0ff" opacity="0.5"/>
     <circle cx="290" cy="173" r="3" fill="#ffd0a0" opacity="0.4"/>
     <circle cx="310" cy="177" r="2" fill="#a0ffd0" opacity="0.5"/>
     <circle cx="80" cy="180" r="2" fill="#ffa0d0" opacity="0.3"/>
-    <!-- stars -->
     <circle cx="60" cy="25" r="1.2" fill="#fff" opacity="0.6"/>
     <circle cx="150" cy="15" r="1" fill="#fff" opacity="0.5"/>
     <circle cx="300" cy="20" r="1.3" fill="#fff" opacity="0.7"/>
@@ -563,7 +792,6 @@ const SVG = {
   garden_flowers: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
     <rect fill="#1a1a2e" width="400" height="200"/>
     <path d="M0 140 Q200 130 400 140 L400 200 L0 200Z" fill="#1a2a1a"/>
-    <!-- big glowing flowers -->
     <g transform="translate(100,130)">
       <line x1="0" y1="0" x2="0" y2="30" stroke="#2a5a2a" stroke-width="2"/>
       <circle cx="0" cy="-5" r="8" fill="#d0a0ff" opacity="0.5"/>
@@ -584,117 +812,15 @@ const SVG = {
       <circle cx="0" cy="-5" r="7" fill="#a0ffd0" opacity="0.5"/>
       <circle cx="0" cy="-5" r="3" fill="#c0ffe0" opacity="0.7"/>
     </g>
-    <!-- small ground flowers -->
     <circle cx="60" cy="155" r="2" fill="#ff80c0" opacity="0.4"/>
     <circle cx="340" cy="150" r="2" fill="#80c0ff" opacity="0.4"/>
     <circle cx="200" cy="158" r="1.5" fill="#c0ff80" opacity="0.5"/>
     <text x="200" y="95" text-anchor="middle" font-size="11" fill="#5a6080" font-style="italic" font-family="Georgia">No species you recognise.</text>
   </svg>`,
 
-  circus_wagon: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
-    <rect fill="#1a1510" width="400" height="200"/>
-    <!-- ground mud -->
-    <path d="M0 160 Q100 155 200 158 Q300 161 400 155 L400 200 L0 200Z" fill="#2a2218"/>
-    <!-- wagon body -->
-    <rect x="100" y="70" width="200" height="85" fill="#3a2a1a" rx="3"/>
-    <rect x="95" y="65" width="210" height="10" fill="#4a3a2a" rx="2"/>
-    <!-- window glow -->
-    <rect x="150" y="85" width="40" height="30" fill="#4a3a20" rx="2"/>
-    <rect x="152" y="87" width="36" height="26" fill="#6a5a30" opacity="0.6" rx="1"/>
-    <rect x="220" y="85" width="40" height="30" fill="#4a3a20" rx="2"/>
-    <rect x="222" y="87" width="36" height="26" fill="#6a5a30" opacity="0.5" rx="1"/>
-    <!-- wheels -->
-    <circle cx="140" cy="158" r="18" fill="none" stroke="#4a3a2a" stroke-width="4"/>
-    <circle cx="140" cy="158" r="3" fill="#4a3a2a"/>
-    <circle cx="260" cy="158" r="18" fill="none" stroke="#4a3a2a" stroke-width="4"/>
-    <circle cx="260" cy="158" r="3" fill="#4a3a2a"/>
-    <!-- steps -->
-    <rect x="295" y="140" width="20" height="6" fill="#3a2a1a"/>
-    <rect x="300" y="150" width="20" height="6" fill="#3a2a1a"/>
-    <!-- door -->
-    <rect x="285" y="90" width="15" height="60" fill="#2a1a10" rx="1"/>
-    <circle cx="296" cy="120" r="2" fill="#8a7a5a"/>
-    <!-- lantern -->
-    <rect x="96" y="58" width="6" height="8" fill="#6a5a40" rx="1"/>
-    <circle cx="99" cy="55" r="4" fill="#c0a040" opacity="0.6"/>
-    <circle cx="99" cy="55" r="8" fill="#c0a040" opacity="0.15"/>
-    <!-- distant tent -->
-    <path d="M350 100 L370 160 L330 160 Z" fill="#2a2018" opacity="0.6"/>
-    <line x1="350" y1="95" x2="350" y2="100" stroke="#4a3a2a" stroke-width="2"/>
-    <!-- ruts -->
-    <path d="M0 175 Q100 172 200 175 Q300 178 400 174" fill="none" stroke="#352a1a" stroke-width="2" opacity="0.5"/>
-    <path d="M0 185 Q150 182 300 186 Q350 188 400 184" fill="none" stroke="#352a1a" stroke-width="2" opacity="0.4"/>
-  </svg>`,
-
-  circus_desk: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
-    <rect fill="#2a2018" width="400" height="200"/>
-    <!-- desk surface -->
-    <path d="M50 110 L350 110 L370 200 L30 200Z" fill="#3a2a1a"/>
-    <rect x="60" y="108" width="280" height="5" fill="#4a3a2a" rx="1"/>
-    <!-- lamp -->
-    <rect x="290" y="60" width="4" height="50" fill="#5a4a3a"/>
-    <ellipse cx="292" cy="55" rx="18" ry="10" fill="#4a3a20"/>
-    <circle cx="292" cy="52" r="6" fill="#c0a040" opacity="0.8"/>
-    <circle cx="292" cy="52" r="20" fill="#c0a040" opacity="0.08"/>
-    <!-- note -->
-    <rect x="120" y="115" width="50" height="35" fill="#c8c0a0" rx="1" transform="rotate(-5 145 132)"/>
-    <line x1="127" y1="123" x2="163" y2="121" stroke="#4a4030" stroke-width="1" opacity="0.5"/>
-    <line x1="128" y1="130" x2="160" y2="128" stroke="#4a4030" stroke-width="1" opacity="0.5"/>
-    <line x1="129" y1="137" x2="155" y2="135" stroke="#4a4030" stroke-width="1" opacity="0.4"/>
-    <!-- photo -->
-    <rect x="200" y="118" width="30" height="38" fill="#d8d0c0" rx="1" transform="rotate(3 215 137)"/>
-    <rect x="204" y="122" width="22" height="26" fill="#8a7a6a" rx="1" transform="rotate(3 215 135)"/>
-    <!-- ticket stubs -->
-    <rect x="85" y="120" width="20" height="10" fill="#b85050" opacity="0.6" rx="1" transform="rotate(-12 95 125)"/>
-    <rect x="90" y="125" width="20" height="10" fill="#b87050" opacity="0.5" rx="1" transform="rotate(5 100 130)"/>
-    <!-- ledger -->
-    <rect x="260" y="115" width="40" height="55" fill="#4a3a2a" rx="2"/>
-    <rect x="263" y="118" width="34" height="49" fill="#c8c0a0" rx="1"/>
-    <!-- canvas wall texture -->
-    <line x1="0" y1="0" x2="0" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
-    <line x1="40" y1="0" x2="40" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
-    <line x1="80" y1="0" x2="80" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
-    <line x1="120" y1="0" x2="120" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.2"/>
-    <line x1="160" y1="0" x2="160" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
-    <line x1="200" y1="0" x2="200" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.2"/>
-    <line x1="240" y1="0" x2="240" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
-    <line x1="280" y1="0" x2="280" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
-    <line x1="320" y1="0" x2="320" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.2"/>
-    <line x1="360" y1="0" x2="360" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
-    <line x1="400" y1="0" x2="400" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
-  </svg>`,
-
-  circus_yard: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
-    <rect fill="#1a1510" width="400" height="200"/>
-    <!-- night sky -->
-    <circle cx="50" cy="25" r="1" fill="#fff" opacity="0.4"/>
-    <circle cx="180" cy="15" r="0.8" fill="#fff" opacity="0.5"/>
-    <circle cx="350" cy="30" r="1.2" fill="#fff" opacity="0.3"/>
-    <!-- big top silhouette -->
-    <path d="M120 50 L200 10 L280 50 L290 150 L110 150Z" fill="#2a2018" opacity="0.6"/>
-    <line x1="200" y1="5" x2="200" y2="10" stroke="#4a3a2a" stroke-width="2"/>
-    <!-- flag -->
-    <path d="M200 5 L215 10 L200 15" fill="#6a3030" opacity="0.5"/>
-    <!-- smaller tent -->
-    <path d="M320 80 L350 50 L380 80 L385 150 L315 150Z" fill="#2a2018" opacity="0.5"/>
-    <!-- wagon silhouettes -->
-    <rect x="30" y="120" width="60" height="30" fill="#2a2018" rx="2"/>
-    <circle cx="45" cy="152" r="8" fill="none" stroke="#2a2018" stroke-width="3"/>
-    <circle cx="80" cy="152" r="8" fill="none" stroke="#2a2018" stroke-width="3"/>
-    <!-- ground -->
-    <path d="M0 155 Q200 150 400 155 L400 200 L0 200Z" fill="#2a2218"/>
-    <!-- lantern glow -->
-    <circle cx="200" cy="140" r="4" fill="#c0a040" opacity="0.7"/>
-    <circle cx="200" cy="140" r="15" fill="#c0a040" opacity="0.1"/>
-    <circle cx="200" cy="140" r="30" fill="#c0a040" opacity="0.05"/>
-    <!-- ruts -->
-    <path d="M0 170 Q100 168 200 172 Q300 176 400 170" fill="none" stroke="#352a1a" stroke-width="2" opacity="0.4"/>
-  </svg>`,
-
   garden_secret: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
     <rect fill="#10101e" width="400" height="200"/>
     <path d="M0 150 Q200 140 400 150 L400 200 L0 200Z" fill="#1a2a1a"/>
-    <!-- burning star-flowers -->
     <g transform="translate(80,120)">
       <circle r="12" fill="#ffd080" opacity="0.2"/>
       <circle r="6" fill="#ffd080" opacity="0.4"/>
@@ -720,13 +846,191 @@ const SVG = {
       <circle r="4" fill="#a0ffa0" opacity="0.4"/>
       <circle r="2" fill="#d0ffd0" opacity="0.8"/>
     </g>
-    <!-- cat silhouette leading -->
     <ellipse cx="180" cy="148" rx="8" ry="5" fill="#1a1a2a"/>
     <circle cx="184" cy="143" r="4.5" fill="#1a1a2a"/>
     <path d="M181 139 L182.5 142 L184 139" fill="#1a1a2a"/>
     <path d="M184 139 L185.5 142 L187 139" fill="#1a1a2a"/>
     <circle cx="183" cy="142.5" r="1" fill="#40d860"/>
     <circle cx="186" cy="142.5" r="1" fill="#40d860"/>
+  </svg>`,
+
+  garden_peaceful: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <rect fill="#0e1020" width="400" height="200"/>
+    <!-- starfield -->
+    <circle cx="30" cy="12" r="1.2" fill="#fff" opacity="0.7"/>
+    <circle cx="80" cy="30" r="0.8" fill="#fff" opacity="0.5"/>
+    <circle cx="140" cy="8" r="1" fill="#fff" opacity="0.6"/>
+    <circle cx="200" cy="25" r="1.3" fill="#fff" opacity="0.8"/>
+    <circle cx="260" cy="12" r="0.9" fill="#fff" opacity="0.5"/>
+    <circle cx="310" cy="35" r="1.1" fill="#fff" opacity="0.6"/>
+    <circle cx="370" cy="18" r="0.7" fill="#fff" opacity="0.4"/>
+    <circle cx="55" cy="45" r="0.6" fill="#fff" opacity="0.3"/>
+    <circle cx="170" cy="40" r="0.8" fill="#fff" opacity="0.4"/>
+    <circle cx="340" cy="50" r="0.9" fill="#fff" opacity="0.5"/>
+    <!-- oak silhouette -->
+    <rect x="195" y="100" width="10" height="70" fill="#1a2a1a"/>
+    <ellipse cx="200" cy="85" rx="60" ry="48" fill="#1a2a1a" opacity="0.8"/>
+    <!-- bench with cat and person silhouette -->
+    <rect x="162" y="155" width="76" height="5" fill="#3a2a1a" rx="2"/>
+    <rect x="167" y="160" width="4" height="8" fill="#3a2a1a"/>
+    <rect x="230" y="160" width="4" height="8" fill="#3a2a1a"/>
+    <!-- person sitting (simple silhouette) -->
+    <circle cx="185" cy="143" r="6" fill="#1a1a2a"/>
+    <rect x="181" y="149" width="8" height="7" fill="#1a1a2a" rx="1"/>
+    <!-- cat beside them -->
+    <ellipse cx="210" cy="150" rx="7" ry="5" fill="#1a1a2a"/>
+    <circle cx="213" cy="145" r="4" fill="#1a1a2a"/>
+    <circle cx="212" cy="144.5" r="1" fill="#40d860" opacity="0.6"/>
+    <circle cx="215" cy="144.5" r="1" fill="#40d860" opacity="0.6"/>
+    <path d="M0 170 Q200 165 400 170 L400 200 L0 200Z" fill="#0e1a0e"/>
+    <!-- gentle glow flowers -->
+    <circle cx="100" cy="175" r="2" fill="#d0a0ff" opacity="0.2"/>
+    <circle cx="300" cy="172" r="2" fill="#a0d0ff" opacity="0.2"/>
+  </svg>`,
+
+  garden_farewell: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="dawn" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#1a1a3e"/>
+        <stop offset="70%" stop-color="#2a2848"/>
+        <stop offset="100%" stop-color="#3a2848"/>
+      </linearGradient>
+    </defs>
+    <rect fill="url(#dawn)" width="400" height="200"/>
+    <circle cx="50" cy="20" r="1" fill="#fff" opacity="0.4"/>
+    <circle cx="150" cy="15" r="0.8" fill="#fff" opacity="0.3"/>
+    <circle cx="300" cy="25" r="1" fill="#fff" opacity="0.35"/>
+    <!-- gate silhouette, distant -->
+    <rect x="185" y="120" width="4" height="40" fill="#2a2a3a" opacity="0.4"/>
+    <rect x="211" y="120" width="4" height="40" fill="#2a2a3a" opacity="0.4"/>
+    <path d="M185 120 Q200 108 215 120" fill="none" stroke="#2a2a3a" stroke-width="2" opacity="0.4"/>
+    <path d="M0 160 Q200 155 400 160 L400 200 L0 200Z" fill="#1a2a1a"/>
+    <text x="200" y="90" text-anchor="middle" font-size="12" fill="#4a4e63" font-style="italic" font-family="Georgia">Until next time.</text>
+  </svg>`,
+
+  garden_leave: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <rect fill="#1a1a2e" width="400" height="200"/>
+    <circle cx="340" cy="30" r="14" fill="#e8e4c8" opacity="0.5"/>
+    <!-- looking back at gate, fading -->
+    <path d="M0 160 Q200 150 400 160 L400 200 L0 200Z" fill="#1a2a1a"/>
+    <!-- path leading away -->
+    <path d="M200 165 Q180 175 100 190" fill="none" stroke="#1e2e1e" stroke-width="8" opacity="0.3"/>
+    <!-- gate tiny in distance -->
+    <rect x="193" y="130" width="3" height="25" fill="#3a3a3a" opacity="0.3"/>
+    <rect x="204" y="130" width="3" height="25" fill="#3a3a3a" opacity="0.3"/>
+    <path d="M193 130 Q200 122 207 130" fill="none" stroke="#3a3a3a" stroke-width="1.5" opacity="0.3"/>
+    <!-- mist -->
+    <ellipse cx="200" cy="145" rx="60" ry="15" fill="#2a2a3e" opacity="0.3"/>
+    <circle cx="60" cy="25" r="1" fill="#fff" opacity="0.5"/>
+    <circle cx="180" cy="15" r="0.8" fill="#fff" opacity="0.4"/>
+  </svg>`,
+
+  circus_wagon: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <rect fill="#1a1510" width="400" height="200"/>
+    <path d="M0 160 Q100 155 200 158 Q300 161 400 155 L400 200 L0 200Z" fill="#2a2218"/>
+    <rect x="100" y="70" width="200" height="85" fill="#3a2a1a" rx="3"/>
+    <rect x="95" y="65" width="210" height="10" fill="#4a3a2a" rx="2"/>
+    <rect x="150" y="85" width="40" height="30" fill="#4a3a20" rx="2"/>
+    <rect x="152" y="87" width="36" height="26" fill="#6a5a30" opacity="0.6" rx="1"/>
+    <rect x="220" y="85" width="40" height="30" fill="#4a3a20" rx="2"/>
+    <rect x="222" y="87" width="36" height="26" fill="#6a5a30" opacity="0.5" rx="1"/>
+    <circle cx="140" cy="158" r="18" fill="none" stroke="#4a3a2a" stroke-width="4"/>
+    <circle cx="140" cy="158" r="3" fill="#4a3a2a"/>
+    <circle cx="260" cy="158" r="18" fill="none" stroke="#4a3a2a" stroke-width="4"/>
+    <circle cx="260" cy="158" r="3" fill="#4a3a2a"/>
+    <rect x="295" y="140" width="20" height="6" fill="#3a2a1a"/>
+    <rect x="300" y="150" width="20" height="6" fill="#3a2a1a"/>
+    <rect x="285" y="90" width="15" height="60" fill="#2a1a10" rx="1"/>
+    <circle cx="296" cy="120" r="2" fill="#8a7a5a"/>
+    <rect x="96" y="58" width="6" height="8" fill="#6a5a40" rx="1"/>
+    <circle cx="99" cy="55" r="4" fill="#c0a040" opacity="0.6"/>
+    <circle cx="99" cy="55" r="8" fill="#c0a040" opacity="0.15"/>
+    <path d="M350 100 L370 160 L330 160 Z" fill="#2a2018" opacity="0.6"/>
+    <line x1="350" y1="95" x2="350" y2="100" stroke="#4a3a2a" stroke-width="2"/>
+    <path d="M0 175 Q100 172 200 175 Q300 178 400 174" fill="none" stroke="#352a1a" stroke-width="2" opacity="0.5"/>
+    <path d="M0 185 Q150 182 300 186 Q350 188 400 184" fill="none" stroke="#352a1a" stroke-width="2" opacity="0.4"/>
+  </svg>`,
+
+  circus_desk: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <rect fill="#2a2018" width="400" height="200"/>
+    <path d="M50 110 L350 110 L370 200 L30 200Z" fill="#3a2a1a"/>
+    <rect x="60" y="108" width="280" height="5" fill="#4a3a2a" rx="1"/>
+    <rect x="290" y="60" width="4" height="50" fill="#5a4a3a"/>
+    <ellipse cx="292" cy="55" rx="18" ry="10" fill="#4a3a20"/>
+    <circle cx="292" cy="52" r="6" fill="#c0a040" opacity="0.8"/>
+    <circle cx="292" cy="52" r="20" fill="#c0a040" opacity="0.08"/>
+    <rect x="120" y="115" width="50" height="35" fill="#c8c0a0" rx="1" transform="rotate(-5 145 132)"/>
+    <line x1="127" y1="123" x2="163" y2="121" stroke="#4a4030" stroke-width="1" opacity="0.5"/>
+    <line x1="128" y1="130" x2="160" y2="128" stroke="#4a4030" stroke-width="1" opacity="0.5"/>
+    <line x1="129" y1="137" x2="155" y2="135" stroke="#4a4030" stroke-width="1" opacity="0.4"/>
+    <rect x="200" y="118" width="30" height="38" fill="#d8d0c0" rx="1" transform="rotate(3 215 137)"/>
+    <rect x="204" y="122" width="22" height="26" fill="#8a7a6a" rx="1" transform="rotate(3 215 135)"/>
+    <rect x="85" y="120" width="20" height="10" fill="#b85050" opacity="0.6" rx="1" transform="rotate(-12 95 125)"/>
+    <rect x="90" y="125" width="20" height="10" fill="#b87050" opacity="0.5" rx="1" transform="rotate(5 100 130)"/>
+    <rect x="260" y="115" width="40" height="55" fill="#4a3a2a" rx="2"/>
+    <rect x="263" y="118" width="34" height="49" fill="#c8c0a0" rx="1"/>
+    <line x1="0" y1="0" x2="0" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
+    <line x1="40" y1="0" x2="40" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
+    <line x1="80" y1="0" x2="80" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
+    <line x1="120" y1="0" x2="120" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.2"/>
+    <line x1="160" y1="0" x2="160" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
+    <line x1="200" y1="0" x2="200" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.2"/>
+    <line x1="240" y1="0" x2="240" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
+    <line x1="280" y1="0" x2="280" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
+    <line x1="320" y1="0" x2="320" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.2"/>
+    <line x1="360" y1="0" x2="360" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
+    <line x1="400" y1="0" x2="400" y2="110" stroke="#3a3028" stroke-width="1" opacity="0.3"/>
+  </svg>`,
+
+  circus_yard: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <rect fill="#1a1510" width="400" height="200"/>
+    <circle cx="50" cy="25" r="1" fill="#fff" opacity="0.4"/>
+    <circle cx="180" cy="15" r="0.8" fill="#fff" opacity="0.5"/>
+    <circle cx="350" cy="30" r="1.2" fill="#fff" opacity="0.3"/>
+    <path d="M120 50 L200 10 L280 50 L290 150 L110 150Z" fill="#2a2018" opacity="0.6"/>
+    <line x1="200" y1="5" x2="200" y2="10" stroke="#4a3a2a" stroke-width="2"/>
+    <path d="M200 5 L215 10 L200 15" fill="#6a3030" opacity="0.5"/>
+    <path d="M320 80 L350 50 L380 80 L385 150 L315 150Z" fill="#2a2018" opacity="0.5"/>
+    <rect x="30" y="120" width="60" height="30" fill="#2a2018" rx="2"/>
+    <circle cx="45" cy="152" r="8" fill="none" stroke="#2a2018" stroke-width="3"/>
+    <circle cx="80" cy="152" r="8" fill="none" stroke="#2a2018" stroke-width="3"/>
+    <path d="M0 155 Q200 150 400 155 L400 200 L0 200Z" fill="#2a2218"/>
+    <circle cx="200" cy="140" r="4" fill="#c0a040" opacity="0.7"/>
+    <circle cx="200" cy="140" r="15" fill="#c0a040" opacity="0.1"/>
+    <circle cx="200" cy="140" r="30" fill="#c0a040" opacity="0.05"/>
+    <path d="M0 170 Q100 168 200 172 Q300 176 400 170" fill="none" stroke="#352a1a" stroke-width="2" opacity="0.4"/>
+  </svg>`,
+
+  circus_photo: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <rect fill="#2a2018" width="400" height="200"/>
+    <!-- photo frame -->
+    <rect x="130" y="20" width="140" height="170" fill="#d8d0c0" rx="2"/>
+    <rect x="140" y="30" width="120" height="140" fill="#8a7a6a" rx="1"/>
+    <!-- figure in photo (young girl, simple) -->
+    <circle cx="200" cy="80" r="18" fill="#9a8a7a"/>
+    <rect x="185" y="98" width="30" height="40" fill="#7a6a5a" rx="3"/>
+    <!-- studio backdrop -->
+    <rect x="140" y="30" width="120" height="40" fill="#6a6a5a" opacity="0.3"/>
+    <!-- flash glare -->
+    <circle cx="220" cy="60" r="15" fill="#fff" opacity="0.05"/>
+    <!-- hand holding print -->
+    <path d="M120 170 Q130 165 140 170 Q150 175 160 170" fill="#5a4a3a" opacity="0.6"/>
+    <text x="200" y="192" text-anchor="middle" font-size="9" fill="#5a4a3a" font-style="italic" font-family="Georgia">Last spring</text>
+  </svg>`,
+
+  circus_note: `<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+    <rect fill="#2a2018" width="400" height="200"/>
+    <!-- note paper -->
+    <rect x="100" y="30" width="200" height="140" fill="#c8c0a0" rx="2" transform="rotate(-2 200 100)"/>
+    <!-- blocky handwriting -->
+    <text x="130" y="70" font-size="14" fill="#2a2018" font-family="monospace" font-weight="bold" transform="rotate(-2 200 100)">NO POLICE.</text>
+    <text x="130" y="95" font-size="14" fill="#2a2018" font-family="monospace" font-weight="bold" transform="rotate(-2 200 100)">NO HEROICS.</text>
+    <text x="130" y="120" font-size="14" fill="#2a2018" font-family="monospace" font-weight="bold" transform="rotate(-2 200 100)">WAIT FOR</text>
+    <text x="130" y="145" font-size="14" fill="#2a2018" font-family="monospace" font-weight="bold" transform="rotate(-2 200 100)">INSTRUCTIONS.</text>
+    <!-- grease smudge -->
+    <ellipse cx="260" cy="80" rx="15" ry="10" fill="#4a4030" opacity="0.15" transform="rotate(20 260 80)"/>
+    <!-- crease -->
+    <line x1="100" y1="100" x2="300" y2="98" stroke="#b0a880" stroke-width="0.5" opacity="0.4" transform="rotate(-2 200 100)"/>
   </svg>`,
 
   // Character avatars
@@ -768,13 +1072,16 @@ const STORIES = {
       narrator: { name: "Narrator", desc: "Warm storybook narrator", traits: ["clear","gentle","inviting"], providers: {openai:"alloy", elevenlabs:"JBFqnCBsd6RMkjVDRZzb", edge:"en-US-AriaNeural"}, avatar: "avatar_narrator" },
       cat: { name: "Mr Whiskers", desc: "Talking cat with playful mystery", traits: ["playful","mysterious","light"], providers: {openai:"shimmer", elevenlabs:"pFZP5JQG7iQjIQuC4Bku", edge:"en-GB-SoniaNeural"}, avatar: "avatar_cat" }
     },
-    vars: { lantern_lit: false, courage: 0 },
+    vars: { lantern_lit: false, courage: 0, visited_flowers: false },
     knots: {
       menu: {
         speaker: "narrator", mood: null,
         scene: "garden_gate",
         media: [],
-        paragraphs: ["Welcome to The Enchanted Garden. A short interactive story you can navigate by voice, or by tapping choices."],
+        paragraphs: [
+          "Welcome to The Enchanted Garden.",
+          "A short interactive story you can navigate by voice, or by tapping choices."
+        ],
         choices: [
           { text: "Begin the story", target: "start", tags: {}, voice_hint: "start, begin, play" },
           { text: "About this demo", target: "about", tags: {}, voice_hint: "about, info" }
@@ -785,7 +1092,11 @@ const STORIES = {
         speaker: "narrator", mood: null,
         scene: "garden_gate",
         media: [],
-        paragraphs: ["This is Fink, a voice-navigated interactive fiction demo. Speak naturally to pick choices, ask about the world, or just chat with characters. Your words are matched to story choices using AI."],
+        paragraphs: [
+          "This is Fink, a voice-navigated interactive fiction system.",
+          "Speak naturally to pick choices, ask about the world, or chat with characters. Your words are matched to story choices using AI.",
+          "This demo shows how the story protocol works. Toggle the debug panel to see the infrastructure behind each story beat."
+        ],
         choices: [
           { text: "Begin the story", target: "start", tags: {} },
           { text: "Back to menu", target: "menu", tags: {} }
@@ -796,11 +1107,13 @@ const STORIES = {
         speaker: "narrator", mood: null,
         scene: "garden_gate",
         media: [
-          { type: "image", alt: "An iron gate half-hidden by ivy", position: "inline" },
           { type: "audio", role: "ambient", url: "ambient-garden.mp3", loop: true }
         ],
         onEnter(vars) { vars.courage++; },
-        paragraphs: ["You stand before an iron gate, half-hidden by ivy. Beyond it, a garden stretches into twilight."],
+        paragraphs: [
+          "You stand before an iron gate, half-hidden by ivy.",
+          "Beyond it, a garden stretches into twilight. The air smells of night-blooming jasmine and something older, something green and patient."
+        ],
         choices: [
           { text: "Push open the gate", target: "garden_enter", tags: { mood: "tense" }, voice_hint: "open gate, push" },
           { text: "Call out", target: "garden_call", tags: {}, voice_hint: "hello, call out" },
@@ -810,29 +1123,71 @@ const STORIES = {
       },
       garden_enter: {
         speaker: "narrator", mood: null,
-        scene: "garden_gate",
+        scene: "garden_gate_open",
         media: [{ type: "foley", name: "gate-creak", position: "inline" }],
-        paragraphs: ["The gate swings open with a groan."],
-        choices: [{ text: "Continue", target: "garden", tags: {} }],
+        paragraphs: [
+          "The gate swings open with a long, low groan. Rust flakes fall like orange snow.",
+          "The path beyond is overgrown but unmistakable. Someone has walked it recently."
+        ],
+        choices: [{ text: "Step through", target: "garden", tags: {} }],
         teasers: []
       },
       garden_call: {
-        speaker: "narrator", mood: null,
+        speaker: "narrator", mood: "mysterious",
         scene: "garden_gate",
-        paragraphs: ['"Hello?" you call. Only the wind answers.'],
+        paragraphs: [
+          '"Hello?" you call into the darkness.',
+          "The wind stirs the ivy. For a moment you think you hear a voice — but it might just be the leaves.",
+          "Then, very faintly: the sound of purring."
+        ],
         media: [{ type: "foley", name: "wind-whisper" }],
-        choices: [{ text: "Continue", target: "garden", tags: {} }],
+        choices: [
+          { text: "Push the gate open", target: "garden_enter", tags: {} },
+          { text: "Listen more carefully", target: "garden_listen", tags: { mood: "mysterious" } }
+        ],
+        teasers: []
+      },
+      garden_listen: {
+        speaker: "narrator", mood: "mysterious",
+        scene: "garden_gate",
+        media: [],
+        onEnter(vars) { vars.courage++; },
+        paragraphs: [
+          "You press your ear to the cold iron bars.",
+          "The purring stops. Silence — then a soft voice, barely there:",
+          '"Are you coming in, or just going to stand there all night?"'
+        ],
+        choices: [
+          { text: "Go in", target: "garden", tags: { mood: "curious" } },
+          { text: "Who said that?", target: "garden_who", tags: {} }
+        ],
+        teasers: []
+      },
+      garden_who: {
+        speaker: "narrator", mood: "whimsical",
+        scene: "garden_gate",
+        media: [],
+        paragraphs: [
+          "No answer. Just the faintest green glow from deeper in the garden, and the unmistakable sense of being watched by something amused."
+        ],
+        choices: [{ text: "Enter the garden", target: "garden", tags: {} }],
         teasers: []
       },
       garden: {
         speaker: "narrator", mood: null,
-        scene: "garden_gate",
+        scene: null,
         media: [{ type: "audio", role: "ambient", url: "ambient-garden.mp3", loop: true }],
         paragraphs(vars) {
-          return vars.lantern_lit
-            ? ["Warm amber light from your lantern reveals the path ahead."]
-            : ["The garden is dark. Shapes move at the edges of your vision."];
+          if (vars.lantern_lit) return [
+            "Warm amber light from your lantern reveals the path ahead.",
+            "Moths circle the flame. The garden feels less threatening now — watchful, but not hostile."
+          ];
+          return [
+            "The garden is dark. Shapes move at the edges of your vision.",
+            "Branches creak overhead. The path forks somewhere ahead, but you can barely see."
+          ];
         },
+        scene_fn(vars) { return vars.lantern_lit ? "garden_lantern" : "garden_dark"; },
         choices(vars) {
           const c = [
             { text: "Go deeper", target: "deep_garden", tags: { mood: "tense" }, voice_hint: "go deeper, explore" },
@@ -841,16 +1196,23 @@ const STORIES = {
           if (!vars.lantern_lit) {
             c.unshift({ text: "Light the lantern", target: "light_lantern", tags: { mood: "calm" }, voice_hint: "light, lantern" });
           }
+          if (vars.visited_flowers && !vars.lantern_lit) {
+            // after seeing flowers in the dark, going deeper is scarier
+          }
           return c;
         },
         teasers: []
       },
       light_lantern: {
         speaker: "narrator", mood: "calm",
-        scene: "garden_gate",
+        scene: "garden_lantern",
         media: [{ type: "foley", name: "match-strike" }],
         onEnter(vars) { vars.lantern_lit = true; },
-        paragraphs: ["You find an old lantern on a post and strike a match."],
+        paragraphs: [
+          "You find an old lantern hanging from a post, its glass cracked but whole.",
+          "A match from your pocket. A scratch. A flame.",
+          "The garden sighs around you, as if relieved."
+        ],
         choices: [{ text: "Continue", target: "garden", tags: {} }],
         teasers: []
       },
@@ -858,8 +1220,33 @@ const STORIES = {
         speaker: "narrator", mood: "mysterious",
         scene: "garden_flowers",
         media: [{ type: "image", alt: "Strange glowing flowers of no known species", position: "inline" }],
-        paragraphs: ["The flowers glow faintly. They are no species you recognise."],
-        choices: [{ text: "Go back", target: "garden", tags: {} }],
+        onEnter(vars) { vars.visited_flowers = true; },
+        paragraphs(vars) {
+          const p = ["The flowers glow faintly — violet, amber, a cold seafoam blue. They are no species you recognise."];
+          if (vars.lantern_lit) {
+            p.push("In the lantern light, you can see their petals are translucent. Something moves inside each one, like a tiny flame.");
+          } else {
+            p.push("In the darkness, they are the brightest things in the garden. They seem to lean toward you as you approach.");
+          }
+          return p;
+        },
+        choices: [
+          { text: "Touch one", target: "flowers_touch", tags: { risk: "medium", mood: "curious" } },
+          { text: "Go back to the path", target: "garden", tags: {} }
+        ],
+        teasers: []
+      },
+      flowers_touch: {
+        speaker: "narrator", mood: "warm",
+        scene: "garden_flowers",
+        media: [{ type: "foley", name: "chime-soft" }],
+        onEnter(vars) { vars.courage++; },
+        paragraphs: [
+          "The petal is warm. A faint chime sounds — not from the flower, but from somewhere inside your own head.",
+          "For an instant, you remember a garden from your childhood that you are certain never existed.",
+          "The memory fades, but the warmth stays."
+        ],
+        choices: [{ text: "Continue", target: "garden", tags: {} }],
         teasers: []
       },
       deep_garden: {
@@ -867,7 +1254,10 @@ const STORIES = {
         scene: "garden_deep",
         media: [{ type: "image", alt: "Stone bench beneath an ancient oak, a cat watching", position: "inline" }],
         onEnter(vars) { vars.courage++; },
-        paragraphs: ["A stone bench beneath an ancient oak. A cat sits watching you with luminous green eyes."],
+        paragraphs: [
+          "A stone bench beneath an ancient oak. The tree is vast — it must have been here for centuries.",
+          "A cat sits watching you with luminous green eyes. It does not look surprised to see you."
+        ],
         choices: [
           { text: "Hello, cat", target: "talk_cat", tags: { mood: "curious" }, voice_hint: "hello cat, hi" },
           { text: "Sit on the bench", target: "sit_quietly", tags: { mood: "calm" }, voice_hint: "sit, bench" },
@@ -880,12 +1270,21 @@ const STORIES = {
         scene: "garden_deep",
         media: [],
         paragraphs(vars) {
-          return vars.courage >= 2
-            ? ['"You have some nerve, coming this deep," it says. "I like that."']
-            : ['The cat yawns. "Come back when you\'ve seen more of the garden."'];
+          if (vars.courage >= 3) return [
+            '"You have some nerve, coming this deep," the cat says, sounding pleased.',
+            '"And you touched the flowers. Most people are afraid to."',
+            '"I like that."'
+          ];
+          if (vars.courage >= 2) return [
+            '"You have some nerve, coming this deep," it says. "I like that."'
+          ];
+          return [
+            'The cat yawns enormously.',
+            '"Come back when you\'ve seen more of the garden. I don\'t waste my time on tourists."'
+          ];
         },
         choices(vars) {
-          if (vars.courage < 2) return [{ text: "Go back", target: "garden", tags: {} }];
+          if (vars.courage < 2) return [{ text: "Go back and explore more", target: "garden", tags: {} }];
           return [
             { text: "Ask its name", target: "ending_friendship", tags: { skill: "charm" } },
             { text: "Ask about the garden", target: "ending_secret", tags: { mood: "mysterious", skill: "perception" } }
@@ -895,30 +1294,43 @@ const STORIES = {
       },
       sit_quietly: {
         speaker: "narrator", mood: "peaceful",
-        scene: "garden_deep",
+        scene: "garden_peaceful",
         media: [{ type: "audio", role: "ambient", url: "ambient-garden-night.mp3", loop: true }],
-        paragraphs: ["You sit. The cat descends and curls up beside you. The garden hums softly."],
-        choices: [{ text: "Continue", target: "ending_peaceful", tags: {} }],
+        paragraphs: [
+          "You sit on the cool stone.",
+          "After a moment, the cat descends from wherever cats descend from and curls up beside you.",
+          "It purrs. The garden hums softly in response, as if the two sounds are part of the same music."
+        ],
+        choices: [{ text: "Stay", target: "ending_peaceful", tags: {} }],
         teasers: []
       },
       ending_leave: {
-        speaker: "narrator", mood: "mysterious",
-        scene: "garden_gate",
+        speaker: "narrator", mood: "melancholy",
+        scene: "garden_leave",
         media: [],
-        paragraphs: ["You turn away. Some gardens are not meant to be entered.", "The gate disappears behind you. By morning, you will have forgotten it was there."],
+        paragraphs: [
+          "You turn away. The gravel crunches under your feet.",
+          "Some gardens are not meant to be entered — or perhaps not yet.",
+          "The gate disappears behind you. By morning, you will have forgotten it was there. Almost."
+        ],
         choices: [
-          { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; } },
+          { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; vars.visited_flowers = false; } },
           { text: "Try Bigtop Briefing", target: "_switch_bigtop", tags: {} }
         ],
         teasers: []
       },
       ending_peaceful: {
         speaker: "narrator", mood: "peaceful",
-        scene: "garden_secret",
+        scene: "garden_peaceful",
         media: [{ type: "audio", role: "ambient", url: "ambient-night-crickets.mp3", loop: true }],
-        paragraphs: ["You sit together as the stars come out, one by one.", "That's the end of this path through the garden. Thank you for playing."],
+        paragraphs: [
+          "You sit together as the stars come out, one by one.",
+          "The cat's purr deepens. Somewhere in the garden, the flowers burn brighter.",
+          "You have the feeling that you could stay here forever, and that the garden would not mind.",
+          "That's the end of this path. Thank you for visiting."
+        ],
         choices: [
-          { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; } },
+          { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; vars.visited_flowers = false; } },
           { text: "Try Bigtop Briefing", target: "_switch_bigtop", tags: {} }
         ],
         teasers: []
@@ -927,9 +1339,14 @@ const STORIES = {
         speaker: "cat", mood: "warm",
         scene: "garden_deep",
         media: [],
-        paragraphs: ['"They call me Mr Whiskers," the cat says. "And you?"', 'The cat purrs. "Well then, stranger. Welcome to the garden."', "And so begins a most unusual friendship."],
+        paragraphs: [
+          '"They call me Mr Whiskers," the cat says. "I know. I didn\'t choose it."',
+          '"And you?" it asks. You tell it your name.',
+          'The cat considers this. "Acceptable. You may visit again."',
+          "It says this as though granting a great honour. Perhaps it is."
+        ],
         choices: [
-          { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; } },
+          { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; vars.visited_flowers = false; } },
           { text: "Try Bigtop Briefing", target: "_switch_bigtop", tags: {} }
         ],
         teasers: []
@@ -938,9 +1355,14 @@ const STORIES = {
         speaker: "narrator", mood: "mysterious",
         scene: "garden_secret",
         media: [{ type: "image", alt: "Flowers burning like tiny stars in a hidden corner", position: "inline" }],
-        paragraphs: ["The cat leads you to a hidden corner where the flowers burn like tiny stars.", '"Few are shown this," it whispers. "Remember it."'],
+        paragraphs: [
+          "The cat slips off the bench and pads into the darkness. It glances back once — an invitation.",
+          "You follow it to a hidden corner where the flowers burn like tiny stars, concentrated into a small clearing that feels like the heart of something.",
+          '"Few are shown this," it whispers. "Remember it."',
+          "You will."
+        ],
         choices: [
-          { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; } },
+          { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; vars.visited_flowers = false; } },
           { text: "Try Bigtop Briefing", target: "_switch_bigtop", tags: {} }
         ],
         teasers: []
@@ -966,7 +1388,7 @@ const STORIES = {
         ],
         paragraphs: [
           "The wagon rocks once in the wind.",
-          'The proprietor leans over the desk.',
+          "The proprietor leans over the desk.",
           '"Detective. Brief version."',
           '"The gate was bad. The crowd was worse. Then my daughter vanished."',
           '"I need her back before this circus tears itself apart."'
@@ -1043,7 +1465,8 @@ const STORIES = {
           "On the desk:",
           "— a smudged note",
           "— a small photograph",
-          "— gate receipts in messy stacks"
+          "— gate receipts in messy stacks",
+          "The lamp flickers. Everything on this desk looks like evidence of something going wrong."
         ],
         choices: [
           { text: "Read the note.", target: "note", tags: { skill: "perception" } },
@@ -1054,14 +1477,14 @@ const STORIES = {
       },
       note: {
         speaker: "narrator", mood: "tense",
-        scene: "circus_desk",
+        scene: "circus_note",
         vizprom: "ransom note on cheap paper, blocky handwriting, grease smudge, threat implied more than stated",
         media: [{ type: "image", alt: "Ransom note on cheap paper", position: "inline" }],
         onEnter(vars) { vars.read_note = true; },
         paragraphs: [
           "The note is short.",
           '"No police. No heroics. Wait for instructions."',
-          "No signature.",
+          "No signature. The handwriting is blocky, deliberate — someone disguising their hand.",
           '"Happy now?" he asks.'
         ],
         choices: [
@@ -1076,7 +1499,11 @@ const STORIES = {
         speaker: "narrator", mood: "noir",
         scene: "circus_desk",
         media: [],
-        paragraphs: ['"Not even slightly."', '"Good," he says. "Neither am I."'],
+        paragraphs: [
+          '"Not even slightly."',
+          '"Good," he says. "Neither am I."',
+          "He reaches under the desk for a bottle and doesn't offer you any."
+        ],
         choices: [
           { text: "Ask who had access.", target: "access", tags: {} },
           { text: "Take the photograph.", target: "photo", tags: {} },
@@ -1093,7 +1520,7 @@ const STORIES = {
           '"Who had access to her?"',
           '"Everyone. That\'s circus life."',
           '"Who had motive?"',
-          "He looks away.",
+          "He looks away. The lamp gutters.",
           '"That list is longer."'
         ],
         choices: [
@@ -1110,7 +1537,8 @@ const STORIES = {
         paragraphs: [
           '"Start with the people I underpay," he says.',
           '"Then continue with the people I overrule."',
-          '"Then include the ones who smile too fast."'
+          '"Then include the ones who smile too fast."',
+          "He lets that sit for a moment. It sits badly."
         ],
         choices: [
           { text: "Take the photograph.", target: "photo", tags: {} },
@@ -1120,14 +1548,15 @@ const STORIES = {
       },
       photo: {
         speaker: "narrator", mood: "noir",
-        scene: "circus_desk",
+        scene: "circus_photo",
         vizprom: "small portrait photograph of a missing girl, studio stiffness, soft flash glare",
         media: [{ type: "image", alt: "Small portrait photograph, studio flash", position: "inline" }],
         onEnter(vars) { vars.saw_photo = true; },
         paragraphs: [
           "He slides over the photograph.",
           '"Taken last spring," he says.',
-          '"She hates sitting still. So this is already a lie."'
+          '"She hates sitting still. So this is already a lie."',
+          "The girl in the photo looks like she is counting the seconds until she can move again."
         ],
         choices: [
           { text: "Ask about her habits.", target: "habits", tags: { skill: "perception" } },
@@ -1143,7 +1572,8 @@ const STORIES = {
         paragraphs: [
           '"What does she do when nobody is watching?"',
           "His answer comes too slowly.",
-          '"Climbs where she shouldn\'t. Listens where she shouldn\'t. Trusts the wrong adults."'
+          '"Climbs where she shouldn\'t. Listens where she shouldn\'t. Trusts the wrong adults."',
+          "He says this last part like it costs him something."
         ],
         choices: [
           { text: "Read the note.", target: "note", tags: {} },
@@ -1160,7 +1590,11 @@ const STORIES = {
           vars.case_accepted = true;
         },
         paragraphs(vars) {
-          const p = ['"Fine," you say. "I\'ll look."', "He exhales for the first time.", '"Start outside. Listen more than you talk."'];
+          const p = [
+            '"Fine," you say. "I\'ll look."',
+            "He exhales for the first time.",
+            '"Start outside. Listen more than you talk."'
+          ];
           if (vars.read_note) p.push('"And if anyone asks, you never saw that note."');
           return p;
         },
@@ -1194,7 +1628,12 @@ const STORIES = {
         speaker: "narrator", mood: "noir",
         scene: "circus_wagon",
         media: [],
-        paragraphs: ['"Who do you trust here?"', '"The animals," he says.', '"They bite honestly."'],
+        paragraphs: [
+          '"Who do you trust here?"',
+          "He doesn't hesitate.",
+          '"The animals," he says.',
+          '"They bite honestly."'
+        ],
         choices: [{ text: "Go.", target: "wagon_yard", tags: {} }],
         teasers: []
       },
@@ -1202,7 +1641,12 @@ const STORIES = {
         speaker: "narrator", mood: "tense",
         scene: "circus_wagon",
         media: [],
-        paragraphs: ['"Who scares you?"', '"The quiet ones."', '"A circus only gets quiet when something has gone wrong."'],
+        paragraphs: [
+          '"Who scares you?"',
+          '"The quiet ones."',
+          "He stares at the canvas wall as though someone might be leaning against it.",
+          '"A circus only gets quiet when something has gone wrong."'
+        ],
         choices: [{ text: "Go.", target: "wagon_yard", tags: {} }],
         teasers: []
       },
@@ -1210,7 +1654,12 @@ const STORIES = {
         speaker: "narrator", mood: "noir",
         scene: "circus_wagon",
         media: [],
-        paragraphs: ['"Why hire me?"', '"Because you are available."', "He almost smiles.", '"And because you look like you can lose without quitting."'],
+        paragraphs: [
+          '"Why hire me?"',
+          '"Because you are available."',
+          "He almost smiles.",
+          '"And because you look like you can lose without quitting."'
+        ],
         choices: [{ text: "Go.", target: "wagon_yard", tags: {} }],
         teasers: []
       },
@@ -1231,7 +1680,7 @@ const STORIES = {
             "Here, nothing feels harmless."
           ];
           if (vars.asked_whisper) p.push("You can still hear him whispering to himself inside.");
-          if (vars.distrust_boss > 1) p.push("You do not like your client.");
+          if (vars.distrust_boss > 1) p.push("You do not like your client. But that has never stopped you before.");
           return p;
         },
         choices: [
@@ -1245,7 +1694,10 @@ const STORIES = {
         speaker: "narrator", mood: "noir",
         scene: "circus_yard",
         media: [],
-        paragraphs: ["The case begins."],
+        paragraphs: [
+          "The case begins.",
+          "But that is a story for another night."
+        ],
         choices: [
           { text: "Play again", target: "office_wagon", tags: {}, onChoose(vars) { Object.assign(vars, { saw_photo: false, read_note: false, asked_whisper: false, distrust_boss: 0, case_accepted: false }); } },
           { text: "Try The Enchanted Garden", target: "_switch_garden", tags: {} }
@@ -1277,7 +1729,7 @@ function switchStory(key) {
   enterKnot(story.startKnot);
 }
 
-function enterKnot(knotKey) {
+function enterKnot(knotKey, isRerender) {
   if (knotKey === "_switch_bigtop") return switchStory("bigtop");
   if (knotKey === "_switch_garden") return switchStory("garden");
 
@@ -1285,8 +1737,8 @@ function enterKnot(knotKey) {
   const knot = story.knots[knotKey];
   if (!knot) return;
 
-  // onEnter
-  if (knot.onEnter) {
+  // onEnter (skip on re-render)
+  if (knot.onEnter && !isRerender) {
     const redirect = knot.onEnter(vars);
     if (redirect) return enterKnot(redirect);
   }
@@ -1297,8 +1749,8 @@ function enterKnot(knotKey) {
   $("storyTitle").textContent = story.title;
   $("storyKnot").textContent = knotKey;
 
-  // Scene image
-  const sceneKey = knot.scene || "";
+  // Scene image (supports scene_fn for dynamic scenes)
+  const sceneKey = (knot.scene_fn ? knot.scene_fn(vars) : knot.scene) || "";
   const sceneEl = $("sceneImage");
   if (sceneKey && SVG[sceneKey]) {
     sceneEl.innerHTML = SVG[sceneKey] + '<span class="media-badge">SVG scene</span>';
@@ -1310,12 +1762,15 @@ function enterKnot(knotKey) {
   // Narration
   const narEl = $("narration");
   narEl.innerHTML = "";
+
+  // Vizprom (debug only, hidden via CSS in normal mode)
   if (knot.vizprom) {
     const vp = document.createElement("div");
     vp.className = "vizprom";
     vp.textContent = "VIZPROM: " + knot.vizprom;
     narEl.appendChild(vp);
   }
+
   const paras = typeof knot.paragraphs === "function" ? knot.paragraphs(vars) : knot.paragraphs;
   const speaker = knot.speaker;
   const voice = story.voices[speaker];
@@ -1334,6 +1789,23 @@ function enterKnot(knotKey) {
     p.appendChild(document.createTextNode(text));
     narEl.appendChild(p);
   });
+
+  // Media indicators (normal mode) — show subtle chips for active media
+  const media = knot.media || [];
+  if (media.length > 0) {
+    const ind = document.createElement("div");
+    ind.className = "media-indicator";
+    media.forEach(m => {
+      const chip = document.createElement("span");
+      chip.className = "media-chip " + m.type;
+      if (m.type === "audio") chip.textContent = m.role === "ambient" ? "ambient" : "audio";
+      else if (m.type === "foley") chip.textContent = m.name || "sfx";
+      else if (m.type === "image") chip.textContent = "image";
+      ind.appendChild(chip);
+    });
+    narEl.appendChild(ind);
+  }
+
   narEl.scrollTop = narEl.scrollHeight;
 
   // Choices
@@ -1343,13 +1815,13 @@ function enterKnot(knotKey) {
   const teasers = knot.teasers || [];
 
   // Timer bar
-  if (knot.timer) {
+  if (knot.timer && !isRerender) {
     const tb = document.createElement("div");
     tb.className = "timer-bar";
     tb.innerHTML = '<div class="timer-fill" id="timerFill" style="width:100%"></div>';
     choicesEl.appendChild(tb);
     startTimer(knot.timer.seconds, knot.timer.default_index, choices);
-  } else {
+  } else if (!knot.timer) {
     clearTimer();
   }
 
@@ -1358,7 +1830,6 @@ function enterKnot(knotKey) {
     btn.className = "choice-btn";
     btn.innerHTML = `<span class="choice-num">${i + 1}</span><span class="choice-text">${c.text}</span>`;
 
-    // Tags
     if (c.tags && Object.keys(c.tags).length > 0) {
       const tagsEl = document.createElement("span");
       tagsEl.className = "choice-tags";
@@ -1394,12 +1865,14 @@ function enterKnot(knotKey) {
     choicesEl.appendChild(te);
   });
 
-  // ── Infra panels ──
-  updateVoicePanel(speaker, voice);
-  updateStreamsPanel(knot);
-  updateProtocolPanel(knotKey, knot, paras, choices, teasers);
-  updateMediaPanel(knot);
-  updateStatus(knotKey);
+  // ── Infra panels (only update if debug mode is on, for performance) ──
+  if (debugMode) {
+    updateVoicePanel(speaker, voice);
+    updateStreamsPanel(knot);
+    updateProtocolPanel(knotKey, knot, paras, choices, teasers);
+    updateMediaPanel(knot);
+  }
+  updateStatus(knotKey, knot);
 }
 
 function startTimer(seconds, defaultIdx, choices) {
@@ -1454,7 +1927,6 @@ function updateStreamsPanel(knot) {
     image: hasImage ? "active" : "pending"
   };
 
-  // After a short delay, advance states
   setTimeout(() => {
     streamStates.narration = "complete";
     streamStates.choices = "active";
@@ -1467,6 +1939,7 @@ function updateStreamsPanel(knot) {
 
 function renderStreams() {
   const el = $("streamsPanel");
+  if (!el) return;
   const widths = { active: "70%", complete: "100%", pending: "0%" };
   el.innerHTML = Object.entries(streamStates).map(([name, state]) => `
     <div class="stream-row">
@@ -1530,13 +2003,17 @@ function updateMediaPanel(knot) {
   $("mediaPanel").innerHTML = syntaxHL(JSON.stringify(descriptors, null, 2));
 }
 
-function updateStatus(knotKey) {
-  const story = STORIES[currentStoryKey];
-  const knot = story.knots[knotKey];
+function updateStatus(knotKey, knot) {
   const mediaCount = (knot.media || []).length;
-  const varStr = Object.entries(vars).map(([k,v]) => `${k}=${v}`).join("  ");
-  $("statusText").textContent = `knot: ${knotKey}  |  media: ${mediaCount}  |  ${varStr}`;
-  $("statusStreams").textContent = `choice_mode: guided`;
+  if (debugMode) {
+    const varStr = Object.entries(vars).map(([k,v]) => `${k}=${v}`).join("  ");
+    $("statusText").textContent = `knot: ${knotKey}  |  media: ${mediaCount}  |  ${varStr}`;
+    $("statusStreams").textContent = "choice_mode: guided";
+  } else {
+    const story = STORIES[currentStoryKey];
+    $("statusText").textContent = story.title;
+    $("statusStreams").textContent = "";
+  }
 }
 
 
