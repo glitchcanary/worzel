@@ -58,7 +58,7 @@ Fink is a **standalone server** that imports Worzel's compiled modules:
 - **`src/fink/ink-pipeline.ts`** — Ink-aware voice pipeline (replaces normal LLM path)
 - **`src/ink/`** — Reusable Ink engine modules (session, router, prompt builder, tags)
 - **`fink/client/`** — Web client with story UI (adapted from Worzel's web client)
-- **`stories/`** — Ink story folders (`.ink.json` + `metadata.json`)
+- **`stories/`** — Ink story folders (`.fink.js` / `.ink` + `metadata.json`)
 
 No existing Worzel files are modified. The Fink server runs independently on its own port.
 
@@ -68,8 +68,9 @@ Each story lives in its own folder under `stories/`:
 
 ```
 stories/my-story/
-  story.ink.json      # Compiled Ink JSON (from inklecate)
-  story.ink           # Source (optional — compiled at load time)
+  story.fink.js       # Preferred wrapper form for client/server parity
+  story.ink           # Source (compiled at load time if present)
+  story.ink.json      # Legacy compiled fallback
   metadata.json       # Title, author, voices, FOAF character data
 ```
 

@@ -2,11 +2,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { InkSession } from '../../../src/ink/ink-session.js';
+import * as inkjs from 'inkjs/full';
 
-const STORY_PATH = join(__dirname, '../../../stories/test-garden/story.ink.json');
+const STORY_PATH = join(__dirname, '../../../stories/test-garden/story.ink');
 
 function loadStory(): string {
-  return readFileSync(STORY_PATH, 'utf-8').replace(/^\uFEFF/, '');
+  const source = readFileSync(STORY_PATH, 'utf-8');
+  return new inkjs.Compiler(source).Compile().ToJson();
 }
 
 describe('InkSession', () => {
@@ -22,8 +24,8 @@ describe('InkSession', () => {
       const result = session.continue();
 
       expect(result.narration.length).toBeGreaterThan(0);
-      expect(result.narration[0]!.text).toContain('iron gate');
-      expect(result.choices.length).toBe(3);
+      expect(result.narration[0]!.text).toContain('Welcome to The Enchanted Garden');
+      expect(result.choices.length).toBe(2);
     });
 
     it('extracts speaker from tags', () => {
@@ -37,10 +39,10 @@ describe('InkSession', () => {
       const session = new InkSession('test-garden', storyJson);
       const result = session.continue();
 
-      const pushChoice = result.choices.find(c => c.text.includes('Push open'));
-      expect(pushChoice).toBeDefined();
-      expect(pushChoice!.voiceHints.length).toBeGreaterThan(0);
-      expect(pushChoice!.voiceHints).toContain('open gate');
+      const beginChoice = result.choices.find(c => c.text.includes('Begin the story'));
+      expect(beginChoice).toBeDefined();
+      expect(beginChoice!.voiceHints.length).toBeGreaterThan(0);
+      expect(beginChoice!.voiceHints).toContain('start');
     });
   });
 
@@ -86,6 +88,7 @@ describe('InkSession', () => {
     it('tracks cat character when we reach deep_garden', () => {
       const session = new InkSession('test-garden', storyJson);
       session.continue();
+      session.choose(0); // Begin the story -> start
       session.choose(0); // Push open the gate -> garden
       session.choose(1); // Follow the path deeper -> deep_garden
 
@@ -115,7 +118,8 @@ describe('InkSession', () => {
 
     it('tracks courage variable changes through choices', () => {
       const session = new InkSession('test-garden', storyJson);
-      session.continue(); // courage = 1
+      session.continue();
+      session.choose(0); // enter the actual story start knot
 
       expect(session.getVariable('courage')).toBe(1);
     });
@@ -163,7 +167,9 @@ describe('InkSession', () => {
     it('returns true at story end', () => {
       const session = new InkSession('test-garden', storyJson);
       session.continue();
+      session.choose(0); // Begin the story
       session.choose(2); // Turn back -> ending_leave
+      session.choose(1); // Goodbye -> END
 
       expect(session.isEnded).toBe(true);
     });
@@ -176,7 +182,7 @@ describe('InkSession', () => {
 
       const state = session.getState();
       expect(state.storyId).toBe('test-garden');
-      expect(state.choices.length).toBe(3);
+      expect(state.choices.length).toBe(2);
       expect(state.isEnded).toBe(false);
       expect(state.turnCount).toBe(0);
     });

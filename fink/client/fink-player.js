@@ -1,7 +1,7 @@
 // FinkPlayer — coordination layer for finkapp
 //
 // Wires FinkInk (engine) to FinkUI (rendering). Handles:
-// - Story loading from URL (.ink, .ink.json, or .fink.js via sandbox)
+// - Story loading from URL (.fink.js preferred, then .ink, with .ink.json as legacy fallback)
 // - Fetching the story list from the /fink/api/stories endpoint
 // - Advance loop (continue → render → await choice → continue)
 // - FINK: cross-story links (loads external .fink.js files)
@@ -59,7 +59,7 @@ export class FinkPlayer {
   // ── Story loading ──────────────────────────────────────────────────
 
   /**
-   * Load a story from a URL. Detects .fink.js, .ink.json, .ink by extension.
+   * Load a story from a URL. Detects .fink.js, .ink, and legacy .ink.json.
    * @param {string} url
    * @param {string} [storyId]
    */
@@ -80,11 +80,12 @@ export class FinkPlayer {
       this.#currentStoryUrl = url;
 
       if (url.endsWith('.json') || url.endsWith('.ink.json')) {
-      this.#engine.loadJson(text);
-    } else {
-      this.#storySource = text;
-      this.#engine.compileAndLoad(text);
-    }
+        console.warn(`[finkapp] Legacy story.ink.json fallback used for ${url}; prefer story.fink.js or story.ink`);
+        this.#engine.loadJson(text);
+      } else {
+        this.#storySource = text;
+        this.#engine.compileAndLoad(text);
+      }
 
       this.#ui.setTitle(this.#storyId ?? 'finkapp');
       this.#ui.clearNarration();
@@ -227,7 +228,7 @@ export class FinkPlayer {
 
   /**
    * Load a specific story from the server's stories directory.
-   * Tries .ink.json first, falls back to .ink.
+   * Prefers .fink.js, then .ink, and only uses .ink.json as legacy fallback.
    * @param {string} storyId
    */
   async #loadServerStory(storyId) {
@@ -235,24 +236,29 @@ export class FinkPlayer {
     const storyIds = uniqueStoryIds(storyId);
 
     for (const candidateId of storyIds) {
-      for (const file of ['story.ink.json', 'story.ink']) {
+      for (const file of ['story.fink.js', 'story.ink', 'story.ink.json']) {
         const url = `${base}/${candidateId}/${file}`;
         try {
           const resp = await fetch(url);
           if (resp.ok) {
-            const text = await resp.text();
             this.#storyId = candidateId;
             this.#currentStoryUrl = url;
             this.#mediaBasePath = null;
-            if (file.endsWith('.json')) {
-              this.#engine.loadJson(text);
+            if (file.endsWith('.fink.js')) {
+              await this.#loadFinkJsUrl(url);
             } else {
-              this.#storySource = text;
-              this.#engine.compileAndLoad(text);
+              const text = await resp.text();
+              if (file.endsWith('.json')) {
+                console.warn(`[finkapp] Legacy story.ink.json fallback used for ${candidateId}; prefer story.fink.js or story.ink`);
+                this.#engine.loadJson(text);
+              } else {
+                this.#storySource = text;
+                this.#engine.compileAndLoad(text);
+              }
+              this.#ui.setTitle(candidateId);
+              this.#ui.clearNarration();
+              if (!this.resumeBookmark()) this.#advance();
             }
-            this.#ui.setTitle(candidateId);
-            this.#ui.clearNarration();
-            if (!this.resumeBookmark()) this.#advance();
             return;
           }
         } catch { /* try next */ }
@@ -440,7 +446,7 @@ export class FinkPlayer {
       this.#ui.addNarration(state.narration);
     }
 
-    this.#ui.setKnot(state.currentKnot);
+    this.#ui.setKnot(formatKnotLabel(state.currentKnot));
 
     if (finkLink) {
       this.#handleFinkLink(finkLink);
@@ -588,4 +594,12 @@ function uniqueStoryIds(storyId) {
     .replace(/^-+|-+$/g, '');
 
   return [...new Set([raw, normalized].filter(Boolean))];
+}
+
+function formatKnotLabel(knot) {
+  if (!knot) return null;
+  // Raw internal knot ids like office_wagon are useful for debugging,
+  // but too implementation-flavoured for normal reading.
+  if (/[_-]/.test(knot)) return null;
+  return knot;
 }

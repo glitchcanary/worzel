@@ -4,8 +4,9 @@
  * Story directory structure:
  *   stories/
  *     my-story/
- *       story.ink.json   (compiled, preferred)
- *       story.ink         (source, compiled at load time if no .json)
+ *       story.fink.js    (preferred wrapper form for client/server parity)
+ *       story.ink        (source, compiled at load time)
+ *       story.ink.json   (legacy compiled fallback)
  *       metadata.json     (title, author, description, voices, fink data)
  */
 
@@ -100,22 +101,29 @@ export class StoryManager {
    * Load a single story from a directory.
    */
   async loadStory(storyId: string, storyDir: string): Promise<void> {
-    // Try compiled JSON first, then raw .ink source
+    // Prefer .fink.js and .ink so authored sources remain the source of truth.
+    // Legacy .ink.json is still accepted, but only as a fallback.
     let json: string | null = null;
 
-    const jsonPath = join(storyDir, 'story.ink.json');
     try {
-      json = await readFile(jsonPath, 'utf-8');
-      // Strip BOM (inklecate outputs BOM)
-      json = json.replace(/^\uFEFF/, '');
+      const finkPath = join(storyDir, 'story.fink.js');
+      const finkContent = await readFile(finkPath, 'utf-8');
+      const inkSource = await extractInkFromFinkJs(finkContent);
+      json = await this.compileInk(inkSource);
     } catch {
-      // No pre-compiled JSON — try runtime compilation
       const inkPath = join(storyDir, 'story.ink');
       try {
         const inkSource = await readFile(inkPath, 'utf-8');
         json = await this.compileInk(inkSource);
       } catch {
-        throw new Error(`No story.ink.json or story.ink found in ${storyDir}`);
+        const jsonPath = join(storyDir, 'story.ink.json');
+        try {
+          json = await readFile(jsonPath, 'utf-8');
+          json = json.replace(/^\uFEFF/, '');
+          this.logger?.warn({ storyId, storyDir }, 'Using legacy story.ink.json fallback; prefer story.fink.js or story.ink');
+        } catch {
+          throw new Error(`No story.fink.js, story.ink, or story.ink.json found in ${storyDir}`);
+        }
       }
     }
 

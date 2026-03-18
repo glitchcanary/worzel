@@ -7,6 +7,7 @@ import type { Transport } from '../../../src/transport/interface.js';
 import type { ASRProvider, ASRResult, LLMProvider, LLMChunk, TTSProvider, TTSResult, ChatMessage } from '../../../src/providers/interface.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as inkjs from 'inkjs/full';
 
 // --- Mock providers ---
 
@@ -76,8 +77,9 @@ class MockTransport implements Transport {
 }
 
 // Load test story
-const storyJsonPath = join(import.meta.dirname, '../../../stories/test-garden/story.ink.json');
-const storyJson = readFileSync(storyJsonPath, 'utf-8').replace(/^\uFEFF/, '');
+const storySourcePath = join(import.meta.dirname, '../../../stories/test-garden/story.ink');
+const storySource = readFileSync(storySourcePath, 'utf-8');
+const storyJson = new inkjs.Compiler(storySource).Compile().ToJson();
 
 function createTestSetup() {
   const asr = new MockASR();

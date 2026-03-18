@@ -147,12 +147,24 @@
     /* ── Media & vizprom tags ──────────────────────────────── */
     .finkapp-vizprom {
       font-size: 11px;
-      color: var(--fa-text-muted);
-      font-style: italic;
+      color: var(--fa-text-dim);
       padding: 6px 10px;
       background: rgba(255,255,255,0.03);
       border-left: 2px solid var(--fa-border);
       border-radius: 2px;
+    }
+    .finkapp-vizprom-summary {
+      cursor: pointer;
+      color: var(--fa-speaker);
+      list-style: none;
+    }
+    .finkapp-vizprom-summary::-webkit-details-marker {
+      display: none;
+    }
+    .finkapp-vizprom-body {
+      margin-top: 6px;
+      line-height: 1.4;
+      color: var(--fa-text-dim);
     }
     .finkapp-media-tag {
       font-size: 11px;

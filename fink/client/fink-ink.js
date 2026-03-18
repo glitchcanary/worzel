@@ -2,7 +2,7 @@
 //
 // Wraps inkjs (full, with compiler) to provide:
 // - Compilation from raw .ink source
-// - Loading from pre-compiled .ink.json
+// - Loading from source or legacy pre-compiled .ink.json
 // - Tag parsing (speaker, voice, mood, image, foley, audio, etc.)
 // - Story advancement (continue + choices)
 // - State serialization for bookmarks

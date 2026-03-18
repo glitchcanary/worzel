@@ -20,6 +20,7 @@ export class FinkUI {
   /** @type {HTMLElement} */  #knotLabel;
   /** @type {HTMLElement} */  #bgEl;
   /** @type {HTMLElement|null} */ #suggestionEl = null;
+  /** @type {string|null} */ #lastVizprom = null;
 
   /**
    * @param {HTMLElement} root - container element to render into
@@ -96,6 +97,7 @@ export class FinkUI {
     this.#narrationEl.innerHTML = '';
     this.#bgEl.style.backgroundImage = '';
     this.#bgEl.classList.remove('active');
+    this.#lastVizprom = null;
   }
 
   /**
@@ -253,9 +255,16 @@ export class FinkUI {
   }
 
   #addVizprom(prompt) {
-    const div = el('div', 'finkapp-vizprom');
-    div.textContent = `[vizprom: ${prompt}]`;
-    this.#narrationEl.appendChild(div);
+    if (!prompt || prompt === this.#lastVizprom) return;
+    this.#lastVizprom = prompt;
+
+    const details = el('details', 'finkapp-vizprom');
+    const summary = el('summary', 'finkapp-vizprom-summary');
+    summary.textContent = '[+] Visual prompt';
+    const body = el('div', 'finkapp-vizprom-body');
+    body.textContent = prompt;
+    details.append(summary, body);
+    this.#narrationEl.appendChild(details);
   }
 
   #addAudioTag(src) {
