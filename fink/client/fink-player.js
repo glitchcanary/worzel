@@ -232,28 +232,31 @@ export class FinkPlayer {
    */
   async #loadServerStory(storyId) {
     const base = this.#storiesBase();
+    const storyIds = uniqueStoryIds(storyId);
 
-    for (const file of ['story.ink.json', 'story.ink']) {
-      const url = `${base}/${storyId}/${file}`;
-      try {
-        const resp = await fetch(url);
-        if (resp.ok) {
-          const text = await resp.text();
-          this.#storyId = storyId;
-          this.#currentStoryUrl = url;
-          this.#mediaBasePath = null;
-          if (file.endsWith('.json')) {
-            this.#engine.loadJson(text);
-          } else {
-            this.#storySource = text;
-            this.#engine.compileAndLoad(text);
+    for (const candidateId of storyIds) {
+      for (const file of ['story.ink.json', 'story.ink']) {
+        const url = `${base}/${candidateId}/${file}`;
+        try {
+          const resp = await fetch(url);
+          if (resp.ok) {
+            const text = await resp.text();
+            this.#storyId = candidateId;
+            this.#currentStoryUrl = url;
+            this.#mediaBasePath = null;
+            if (file.endsWith('.json')) {
+              this.#engine.loadJson(text);
+            } else {
+              this.#storySource = text;
+              this.#engine.compileAndLoad(text);
+            }
+            this.#ui.setTitle(candidateId);
+            this.#ui.clearNarration();
+            if (!this.resumeBookmark()) this.#advance();
+            return;
           }
-          this.#ui.setTitle(storyId);
-          this.#ui.clearNarration();
-          if (!this.resumeBookmark()) this.#advance();
-          return;
-        }
-      } catch { /* try next */ }
+        } catch { /* try next */ }
+      }
     }
 
     this.#ui.setStatus(`Story '${storyId}' not found`, 'error');
@@ -574,4 +577,15 @@ function urlToId(url) {
     }
   }
   return last.replace(/\.ink(\.json)?$/, '') ?? 'unknown';
+}
+
+function uniqueStoryIds(storyId) {
+  const raw = `${storyId ?? ''}`.trim();
+  const normalized = raw
+    .toLowerCase()
+    .replace(/['"]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return [...new Set([raw, normalized].filter(Boolean))];
 }
