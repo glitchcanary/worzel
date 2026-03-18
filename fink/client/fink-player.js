@@ -189,6 +189,14 @@ export class FinkPlayer {
     }
   }
 
+  /**
+   * Load a server-hosted story by ID, trying compiled JSON before Ink source.
+   * @param {string} storyId
+   */
+  async loadStoryById(storyId) {
+    await this.#loadServerStory(storyId);
+  }
+
   // ── Internal loaders ───────────────────────────────────────────────
 
   /**

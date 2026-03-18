@@ -19,9 +19,8 @@ if (finkUrl) {
   // Direct story URL (any format: .ink, .ink.json, .fink.js)
   player.loadFromUrl(storyUrl, storyId);
 } else if (storyId) {
-  // Story by ID: loads from /stories/{id}/story.ink
-  const storiesBase = window.location.pathname.startsWith('/fink') ? '/fink/stories' : '/stories';
-  player.loadFromUrl(`${storiesBase}/${storyId}/story.ink`, storyId);
+  // Story by ID: use the same server-backed loader as the picker.
+  player.loadStoryById(storyId);
 } else {
   // Default: try to load the story list from the API
   player.loadStoryList().catch(() => {
