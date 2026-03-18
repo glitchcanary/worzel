@@ -170,35 +170,19 @@ export class FinkPlayer {
         return;
       }
 
-      // Auto-load default or single story
-      if (stories.length === 1 || defaultId) {
-        const id = defaultId ?? stories[0].id;
-        await this.#loadServerStory(id);
+      // Auto-load a concrete story, but keep the virtual menu as a picker.
+      if (stories.length === 1) {
+        await this.#loadServerStory(stories[0].id);
+        return;
+      }
+
+      if (defaultId && defaultId !== 'menu') {
+        await this.#loadServerStory(defaultId);
         return;
       }
 
       // Show story picker as "choices"
-      this.#ui.clearNarration();
-      this.#ui.addNarration([{ text: 'Choose a story:', speaker: 'narrator', tags: { foaf: {}, raw: [] } }]);
-      this.#ui.setStatus(`${stories.length} stories available`, 'info');
-
-      const fakeChoices = stories.map((s, i) => ({
-        index: i,
-        text: s.title || s.id,
-        tags: { foaf: {}, raw: [] },
-        voiceHints: [],
-      }));
-
-      this.#ui.setChoices(fakeChoices);
-
-      // Override the choice handler for this special case
-      const handler = async (e) => {
-        this.#root.removeEventListener('finkapp-choice', handler);
-        const idx = e.detail.index;
-        const story = stories[idx];
-        if (story) await this.#loadServerStory(story.id);
-      };
-      this.#root.addEventListener('finkapp-choice', handler);
+      this.#showStoryPicker(stories);
 
     } catch (err) {
       this.#ui.setStatus(`API error: ${err.message}`, 'error');
@@ -288,6 +272,7 @@ export class FinkPlayer {
         tags: choice.tags ?? { foaf: {}, raw: [] },
         voiceHints: choice.voiceHints ?? [],
       })),
+      suggestion: inkState.suggestion,
       ended: Boolean(inkState.isEnded),
       currentKnot: inkState.storyId ?? null,
       errors: [],
@@ -456,7 +441,7 @@ export class FinkPlayer {
       this.#ui.setStatus('Story ended', 'muted');
       if (saveBookmark) this.#clearBookmark();
     } else {
-      this.#ui.setChoices(state.choices);
+      this.#ui.setChoices(state.choices, state.suggestion);
       const n = state.choices.length;
       this.#ui.setStatus(`${n} choice${n !== 1 ? 's' : ''} · tap or press 1–${Math.min(n, 9)}`, 'info');
       if (saveBookmark) this.#saveBookmark();
@@ -529,6 +514,37 @@ export class FinkPlayer {
     const path = window.location.pathname;
     if (path.startsWith('/fink/') || path === '/fink') return '/fink/api';
     return '/api';
+  }
+
+  /**
+   * Render the server story list in the shared choice UI.
+   * This stays entirely inside finkapp so the main endpoints are unaffected.
+   * @param {{id: string, title?: string}[]} stories
+   */
+  #showStoryPicker(stories) {
+    this.#ui.clearNarration();
+    this.#ui.addNarration([{
+      text: 'Choose a story:',
+      speaker: 'narrator',
+      tags: { foaf: {}, raw: [] },
+    }]);
+    this.#ui.setStatus(`${stories.length} stories available`, 'info');
+
+    const fakeChoices = stories.map((story, index) => ({
+      index,
+      text: story.title || story.id,
+      tags: { foaf: {}, raw: [] },
+      voiceHints: [],
+    }));
+
+    this.#ui.setChoices(fakeChoices);
+
+    const handler = async (e) => {
+      this.#root.removeEventListener('finkapp-choice', handler);
+      const story = stories[e.detail.index];
+      if (story) await this.#loadServerStory(story.id);
+    };
+    this.#root.addEventListener('finkapp-choice', handler);
   }
 
   #storiesBase() {

@@ -19,6 +19,7 @@ export class FinkUI {
   /** @type {HTMLElement} */  #headerEl;
   /** @type {HTMLElement} */  #knotLabel;
   /** @type {HTMLElement} */  #bgEl;
+  /** @type {HTMLElement|null} */ #suggestionEl = null;
 
   /**
    * @param {HTMLElement} root - container element to render into
@@ -146,10 +147,24 @@ export class FinkUI {
    * Render choices as tappable cards.
    * @param {import('./fink-ink.js').InkChoice[]} choices
    */
-  setChoices(choices) {
+  setChoices(choices, suggestion = null) {
     this.#choicesEl.innerHTML = '';
+    this.#suggestionEl = null;
 
     if (choices.length === 0) return;
+
+    if (suggestion) {
+      this.#suggestionEl = el('div', 'finkapp-suggestion');
+      const parts = [`Heard next: "${suggestion.heardText}".`];
+      if (suggestion.suggestedChoiceIndex != null) {
+        const match = choices.find(choice => choice.index === suggestion.suggestedChoiceIndex);
+        if (match) parts.push(`Suggested choice: "${match.text}".`);
+      } else if (suggestion.pendingInputText) {
+        parts.push(`Draft reply: "${suggestion.pendingInputText}".`);
+      }
+      this.#suggestionEl.textContent = parts.join(' ');
+      this.#choicesEl.appendChild(this.#suggestionEl);
+    }
 
     for (const choice of choices) {
       const btn = el('button', 'finkapp-choice-btn');
