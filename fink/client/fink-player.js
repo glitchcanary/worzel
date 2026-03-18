@@ -483,6 +483,8 @@ export class FinkPlayer {
   }
 
   #storiesBase() {
+    const path = window.location.pathname;
+    if (path.startsWith('/fink/') || path === '/fink') return '/fink/stories';
     return '/stories';
   }
 }
