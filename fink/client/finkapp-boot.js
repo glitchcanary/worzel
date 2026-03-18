@@ -2,17 +2,23 @@
 // Extracted from inline <script> to comply with CSP script-src 'self'.
 
 import { FinkPlayer } from './fink-player.js';
+import { FinkAppLiveClient } from './finkapp-live.js';
 
 const app = document.getElementById('app');
 const player = new FinkPlayer(app);
+let liveClient = null;
 
 // Check URL params for story source
 const params = new URLSearchParams(window.location.search);
 const finkUrl = params.get('fink');     // ?fink=https://example.com/story.fink.js
 const storyUrl = params.get('story');   // ?story=/path/to/story.ink
 const storyId = params.get('id');       // ?id=test-garden
+const liveMode = params.get('live') === '1'; // ?live=1 uses the server-driven ink_state path
 
-if (finkUrl) {
+if (liveMode) {
+  liveClient = new FinkAppLiveClient(player, app);
+  liveClient.connect();
+} else if (finkUrl) {
   // Direct .fink.js URL (loaded via sandbox)
   player.loadFinkJs(finkUrl);
 } else if (storyUrl) {
@@ -35,3 +41,4 @@ if (finkUrl) {
 
 // Expose player globally for dev console access
 window.finkPlayer = player;
+window.finkLiveClient = liveClient;
