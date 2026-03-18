@@ -3,19 +3,21 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { InkSession } from '../../../src/ink/ink-session.js';
 import * as inkjs from 'inkjs/full';
+import { extractInkFromFinkJs } from '../../../src/ink/fink-js-extractor.js';
 
-const STORY_PATH = join(__dirname, '../../../stories/test-garden/story.ink');
+const STORY_PATH = join(__dirname, '../../../stories/test-garden/story.fink.js');
 
-function loadStory(): string {
-  const source = readFileSync(STORY_PATH, 'utf-8');
+async function loadStory(): Promise<string> {
+  const fink = readFileSync(STORY_PATH, 'utf-8');
+  const source = await extractInkFromFinkJs(fink);
   return new inkjs.Compiler(source).Compile().ToJson();
 }
 
 describe('InkSession', () => {
   let storyJson: string;
 
-  beforeEach(() => {
-    storyJson = loadStory();
+  beforeEach(async () => {
+    storyJson = await loadStory();
   });
 
   describe('continue', () => {

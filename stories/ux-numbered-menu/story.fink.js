@@ -25,4 +25,4 @@ Coffee selected.
 # speaker:narrator # voice:narrator
 You leave the counter.
 -> END
-`;
+`

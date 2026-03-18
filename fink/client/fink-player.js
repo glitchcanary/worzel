@@ -1,7 +1,7 @@
 // FinkPlayer — coordination layer for finkapp
 //
 // Wires FinkInk (engine) to FinkUI (rendering). Handles:
-// - Story loading from URL (.fink.js preferred, then .ink, with .ink.json as legacy fallback)
+// - Story loading from URL (.fink.js preferred, raw Ink accepted for direct URLs)
 // - Fetching the story list from the /fink/api/stories endpoint
 // - Advance loop (continue → render → await choice → continue)
 // - FINK: cross-story links (loads external .fink.js files)
@@ -11,7 +11,7 @@
 //
 // Usage:
 //   const player = new FinkPlayer(document.getElementById('app'));
-//   await player.loadFromUrl('/stories/test-garden/story.ink');
+//   await player.loadFromUrl('/stories/test-garden/story.fink.js');
 //   await player.loadFinkJs('https://example.com/story.fink.js');
 //   // or: await player.loadStoryList(); player.start();
 
@@ -59,7 +59,7 @@ export class FinkPlayer {
   // ── Story loading ──────────────────────────────────────────────────
 
   /**
-   * Load a story from a URL. Detects .fink.js, .ink, and legacy .ink.json.
+   * Load a story from a URL. Detects .fink.js and otherwise treats content as raw Ink source.
    * @param {string} url
    * @param {string} [storyId]
    */
@@ -80,12 +80,12 @@ export class FinkPlayer {
       this.#currentStoryUrl = url;
 
       if (url.endsWith('.json') || url.endsWith('.ink.json')) {
-        console.warn(`[finkapp] Legacy story.ink.json fallback used for ${url}; prefer story.fink.js or story.ink`);
-        this.#engine.loadJson(text);
-      } else {
-        this.#storySource = text;
-        this.#engine.compileAndLoad(text);
+        console.error(`[finkapp] Legacy compiled Ink JSON is no longer supported: ${url}`);
+        throw new Error('Legacy compiled Ink JSON is no longer supported; use story.fink.js');
       }
+
+      this.#storySource = text;
+      this.#engine.compileAndLoad(text);
 
       this.#ui.setTitle(this.#storyId ?? 'finkapp');
       this.#ui.clearNarration();
@@ -122,25 +122,6 @@ export class FinkPlayer {
       if (!this.resumeBookmark()) this.#advance();
     } catch (err) {
       this.#ui.setStatus(`Compile failed: ${err.message}`, 'error');
-      this.#ui.showErrors([err.message]);
-    }
-  }
-
-  /**
-   * Load from pre-compiled JSON string.
-   * @param {string} json
-   * @param {string} [storyId='compiled']
-   */
-  loadFromJson(json, storyId = 'compiled') {
-    this.#storyId = storyId;
-
-    try {
-      this.#engine.loadJson(json);
-      this.#ui.setTitle(storyId);
-      this.#ui.clearNarration();
-      if (!this.resumeBookmark()) this.#advance();
-    } catch (err) {
-      this.#ui.setStatus(`Load failed: ${err.message}`, 'error');
       this.#ui.showErrors([err.message]);
     }
   }
@@ -228,7 +209,7 @@ export class FinkPlayer {
 
   /**
    * Load a specific story from the server's stories directory.
-   * Prefers .fink.js, then .ink, and only uses .ink.json as legacy fallback.
+   * Uses story.fink.js for bundled local stories.
    * @param {string} storyId
    */
   async #loadServerStory(storyId) {
@@ -236,33 +217,17 @@ export class FinkPlayer {
     const storyIds = uniqueStoryIds(storyId);
 
     for (const candidateId of storyIds) {
-      for (const file of ['story.fink.js', 'story.ink', 'story.ink.json']) {
-        const url = `${base}/${candidateId}/${file}`;
-        try {
-          const resp = await fetch(url);
-          if (resp.ok) {
-            this.#storyId = candidateId;
-            this.#currentStoryUrl = url;
-            this.#mediaBasePath = null;
-            if (file.endsWith('.fink.js')) {
-              await this.#loadFinkJsUrl(url);
-            } else {
-              const text = await resp.text();
-              if (file.endsWith('.json')) {
-                console.warn(`[finkapp] Legacy story.ink.json fallback used for ${candidateId}; prefer story.fink.js or story.ink`);
-                this.#engine.loadJson(text);
-              } else {
-                this.#storySource = text;
-                this.#engine.compileAndLoad(text);
-              }
-              this.#ui.setTitle(candidateId);
-              this.#ui.clearNarration();
-              if (!this.resumeBookmark()) this.#advance();
-            }
-            return;
-          }
-        } catch { /* try next */ }
-      }
+      const url = `${base}/${candidateId}/story.fink.js`;
+      try {
+        const resp = await fetch(url, { method: 'HEAD' });
+        if (resp.ok) {
+          this.#storyId = candidateId;
+          this.#currentStoryUrl = url;
+          this.#mediaBasePath = null;
+          await this.#loadFinkJsUrl(url);
+          return;
+        }
+      } catch { /* try next */ }
     }
 
     this.#ui.setStatus(`Story '${storyId}' not found`, 'error');
@@ -573,16 +538,14 @@ export class FinkPlayer {
 
 function urlToId(url) {
   const parts = url.split('/').filter(Boolean);
-  // For .fink.js files, use the filename without extension
   const last = parts[parts.length - 1] ?? 'unknown';
   if (last.endsWith('.fink.js')) return last.replace('.fink.js', '');
-  // For story.ink, use parent directory name
   for (let i = parts.length - 1; i >= 0; i--) {
     if (parts[i].startsWith('story.')) {
       return parts[i - 1] ?? 'unknown';
     }
   }
-  return last.replace(/\.ink(\.json)?$/, '') ?? 'unknown';
+  return last.replace(/\.ink$/, '') ?? 'unknown';
 }
 
 function uniqueStoryIds(storyId) {

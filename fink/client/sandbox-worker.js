@@ -3,6 +3,7 @@
 // sent from the parent via postMessage.
 
 window.finkData = [];
+window.finkPort = null;
 
 function oooOO(strings) {
   var result = strings[0];
@@ -12,21 +13,31 @@ function oooOO(strings) {
   window.finkData.push(result);
 }
 
-window.addEventListener('message', function(e) {
-  if (e.data && e.data.type === 'exec-finkjs') {
-    try {
-      (new Function(e.data.code))();
-      parent.postMessage({
-        type: 'fink-loaded',
-        data: window.finkData[0] || null
-      }, '*');
-    } catch (err) {
-      parent.postMessage({
-        type: 'fink-error',
-        error: err.message
-      }, '*');
+function attachPort(port) {
+  window.finkPort = port;
+  port.onmessage = function(e) {
+    if (e.data && e.data.type === 'exec-finkjs') {
+      try {
+        window.finkData = [];
+        (new Function(e.data.code))();
+        port.postMessage({
+          type: 'fink-loaded',
+          data: window.finkData[0] || null
+        });
+      } catch (err) {
+        port.postMessage({
+          type: 'fink-error',
+          error: err.message
+        });
+      }
     }
+  };
+  if (typeof port.start === 'function') port.start();
+  port.postMessage({ type: 'sandbox-ready' });
+}
+
+window.addEventListener('message', function(e) {
+  if (e.data && e.data.type === 'init-port' && e.ports && e.ports[0]) {
+    attachPort(e.ports[0]);
   }
 });
-
-parent.postMessage({ type: 'sandbox-ready' }, '*');

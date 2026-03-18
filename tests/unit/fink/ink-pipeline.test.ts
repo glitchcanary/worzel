@@ -8,6 +8,7 @@ import type { ASRProvider, ASRResult, LLMProvider, LLMChunk, TTSProvider, TTSRes
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as inkjs from 'inkjs/full';
+import { extractInkFromFinkJs } from '../../../src/ink/fink-js-extractor.js';
 
 // --- Mock providers ---
 
@@ -77,8 +78,9 @@ class MockTransport implements Transport {
 }
 
 // Load test story
-const storySourcePath = join(import.meta.dirname, '../../../stories/test-garden/story.ink');
-const storySource = readFileSync(storySourcePath, 'utf-8');
+const storyFinkPath = join(import.meta.dirname, '../../../stories/test-garden/story.fink.js');
+const storyFink = readFileSync(storyFinkPath, 'utf-8');
+const storySource = await extractInkFromFinkJs(storyFink);
 const storyJson = new inkjs.Compiler(storySource).Compile().ToJson();
 
 function createTestSetup() {

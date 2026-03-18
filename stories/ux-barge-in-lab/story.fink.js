@@ -22,4 +22,4 @@ You cut in. The room gets quieter instantly.
 # speaker:narrator # voice:narrator
 He speaks for another minute and somehow says less than before.
 -> END
-`;
+`

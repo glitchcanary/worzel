@@ -8,15 +8,17 @@
 //   ...pure Ink source...
 //   `
 //
-// The sandbox HTML (sandbox-frame.html + sandbox-worker.js) defines the
-// oooOO tag function, captures the string, and posts it back via postMessage.
+// The parent fetches source, then injects it into a sandboxed srcdoc iframe
+// that boots a tiny worker script. That worker defines oooOO, captures the
+// tagged template contents, and posts the extracted Ink back to the parent.
 // This avoids needing CORS headers on .fink.js hosts — content is fetched
 // as text, then executed in isolation.
 //
-// Uses a served HTML file (not srcdoc) so all scripts satisfy CSP script-src 'self'.
+// The iframe shell uses srcdoc, but loads only same-origin script files.
 
 const SANDBOX_TIMEOUT_MS = 10000;
 const DEDUP_WINDOW_MS = 5000;
+const SETUP_TIMEOUT_MS = 5000;
 
 /** @type {Map<string, number>} */
 const recentLoads = new Map();
@@ -54,13 +56,12 @@ export function clearLoadRecord(url) {
 }
 
 /**
- * Resolve the sandbox frame URL relative to the current page.
+ * Resolve the sandbox worker URL relative to the current page.
  * @returns {string}
  */
-function sandboxFrameUrl() {
-  // sandbox-frame.html is served alongside finkapp.html
+function sandboxWorkerUrl() {
   const base = new URL('.', window.location.href).href;
-  return base + 'sandbox-frame.html';
+  return base + 'sandbox-worker.js';
 }
 
 /**
@@ -72,12 +73,19 @@ function executeSandboxed(scriptContent) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let iframe = null;
-    let messageHandler = null;
-    let timeoutId = null;
+    let executionTimeoutId = null;
+    let setupTimeoutId = null;
+    let loadHandler = null;
+    let sandboxPort = null;
 
     const cleanup = () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (messageHandler) window.removeEventListener('message', messageHandler);
+      if (executionTimeoutId) clearTimeout(executionTimeoutId);
+      if (setupTimeoutId) clearTimeout(setupTimeoutId);
+      if (loadHandler && iframe) iframe.removeEventListener('load', loadHandler);
+      if (sandboxPort) {
+        sandboxPort.onmessage = null;
+        sandboxPort.close();
+      }
       if (iframe?.parentNode) iframe.parentNode.removeChild(iframe);
     };
 
@@ -88,21 +96,33 @@ function executeSandboxed(scriptContent) {
       fn();
     };
 
-    timeoutId = setTimeout(() => {
-      settle(() => reject(new Error('Sandbox timeout')));
-    }, SANDBOX_TIMEOUT_MS);
+    setupTimeoutId = setTimeout(() => {
+      settle(() => reject(new Error('Sandbox setup timeout')));
+    }, SETUP_TIMEOUT_MS);
 
-    messageHandler = (e) => {
+    const startExecutionTimeout = () => {
+      if (executionTimeoutId) clearTimeout(executionTimeoutId);
+      executionTimeoutId = setTimeout(() => {
+        settle(() => reject(new Error('Sandbox timeout')));
+      }, SANDBOX_TIMEOUT_MS);
+    };
+
+    const channel = new MessageChannel();
+    sandboxPort = channel.port1;
+    sandboxPort.onmessage = (e) => {
       const msg = e.data;
       if (!msg || typeof msg !== 'object') return;
-
       switch (msg.type) {
         case 'sandbox-ready':
-          // Send the script content to the sandbox for execution
-          iframe.contentWindow.postMessage({
+          if (setupTimeoutId) {
+            clearTimeout(setupTimeoutId);
+            setupTimeoutId = null;
+          }
+          startExecutionTimeout();
+          sandboxPort.postMessage({
             type: 'exec-finkjs',
             code: scriptContent,
-          }, '*');
+          });
           break;
 
         case 'fink-loaded':
@@ -119,13 +139,20 @@ function executeSandboxed(scriptContent) {
       }
     };
 
-    window.addEventListener('message', messageHandler);
+    const workerUrl = sandboxWorkerUrl();
+    const sandboxHtml =
+      '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      `<script src="${workerUrl}"></script>` +
+      '</head><body></body></html>';
 
-    // Create sandboxed iframe using a served HTML file (CSP-compliant)
     iframe = document.createElement('iframe');
     iframe.sandbox = 'allow-scripts';
     iframe.style.display = 'none';
-    iframe.src = sandboxFrameUrl();
+    iframe.srcdoc = sandboxHtml;
+    loadHandler = () => {
+      iframe?.contentWindow?.postMessage({ type: 'init-port' }, '*', [channel.port2]);
+    };
+    iframe.addEventListener('load', loadHandler, { once: true });
     document.body.appendChild(iframe);
   });
 }

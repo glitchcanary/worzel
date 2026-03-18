@@ -4,9 +4,7 @@
  * Story directory structure:
  *   stories/
  *     my-story/
- *       story.fink.js    (preferred wrapper form for client/server parity)
- *       story.ink        (source, compiled at load time)
- *       story.ink.json   (legacy compiled fallback)
+ *       story.fink.js    (runtime story source)
  *       metadata.json     (title, author, description, voices, fink data)
  */
 
@@ -101,31 +99,10 @@ export class StoryManager {
    * Load a single story from a directory.
    */
   async loadStory(storyId: string, storyDir: string): Promise<void> {
-    // Prefer .fink.js and .ink so authored sources remain the source of truth.
-    // Legacy .ink.json is still accepted, but only as a fallback.
-    let json: string | null = null;
-
-    try {
-      const finkPath = join(storyDir, 'story.fink.js');
-      const finkContent = await readFile(finkPath, 'utf-8');
-      const inkSource = await extractInkFromFinkJs(finkContent);
-      json = await this.compileInk(inkSource);
-    } catch {
-      const inkPath = join(storyDir, 'story.ink');
-      try {
-        const inkSource = await readFile(inkPath, 'utf-8');
-        json = await this.compileInk(inkSource);
-      } catch {
-        const jsonPath = join(storyDir, 'story.ink.json');
-        try {
-          json = await readFile(jsonPath, 'utf-8');
-          json = json.replace(/^\uFEFF/, '');
-          this.logger?.warn({ storyId, storyDir }, 'Using legacy story.ink.json fallback; prefer story.fink.js or story.ink');
-        } catch {
-          throw new Error(`No story.fink.js, story.ink, or story.ink.json found in ${storyDir}`);
-        }
-      }
-    }
+    const finkPath = join(storyDir, 'story.fink.js');
+    const finkContent = await readFile(finkPath, 'utf-8');
+    const inkSource = await extractInkFromFinkJs(finkContent);
+    const json = await this.compileInk(inkSource);
 
     // Load metadata
     const metadata = await this.loadMetadata(storyId, storyDir);

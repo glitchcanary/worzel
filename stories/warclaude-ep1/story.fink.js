@@ -1295,4 +1295,4 @@ COGNOSCERE EST VINCERE.
 * [End training] -> END
 
 -> END
-`;
+`

@@ -2,7 +2,6 @@
 //
 // Wraps inkjs (full, with compiler) to provide:
 // - Compilation from raw .ink source
-// - Loading from source or legacy pre-compiled .ink.json
 // - Tag parsing (speaker, voice, mood, image, foley, audio, etc.)
 // - Story advancement (continue + choices)
 // - State serialization for bookmarks
@@ -178,23 +177,6 @@ export class FinkInk {
 
     const compiler = new CompilerClass(source);
     this.#story = compiler.Compile();
-    this.#stickyTags = { foaf: {}, raw: [] };
-    this.#currentKnot = null;
-  }
-
-  /**
-   * Load a pre-compiled story from JSON string.
-   * @param {string} json - compiled Ink JSON
-   * @param {object} [inkjsModule] - optional inkjs module reference
-   */
-  loadJson(json, inkjsModule) {
-    const ink = inkjsModule ?? window.inkjs;
-    if (!ink) throw new Error('inkjs not loaded');
-
-    const StoryClass = ink.Story || (ink.story && ink.story.Story);
-    if (!StoryClass) throw new Error('inkjs Story class not found');
-
-    this.#story = new StoryClass(json);
     this.#stickyTags = { foaf: {}, raw: [] };
     this.#currentKnot = null;
   }

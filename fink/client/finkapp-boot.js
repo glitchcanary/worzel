@@ -11,7 +11,7 @@ let liveClient = null;
 // Check URL params for story source
 const params = new URLSearchParams(window.location.search);
 const finkUrl = params.get('fink');     // ?fink=https://example.com/story.fink.js
-const storyUrl = params.get('story');   // ?story=/path/to/story.ink
+const storyUrl = params.get('story');   // ?story=/path/to/story.fink.js or raw .ink source
 const storyId = params.get('id');       // ?id=test-garden
 const liveMode = params.get('live') === '1'; // ?live=1 uses the server-driven ink_state path
 
@@ -22,7 +22,7 @@ if (liveMode) {
   // Direct .fink.js URL (loaded via sandbox)
   player.loadFinkJs(finkUrl);
 } else if (storyUrl) {
-  // Direct story URL (any format: .ink, .ink.json, .fink.js)
+  // Direct story URL (.fink.js preferred; raw Ink accepted)
   player.loadFromUrl(storyUrl, storyId);
 } else if (storyId) {
   // Story by ID: use the same server-backed loader as the picker.
@@ -32,7 +32,7 @@ if (liveMode) {
   player.loadStoryList().catch(() => {
     player.ui.setStatus('Pass ?story=URL, ?id=NAME, or ?fink=URL to load', 'muted');
     player.ui.addNarration([{
-      text: 'No story loaded. Use ?id=story-name, ?story=path/to/story.ink, or ?fink=url.fink.js',
+      text: 'No story loaded. Use ?id=story-name, ?story=path/to/story.fink.js, or ?fink=url.fink.js',
       speaker: 'narrator',
       tags: { foaf: {}, raw: [] },
     }]);

@@ -26,4 +26,4 @@ Choose one.
 + South # voice_hint:south, two
     South selected.
     -> END
-`;
+`

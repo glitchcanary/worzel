@@ -22,4 +22,4 @@ I heard: pull the lever. Confirm?
 + Cancel # voice_hint:cancel, no, stop
     You step back from the lever.
     -> END
-`;
+`
