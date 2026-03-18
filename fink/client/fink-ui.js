@@ -44,12 +44,20 @@ export class FinkUI {
 
     // Narration (scrolling)
     this.#narrationEl = el('div', 'finkapp-narration');
+    this.#narrationEl.setAttribute('role', 'log');
+    this.#narrationEl.setAttribute('aria-live', 'polite');
+    this.#narrationEl.setAttribute('aria-relevant', 'additions text');
+    this.#narrationEl.setAttribute('aria-label', 'Story narration');
 
     // Choices
     this.#choicesEl = el('div', 'finkapp-choices');
+    this.#choicesEl.setAttribute('role', 'group');
+    this.#choicesEl.setAttribute('aria-label', 'Choices');
 
     // Status bar
     this.#statusEl = el('div', 'finkapp-status');
+    this.#statusEl.setAttribute('role', 'status');
+    this.#statusEl.setAttribute('aria-live', 'polite');
 
     this.#root.append(this.#headerEl, this.#bgEl, this.#narrationEl, this.#choicesEl, this.#statusEl);
   }
@@ -150,6 +158,8 @@ export class FinkUI {
       const text = el('span', 'finkapp-choice-text');
       text.textContent = choice.text;
       btn.append(num, text);
+      btn.type = 'button';
+      btn.setAttribute('aria-label', `Choice ${choice.index + 1}: ${choice.text}`);
 
       if (choice.tags?.finkLink) {
         btn.dataset.finkLink = choice.tags.finkLink;
@@ -172,6 +182,8 @@ export class FinkUI {
       this.#choicesEl.appendChild(btn);
     }
 
+    const first = this.#choicesEl.querySelector('.finkapp-choice-btn');
+    first?.focus();
     this.#scrollToBottom();
   }
 
@@ -194,6 +206,7 @@ export class FinkUI {
         }));
       });
       this.#choicesEl.appendChild(btn);
+      btn.focus();
     }
   }
 
@@ -254,6 +267,21 @@ export class FinkUI {
     requestAnimationFrame(() => {
       this.#narrationEl.scrollTop = this.#narrationEl.scrollHeight;
     });
+  }
+
+  focusChoice(step = 1) {
+    const buttons = [...this.#choicesEl.querySelectorAll('.finkapp-choice-btn')];
+    if (buttons.length === 0) return false;
+    const active = document.activeElement;
+    let index = buttons.findIndex(btn => btn === active);
+    if (index === -1) index = step > 0 ? -1 : 0;
+    index = (index + step + buttons.length) % buttons.length;
+    buttons[index].focus();
+    return true;
+  }
+
+  hasChoices() {
+    return this.#choicesEl.querySelector('.finkapp-choice-btn') !== null;
   }
 }
 

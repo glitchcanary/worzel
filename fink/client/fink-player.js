@@ -80,15 +80,15 @@ export class FinkPlayer {
       this.#currentStoryUrl = url;
 
       if (url.endsWith('.json') || url.endsWith('.ink.json')) {
-        this.#engine.loadJson(text);
-      } else {
-        this.#storySource = text;
-        this.#engine.compileAndLoad(text);
-      }
+      this.#engine.loadJson(text);
+    } else {
+      this.#storySource = text;
+      this.#engine.compileAndLoad(text);
+    }
 
       this.#ui.setTitle(this.#storyId ?? 'finkapp');
       this.#ui.clearNarration();
-      this.#advance();
+      if (!this.resumeBookmark()) this.#advance();
     } catch (err) {
       this.#ui.setStatus(`Load failed: ${err.message}`, 'error');
       this.#ui.showErrors([err.message]);
@@ -118,7 +118,7 @@ export class FinkPlayer {
       this.#engine.compileAndLoad(source);
       this.#ui.setTitle(storyId);
       this.#ui.clearNarration();
-      this.#advance();
+      if (!this.resumeBookmark()) this.#advance();
     } catch (err) {
       this.#ui.setStatus(`Compile failed: ${err.message}`, 'error');
       this.#ui.showErrors([err.message]);
@@ -137,7 +137,7 @@ export class FinkPlayer {
       this.#engine.loadJson(json);
       this.#ui.setTitle(storyId);
       this.#ui.clearNarration();
-      this.#advance();
+      if (!this.resumeBookmark()) this.#advance();
     } catch (err) {
       this.#ui.setStatus(`Load failed: ${err.message}`, 'error');
       this.#ui.showErrors([err.message]);
@@ -226,7 +226,7 @@ export class FinkPlayer {
       this.#engine.compileAndLoad(inkSource);
       this.#ui.setTitle(this.#storyId ?? 'finkapp');
       this.#ui.clearNarration();
-      this.#advance();
+      if (!this.resumeBookmark()) this.#advance();
     } catch (err) {
       this.#ui.setStatus(`Load failed: ${err.message}`, 'error');
       this.#ui.showErrors([err.message]);
@@ -258,7 +258,7 @@ export class FinkPlayer {
           }
           this.#ui.setTitle(storyId);
           this.#ui.clearNarration();
-          this.#advance();
+          if (!this.resumeBookmark()) this.#advance();
           return;
         }
       } catch { /* try next */ }
@@ -271,55 +271,34 @@ export class FinkPlayer {
 
   #advance() {
     const state = this.#engine.continue();
+    this.#presentState(state);
+  }
 
-    if (state.errors.length > 0) {
-      this.#ui.showErrors(state.errors);
+  /**
+   * Apply a server-driven ink_state payload to the shared renderer.
+   * This is the first seam toward a unified local/server Fink client.
+   * @param {object} inkState
+   */
+  applyInkState(inkState) {
+    const normalized = {
+      narration: inkState.narration ?? [],
+      choices: (inkState.choices ?? []).map(choice => ({
+        index: choice.index,
+        text: choice.text,
+        tags: choice.tags ?? { foaf: {}, raw: [] },
+        voiceHints: choice.voiceHints ?? [],
+      })),
+      ended: Boolean(inkState.isEnded),
+      currentKnot: inkState.storyId ?? null,
+      errors: [],
+    };
+
+    if (inkState.storyId) {
+      this.#storyId = inkState.storyId;
+      this.#ui.setTitle(inkState.storyId);
     }
 
-    // Process media tags from narration (BASEHREF, BG, etc.)
-    let finkLink = null;
-    for (const seg of state.narration) {
-      if (seg.tags?.basehref) {
-        this.#mediaBasePath = seg.tags.basehref;
-        if (!this.#mediaBasePath.endsWith('/')) this.#mediaBasePath += '/';
-      }
-      if (seg.tags?.finkLink) {
-        finkLink = seg.tags.finkLink;
-      }
-      // Resolve relative image/audio/video URLs against BASEHREF
-      if (seg.tags?.image) {
-        seg.tags.image = this.#resolveMediaUrl(seg.tags.image);
-      }
-      if (seg.tags?.audio) {
-        seg.tags.audio = this.#resolveMediaUrl(seg.tags.audio);
-      }
-      if (seg.tags?.video) {
-        seg.tags.video = this.#resolveMediaUrl(seg.tags.video);
-      }
-    }
-
-    if (state.narration.length > 0) {
-      this.#ui.addNarration(state.narration);
-    }
-
-    this.#ui.setKnot(state.currentKnot);
-
-    // If a FINK: tag was hit during narration, load the external story
-    if (finkLink) {
-      this.#handleFinkLink(finkLink);
-      return;
-    }
-
-    if (state.ended) {
-      this.#ui.showEnded();
-      this.#ui.setStatus('Story ended', 'muted');
-      this.#clearBookmark();
-    } else {
-      this.#ui.setChoices(state.choices);
-      const n = state.choices.length;
-      this.#ui.setStatus(`${n} choice${n !== 1 ? 's' : ''} · tap or press 1–${Math.min(n, 9)}`, 'info');
-      this.#saveBookmark();
-    }
+    this.#presentState(normalized, { saveBookmark: false });
   }
 
   #choose(index) {
@@ -411,7 +390,77 @@ export class FinkPlayer {
         e.preventDefault();
         this.#restart();
       }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.#ui.focusChoice(1);
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        this.#ui.focusChoice(-1);
+      }
+      if ((e.key === 'Enter' || e.key === ' ') && this.#ui.hasChoices()) {
+        const active = document.activeElement;
+        if (active?.classList?.contains('finkapp-choice-btn')) {
+          e.preventDefault();
+          active.click();
+        }
+      }
     });
+  }
+
+  /**
+   * Shared rendering path for both local inkjs state and server ink_state payloads.
+   * @param {import('./fink-ink.js').StoryState} state
+   * @param {{ saveBookmark?: boolean }} [options]
+   */
+  #presentState(state, options = {}) {
+    const saveBookmark = options.saveBookmark ?? true;
+
+    if (state.errors.length > 0) {
+      this.#ui.showErrors(state.errors);
+    }
+
+    let finkLink = null;
+    for (const seg of state.narration) {
+      if (seg.tags?.basehref) {
+        this.#mediaBasePath = seg.tags.basehref;
+        if (!this.#mediaBasePath.endsWith('/')) this.#mediaBasePath += '/';
+      }
+      if (seg.tags?.finkLink) {
+        finkLink = seg.tags.finkLink;
+      }
+      if (seg.tags?.image) {
+        seg.tags.image = this.#resolveMediaUrl(seg.tags.image);
+      }
+      if (seg.tags?.audio) {
+        seg.tags.audio = this.#resolveMediaUrl(seg.tags.audio);
+      }
+      if (seg.tags?.video) {
+        seg.tags.video = this.#resolveMediaUrl(seg.tags.video);
+      }
+    }
+
+    if (state.narration.length > 0) {
+      this.#ui.addNarration(state.narration);
+    }
+
+    this.#ui.setKnot(state.currentKnot);
+
+    if (finkLink) {
+      this.#handleFinkLink(finkLink);
+      return;
+    }
+
+    if (state.ended) {
+      this.#ui.showEnded();
+      this.#ui.setStatus('Story ended', 'muted');
+      if (saveBookmark) this.#clearBookmark();
+    } else {
+      this.#ui.setChoices(state.choices);
+      const n = state.choices.length;
+      this.#ui.setStatus(`${n} choice${n !== 1 ? 's' : ''} · tap or press 1–${Math.min(n, 9)}`, 'info');
+      if (saveBookmark) this.#saveBookmark();
+    }
   }
 
   // ── Media URL resolution ───────────────────────────────────────────
