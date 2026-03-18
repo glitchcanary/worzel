@@ -270,19 +270,19 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
     });
   }
 
-  const finkClientDir = join(projectRoot, 'fink', 'client');
-  await app.register(fastifyStatic, {
-    root: finkClientDir,
-    prefix: routePrefix ? `${routePrefix}/` : '/',
-    decorateReply: false,
-  });
-
   // Serve stories directory as static files so the client-side finkapp
   // can fetch .ink source files directly for in-browser compilation.
   const storiesPrefix = routePrefix ? `${routePrefix}/stories/` : '/stories/';
   await app.register(fastifyStatic, {
     root: storiesDir,
     prefix: storiesPrefix,
+    decorateReply: false,
+  });
+
+  const finkClientDir = join(projectRoot, 'fink', 'client');
+  await app.register(fastifyStatic, {
+    root: finkClientDir,
+    prefix: routePrefix ? `${routePrefix}/` : '/',
     decorateReply: false,
   });
 
