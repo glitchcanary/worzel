@@ -247,5 +247,30 @@ describe('InkPipeline', () => {
       expect(tts.synthesizeCalls.length).toBe(0);
       expect(transport.getMessages('ink_state').length).toBe(0);
     });
+
+    it('ignores short no-match fragments that overlap recent spoken output', async () => {
+      const { asr, tts, pipeline, session, transport, inkSession } = createTestSetup();
+
+      const now = Date.now();
+      session.addSpokenOutput({
+        text: 'The note says it might be worth it though, if you are brave.',
+        provider: 'mock-tts',
+        cacheScope: 'persistent',
+        startedAt: now - 400,
+        estimatedDurationMs: 2_000,
+      });
+      session.startRecordingWindow(now - 200);
+      session.finishRecordingWindow(now + 100, 0.08);
+      asr.transcribeResponse = 'worth it though';
+
+      pipeline.pushAudio(Buffer.alloc(3200));
+      await pipeline.process(session, transport, inkSession);
+
+      expect(transport.getMessages('input_ignored')).toEqual([
+        expect.objectContaining({ reason: 'ack_junk' }),
+      ]);
+      expect(transport.getMessages('stt').length).toBe(1);
+      expect(tts.synthesizeCalls.length).toBe(0);
+    });
   });
 });

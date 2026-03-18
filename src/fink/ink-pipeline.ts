@@ -243,6 +243,22 @@ export class InkPipeline {
         residualText: classification.residualText,
       }, 'Classification result');
 
+      if (
+        classification.type === 'no_match' &&
+        this.isLikelySelfHeardNoMatch(asrText, overlappingSpokenOutput.map(entry => entry.text))
+      ) {
+        this.logger.info({
+          text: asrText,
+          overlapTexts: overlappingSpokenOutput.map(entry => entry.text).slice(0, 3),
+        }, 'Ignoring likely self-heard no-match fragment');
+        await transport.sendText(JSON.stringify({
+          type: 'input_ignored',
+          reason: 'ack_junk',
+          session_id: session.id,
+        }));
+        return;
+      }
+
       // 4. Act on classification
       switch (classification.type) {
         case 'choice_match':
@@ -1015,11 +1031,7 @@ export class InkPipeline {
   }
 
   private isIgnorableAsrText(text: string): boolean {
-    const normalized = text
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    const normalized = this.normalizeAsrText(text);
 
     if (!normalized) return true;
     if (IGNORABLE_ASR_PHRASES.has(normalized)) return true;
@@ -1030,6 +1042,30 @@ export class InkPipeline {
     }
 
     return false;
+  }
+
+  private isLikelySelfHeardNoMatch(text: string, overlapTexts: string[]): boolean {
+    const normalized = this.normalizeAsrText(text);
+    if (!normalized) return false;
+
+    const words = normalized.split(' ').filter(Boolean);
+    if (words.length === 0 || words.length > 3 || normalized.length > 24) {
+      return false;
+    }
+
+    return overlapTexts.some(overlapText => {
+      const normalizedOverlap = this.normalizeAsrText(overlapText);
+      return normalizedOverlap.includes(normalized);
+    });
+  }
+
+  private normalizeAsrText(text: string): string {
+    const normalized = text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return normalized;
   }
 
   private rememberSpokenOutput(
