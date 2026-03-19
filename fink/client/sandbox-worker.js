@@ -1,29 +1,45 @@
 // sandbox-worker.js — runs inside the sandboxed iframe
-// Defines the oooOO tagged template function and executes .fink.js content
-// sent from the parent via postMessage.
-
-window.finkData = [];
+// Defines oooOO, injects the requested .fink.js as <script src=...>,
+// and returns the captured Ink source.
 window.finkPort = null;
+window.finkData = [];
 
 function oooOO(strings) {
-  var result = strings[0];
-  for (var i = 1; i < arguments.length; i++) {
-    result += String(arguments[i]) + strings[i];
-  }
-  window.finkData.push(result);
+  var content = (typeof strings === 'object' && strings.raw)
+    ? strings.raw.join('')
+    : String(strings);
+  window.finkData.push(content);
+  return content;
 }
 
 function attachPort(port) {
   window.finkPort = port;
   port.onmessage = function(e) {
-    if (e.data && e.data.type === 'exec-finkjs') {
+    if (e.data && e.data.type === 'load-fink-script') {
       try {
         window.finkData = [];
-        (new Function(e.data.code))();
-        port.postMessage({
-          type: 'fink-loaded',
-          data: window.finkData[0] || null
-        });
+
+        var prior = document.getElementById('fink-script');
+        if (prior && prior.parentNode) {
+          prior.parentNode.removeChild(prior);
+        }
+
+        var script = document.createElement('script');
+        script.id = 'fink-script';
+        script.src = String(e.data.url || '');
+        script.onload = function() {
+          port.postMessage({
+            type: 'fink-loaded',
+            data: window.finkData[0] || null
+          });
+        };
+        script.onerror = function() {
+          port.postMessage({
+            type: 'fink-error',
+            error: 'Failed to load script in sandbox'
+          });
+        };
+        document.body.appendChild(script);
       } catch (err) {
         port.postMessage({
           type: 'fink-error',

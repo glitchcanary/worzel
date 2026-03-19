@@ -3,9 +3,11 @@
 
 import { FinkPlayer } from './fink-player.js';
 import { FinkAppLiveClient } from './finkapp-live.js';
+import { FinkLocalSvgGenerator } from './fink-local-svg.js';
 
 const app = document.getElementById('app');
-const player = new FinkPlayer(app);
+const localSvg = new FinkLocalSvgGenerator();
+const player = new FinkPlayer(app, { localSvg });
 let liveClient = null;
 
 // Check URL params for story source
@@ -36,6 +38,28 @@ if (liveMode) {
       speaker: 'narrator',
       tags: { foaf: {}, raw: [] },
     }]);
+  });
+}
+
+if (localSvg.shouldShowStartupNotice()) {
+  localSvg.probe().then((availability) => {
+    if (availability.state === 'downloadable' || availability.state === 'downloading') {
+      const isDownloading = availability.state === 'downloading';
+      player.ui.showLocalAiNotice({
+        text: isDownloading
+          ? 'On-device AI model download is already in progress for this browser. Continue setup to unlock optional extras such as local SVG illustration generation from visual prompts.'
+          : 'Enable on-device AI features for this browser. This unlocks optional extras such as local SVG illustration generation from visual prompts.',
+        buttonLabel: isDownloading ? 'Continue on-device AI setup' : 'Enable on-device AI',
+        onEnable: async (onProgress) => {
+          await localSvg.ensureReady({ onProgress });
+        },
+        onDismiss: () => {
+          localSvg.dismissStartupNotice();
+        },
+      });
+    }
+  }).catch(() => {
+    // Ignore startup probe failures; feature remains opt-in from vizprom blocks.
   });
 }
 

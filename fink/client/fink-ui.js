@@ -17,16 +17,20 @@ export class FinkUI {
   /** @type {HTMLElement} */  #choicesEl;
   /** @type {HTMLElement} */  #statusEl;
   /** @type {HTMLElement} */  #headerEl;
+  /** @type {HTMLElement} */  #bannerEl;
   /** @type {HTMLElement} */  #knotLabel;
   /** @type {HTMLElement} */  #bgEl;
   /** @type {HTMLElement|null} */ #suggestionEl = null;
   /** @type {string|null} */ #lastVizprom = null;
+  /** @type {any} */ #localSvg = null;
 
   /**
    * @param {HTMLElement} root - container element to render into
+   * @param {{ localSvg?: any }} [options]
    */
-  constructor(root) {
+  constructor(root, options = {}) {
     this.#root = root;
+    this.#localSvg = options.localSvg ?? null;
     this.#build();
   }
 
@@ -43,6 +47,9 @@ export class FinkUI {
 
     // Background layer (for BG: tags)
     this.#bgEl = el('div', 'finkapp-bg');
+
+    // Banner slot for experimental notices
+    this.#bannerEl = el('div', 'finkapp-banner-slot');
 
     // Narration (scrolling)
     this.#narrationEl = el('div', 'finkapp-narration');
@@ -61,7 +68,7 @@ export class FinkUI {
     this.#statusEl.setAttribute('role', 'status');
     this.#statusEl.setAttribute('aria-live', 'polite');
 
-    this.#root.append(this.#headerEl, this.#bgEl, this.#narrationEl, this.#choicesEl, this.#statusEl);
+    this.#root.append(this.#headerEl, this.#bannerEl, this.#bgEl, this.#narrationEl, this.#choicesEl, this.#statusEl);
   }
 
   /**
@@ -240,6 +247,50 @@ export class FinkUI {
     this.#scrollToBottom();
   }
 
+  showLocalAiNotice({ text, buttonLabel, onEnable, onDismiss }) {
+    this.#bannerEl.innerHTML = '';
+
+    const box = el('div', 'finkapp-banner');
+    const copy = el('div', 'finkapp-banner-copy');
+    copy.textContent = text;
+    const actions = el('div', 'finkapp-banner-actions');
+    const enableBtn = el('button', 'finkapp-banner-btn');
+    enableBtn.type = 'button';
+    enableBtn.textContent = buttonLabel;
+    const dismissBtn = el('button', 'finkapp-banner-btn finkapp-banner-btn-secondary');
+    dismissBtn.type = 'button';
+    dismissBtn.textContent = 'Not now';
+    const status = el('div', 'finkapp-banner-status');
+
+    enableBtn.addEventListener('click', async () => {
+      enableBtn.disabled = true;
+      dismissBtn.disabled = true;
+      status.textContent = 'Starting on-device AI setup...';
+      try {
+        await onEnable((fraction) => {
+          const pct = Math.round(Number(fraction || 0) * 100);
+          status.textContent = `Downloading on-device AI model: ${pct}%`;
+        });
+        status.textContent = 'On-device AI features enabled for this browser.';
+        dismissBtn.textContent = 'Close';
+        dismissBtn.disabled = false;
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+        enableBtn.disabled = false;
+        dismissBtn.disabled = false;
+      }
+    });
+
+    dismissBtn.addEventListener('click', () => {
+      this.#bannerEl.innerHTML = '';
+      onDismiss?.();
+    });
+
+    actions.append(enableBtn, dismissBtn);
+    box.append(copy, actions, status);
+    this.#bannerEl.appendChild(box);
+  }
+
   // ── Media helpers ──────────────────────────────────────────────────
 
   #setBg(url) {
@@ -264,6 +315,47 @@ export class FinkUI {
     const body = el('div', 'finkapp-vizprom-body');
     body.textContent = prompt;
     details.append(summary, body);
+
+    if (this.#localSvg) {
+      const controls = el('div', 'finkapp-vizprom-controls');
+      const button = el('button', 'finkapp-vizprom-btn');
+      button.type = 'button';
+      button.textContent = 'Probe local SVG';
+      const status = el('div', 'finkapp-vizprom-status');
+      const preview = el('div', 'finkapp-vizprom-preview');
+      controls.append(button, status);
+      details.append(controls, preview);
+
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        status.textContent = 'Probing local Prompt API...';
+        preview.innerHTML = '';
+        try {
+          const availability = await this.#localSvg.probe();
+          if (!availability.available) {
+            status.textContent = availability.reason ?? 'Local Prompt API unavailable';
+            return;
+          }
+
+          status.textContent = 'Generating local SVG...';
+          const result = await this.#localSvg.generate(prompt);
+          if (result.svg) {
+            preview.innerHTML = result.svg;
+            status.textContent = 'Generated and rendered with local Prompt API';
+          } else {
+            const raw = el('pre', 'finkapp-vizprom-raw');
+            raw.textContent = result.raw || '[empty response]';
+            preview.replaceChildren(raw);
+            status.textContent = 'Model responded, but not with inline SVG';
+          }
+        } catch (err) {
+          status.textContent = err instanceof Error ? err.message : String(err);
+        } finally {
+          button.disabled = false;
+        }
+      });
+    }
+
     this.#narrationEl.appendChild(details);
   }
 

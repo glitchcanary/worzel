@@ -39,11 +39,12 @@ export class FinkPlayer {
    * @param {HTMLElement} root - container element
    * @param {object} [options]
    * @param {string} [options.apiBase] - base URL for the stories API (e.g. '/fink/api')
+   * @param {any} [options.localSvg] - experimental local SVG generator
    */
   constructor(root, options = {}) {
     this.#root = root;
     this.#engine = new FinkInk();
-    this.#ui = new FinkUI(root);
+    this.#ui = new FinkUI(root, { localSvg: options.localSvg });
     this.#apiBase = options.apiBase ?? this.#detectApiBase();
 
     this.#bindEvents();

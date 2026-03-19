@@ -62,6 +62,50 @@
       border-bottom: 1px solid var(--fa-border);
       flex-shrink: 0;
     }
+    .finkapp-banner-slot {
+      position: relative;
+      z-index: 1;
+      flex-shrink: 0;
+    }
+    .finkapp-banner {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 16px;
+      background: #1f2534;
+      border-bottom: 1px solid var(--fa-border);
+    }
+    .finkapp-banner-copy {
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--fa-text);
+    }
+    .finkapp-banner-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .finkapp-banner-btn {
+      padding: 6px 10px;
+      background: var(--fa-choice-bg);
+      border: 1px solid var(--fa-border);
+      border-radius: 4px;
+      color: var(--fa-text);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .finkapp-banner-btn-secondary {
+      color: var(--fa-text-dim);
+    }
+    .finkapp-banner-btn:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .finkapp-banner-status {
+      font-size: 10px;
+      color: var(--fa-text-muted);
+      min-height: 1.2em;
+    }
     .finkapp-title {
       font-size: 13px;
       font-weight: 700;
@@ -165,6 +209,50 @@
       margin-top: 6px;
       line-height: 1.4;
       color: var(--fa-text-dim);
+    }
+    .finkapp-vizprom-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .finkapp-vizprom-btn {
+      padding: 4px 8px;
+      background: var(--fa-choice-bg);
+      border: 1px solid var(--fa-border);
+      border-radius: 4px;
+      color: var(--fa-text);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .finkapp-vizprom-btn:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .finkapp-vizprom-status {
+      font-size: 10px;
+      color: var(--fa-text-muted);
+    }
+    .finkapp-vizprom-preview {
+      margin-top: 8px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--fa-border);
+      border-radius: 4px;
+      padding: 8px;
+    }
+    .finkapp-vizprom-preview svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    .finkapp-vizprom-raw {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 10px;
+      line-height: 1.35;
+      color: var(--fa-text-dim);
+      margin: 0;
     }
     .finkapp-media-tag {
       font-size: 11px;

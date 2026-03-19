@@ -1,18 +1,17 @@
 // FinkSandbox — Sandboxed .fink.js loader
 //
-// Loads .fink.js files by fetching their content and executing it inside
-// a sandboxed iframe (allow-scripts only, no same-origin). The .fink.js
+// Loads .fink.js files inside a sandboxed iframe (allow-scripts only,
+// no same-origin). The .fink.js
 // format wraps Ink source in a JS tagged template literal:
 //
 //   oooOO`
 //   ...pure Ink source...
 //   `
 //
-// The parent fetches source, then injects it into a sandboxed srcdoc iframe
-// that boots a tiny worker script. That worker defines oooOO, captures the
-// tagged template contents, and posts the extracted Ink back to the parent.
-// This avoids needing CORS headers on .fink.js hosts — content is fetched
-// as text, then executed in isolation.
+// The parent sends the URL to a sandboxed srcdoc iframe that boots a tiny
+// worker script. The iframe injects a <script src="..."> tag, lets the
+// browser evaluate the .fink.js file in the sandbox, captures the oooOO
+// tagged template contents, and posts the extracted Ink back.
 //
 // The iframe shell uses srcdoc, but loads only same-origin script files.
 
@@ -38,13 +37,7 @@ export async function loadFinkJs(url) {
   }
   recentLoads.set(url, now);
 
-  // Fetch the script content in the parent context
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`Failed to fetch ${url}: HTTP ${resp.status}`);
-  const scriptContent = await resp.text();
-
-  // Execute in sandboxed iframe
-  return executeSandboxed(scriptContent);
+  return executeSandboxed(url);
 }
 
 /**
@@ -65,11 +58,11 @@ function sandboxWorkerUrl() {
 }
 
 /**
- * Execute script content in a sandboxed iframe and extract finkData.
- * @param {string} scriptContent
+ * Load a .fink.js URL inside a sandboxed iframe and capture the resulting Ink.
+ * @param {string} scriptUrl
  * @returns {Promise<string>}
  */
-function executeSandboxed(scriptContent) {
+function executeSandboxed(scriptUrl) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let iframe = null;
@@ -120,8 +113,8 @@ function executeSandboxed(scriptContent) {
           }
           startExecutionTimeout();
           sandboxPort.postMessage({
-            type: 'exec-finkjs',
-            code: scriptContent,
+            type: 'load-fink-script',
+            url: scriptUrl,
           });
           break;
 
