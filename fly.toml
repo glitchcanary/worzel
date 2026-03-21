@@ -9,13 +9,16 @@ primary_region = 'iad'
   NODE_ENV = 'production'
   WORZEL_HOST = '0.0.0.0'
   WORZEL_PORT = '3000'
+  WORZEL_LLM_PROVIDER = 'openai'
+  WORZEL_LLM_URL = 'https://api.openai.com/v1/chat/completions'
+  WORZEL_LLM_MODEL = 'gpt-4o-mini'
 
 [http_service]
   internal_port = 3000
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [http_service.concurrency]
     type = 'connections'

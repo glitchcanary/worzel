@@ -30,6 +30,10 @@ RUN npm ci --omit=dev
 # Copy compiled output and web-client assets from build stage
 COPY --from=build /app/dist/ dist/
 
+# Fink client UI and story files needed at runtime
+COPY fink/client/ fink/client/
+COPY stories/ stories/
+
 # TTS cache and runtime temp directory
 RUN mkdir -p tmp/tts-cache
 
