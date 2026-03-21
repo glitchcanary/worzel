@@ -16,6 +16,12 @@ primary_region = 'iad'
   FINK_TTS_MODEL = 'eleven_multilingual_v2'
   FINK_TTS_VOICE = 'wG54O0fjDbPBYb9MFXCb'
 
+# Persistent volume for TTS audio cache (survives deploys and restarts).
+# Created with: fly volumes create tts_cache --size 1 --region iad
+[mounts]
+  source = 'tts_cache'
+  destination = '/app/tmp/tts-cache'
+
 [http_service]
   internal_port = 3000
   force_https = true
