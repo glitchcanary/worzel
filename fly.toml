@@ -17,7 +17,9 @@ primary_region = 'iad'
   FINK_TTS_VOICE = 'wG54O0fjDbPBYb9MFXCb'
 
 # Persistent volume for TTS audio cache (survives deploys and restarts).
-# Created with: fly volumes create tts_cache --size 1 --region iad
+# One volume per machine is required. Create with:
+#   fly volumes create tts_cache --size 1 --region iad -y
+# Repeat for each machine (fly scale show to check count).
 [mounts]
   source = 'tts_cache'
   destination = '/app/tmp/tts-cache'
