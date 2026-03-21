@@ -12,6 +12,9 @@ primary_region = 'iad'
   WORZEL_LLM_PROVIDER = 'openai'
   WORZEL_LLM_URL = 'https://api.openai.com/v1/chat/completions'
   WORZEL_LLM_MODEL = 'gpt-4o-mini'
+  FINK_TTS_PROVIDER = 'elevenlabs'
+  FINK_TTS_MODEL = 'eleven_multilingual_v2'
+  FINK_TTS_VOICE = 'wG54O0fjDbPBYb9MFXCb'
 
 [http_service]
   internal_port = 3000
