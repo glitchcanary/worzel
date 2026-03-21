@@ -1,0 +1,16 @@
+node_modules
+dist
+tmp
+.git
+.env
+*.log
+debug-audio
+.pio
+managed_components
+opus-staged
+esp32-client
+third_party/**/*.onnx
+third_party/libopus/src
+tests
+.github
+docs
