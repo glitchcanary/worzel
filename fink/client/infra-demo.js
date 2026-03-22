@@ -788,6 +788,7 @@ const STORIES = {
 // ═══════════════════════════════════════════════════════════
 
 let currentStoryKey = "garden";
+window.currentStoryKey = currentStoryKey; // exposed for mode toggle
 let currentKnotKey = "";
 let vars = {};
 let streamStates = {};
@@ -795,11 +796,13 @@ let timerInterval = null;
 
 const $ = id => document.getElementById(id);
 
+window.switchStory = switchStory; // exposed for mode toggle
 function switchStory(key) {
   currentStoryKey = key;
+  window.currentStoryKey = key;
   const story = STORIES[key];
   vars = { ...story.vars };
-  document.querySelectorAll('.topbar-tab').forEach(t => t.classList.toggle('active', t.dataset.story === key));
+  document.querySelectorAll('.topbar-tab[data-story]').forEach(t => t.classList.toggle('active', t.dataset.story === key));
   enterKnot(story.startKnot);
 }
 
@@ -1067,8 +1070,138 @@ function updateStatus(knotKey) {
 
 
 // ── Init ──
-document.querySelectorAll('.topbar-tab').forEach(btn => {
+document.querySelectorAll('.topbar-tab[data-story]').forEach(btn => {
   btn.addEventListener('click', () => switchStory(btn.dataset.story));
 });
 
 switchStory("garden");
+
+
+// ═══════════════════════════════════════════════════════════
+//  Event Bus Wiring — for Live / Local modes
+//  Called from the module script in infra-demo.html.
+//  All existing Demo-mode code above is untouched.
+// ═══════════════════════════════════════════════════════════
+
+window.connectLive = function connectLive(bus) {
+  // ink_state → narration panel + choices + protocol panel
+  bus.subscribe('ink_state', (data) => {
+    // Header
+    $("storyTitle").textContent = data.storyId || 'Live Story';
+    $("storyKnot").textContent = data.knot || '';
+
+    // Narration
+    const narEl = $("narration");
+    narEl.innerHTML = "";
+    const paras = data.narration || [];
+    paras.forEach((seg, i) => {
+      const p = document.createElement("div");
+      p.className = "para";
+      if (seg.mood) p.dataset.mood = seg.mood;
+      p.style.animationDelay = (i * 0.12) + "s";
+      if (i === 0 && seg.speaker) {
+        const lbl = document.createElement("span");
+        lbl.className = "speaker-label";
+        lbl.textContent = seg.speaker;
+        p.appendChild(lbl);
+      }
+      p.appendChild(document.createTextNode(seg.text));
+      narEl.appendChild(p);
+    });
+    narEl.scrollTop = narEl.scrollHeight;
+
+    // Choices
+    const choicesEl = $("choices");
+    choicesEl.innerHTML = "";
+    const choices = data.choices || [];
+    choices.forEach((c, i) => {
+      const btn = document.createElement("button");
+      btn.className = "choice-btn";
+      btn.innerHTML = `<span class="choice-num">${i + 1}</span><span class="choice-text">${c.text}</span>`;
+
+      const tags = c.tags || {};
+      if (Object.keys(tags).length > 0) {
+        const tagsEl = document.createElement("span");
+        tagsEl.className = "choice-tags";
+        for (const [k, v] of Object.entries(tags)) {
+          const tag = document.createElement("span");
+          if (k === "risk") { tag.className = `choice-tag risk-${v}`; tag.textContent = `risk:${v}`; }
+          else if (k === "skill") { tag.className = "choice-tag skill"; tag.textContent = v; }
+          else if (k === "mood") { tag.className = "choice-tag mood"; tag.textContent = v; }
+          tagsEl.appendChild(tag);
+        }
+        btn.appendChild(tagsEl);
+      }
+
+      btn.onclick = () => bus.publish('ink:choose', { choiceIndex: c.index ?? i });
+      choicesEl.appendChild(btn);
+    });
+
+    if (data.isEnded) {
+      const endEl = document.createElement("div");
+      endEl.className = "teaser";
+      endEl.textContent = "— Story ended —";
+      choicesEl.appendChild(endEl);
+    }
+
+    // Protocol panel (raw event)
+    $("protocolPanel").innerHTML = syntaxHL(JSON.stringify(data, null, 2));
+
+    // Status
+    $("statusText").textContent = `knot: ${data.knot || '?'}  |  turn: ${data.turnCount || '?'}  |  mode: live`;
+    $("statusStreams").textContent = data.choice_mode ? `choice_mode: ${data.choice_mode}` : '';
+  });
+
+  // voice → voice panel
+  bus.subscribe('voice', (data) => {
+    const el = $("voicePanel");
+    el.innerHTML = `
+      <div class="voice-card">
+        <div class="voice-avatar"></div>
+        <div class="voice-info">
+          <div class="voice-name">${data.speaker || 'unknown'}</div>
+          <div class="voice-desc">${data.voiceId || ''}</div>
+          <div class="voice-providers">
+            ${data.provider ? `<span class="voice-provider">${data.provider}</span>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  // tts → streams panel
+  bus.subscribe('tts', (data) => {
+    const states = { start: 'active', sentence_start: 'active', sentence_end: 'active', stop: 'complete' };
+    streamStates.narration = states[data.state] || 'pending';
+    renderStreams();
+  });
+
+  // media → media panel
+  bus.subscribe('media', (data) => {
+    const el = $("mediaPanel");
+    // Append rather than replace, so multiple media show
+    const existing = el.textContent.startsWith('//') ? '' : el.innerHTML;
+    const entry = syntaxHL(JSON.stringify(data, null, 2));
+    el.innerHTML = existing + (existing ? '\n' : '') + entry;
+  });
+
+  // stt → status bar
+  bus.subscribe('stt', (data) => {
+    $("statusText").textContent = `stt: "${data.text}"`;
+  });
+
+  // Wildcard → recent event stream in status bar
+  let recentEvents = [];
+  bus.subscribe('*', (data, topic) => {
+    if (topic === 'ink_state') return; // already handled above
+    recentEvents.push({ t: topic, ts: Date.now() });
+    if (recentEvents.length > 20) recentEvents.shift();
+    const recent = recentEvents.slice(-5).map(e => e.t).join(' → ');
+    $("statusStreams").textContent = recent;
+  });
+};
+
+window.disconnectLive = function disconnectLive() {
+  $("statusText").textContent = "ready — tap a choice or switch stories";
+  $("statusStreams").textContent = "";
+};
