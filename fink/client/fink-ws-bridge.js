@@ -49,6 +49,7 @@ export class FinkWsBridge {
 
     this.#ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
+        console.debug('[fink-ws] audio binary:', event.data.byteLength, 'bytes');
         this.#bus.publish('audio_frame', event.data);
         return;
       }
@@ -65,16 +66,19 @@ export class FinkWsBridge {
   #handleMessage(msg) {
     switch (msg.type) {
       case 'hello':
+        console.log('[fink-ws] connected, session:', msg.session_id);
         this.#startPing();
         break;
 
       case 'ink_state':
+        console.log('[fink-ws] ink_state:', msg.knot || msg.storyId, '| narration:', msg.narration?.length, '| choices:', msg.choices?.length);
         this.#bus.publish('ink_state', msg);
         // Derive voice/media from narration tags
         this.#deriveVoiceAndMedia(msg);
         break;
 
       case 'tts':
+        console.log('[fink-ws] tts:', msg.state, msg.text?.slice(0, 50) || '');
         this.#bus.publish('tts', {
           state: msg.state,
           text: msg.text,
