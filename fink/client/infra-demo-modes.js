@@ -76,3 +76,7 @@ async function switchMode(mode) {
 document.querySelectorAll('#modeTabs .topbar-tab').forEach(btn => {
   btn.addEventListener('click', () => switchMode(btn.dataset.mode));
 });
+
+// Default to Live mode (Demo mode is already rendered by infra-demo.js,
+// so this upgrades to a live connection on load)
+switchMode('live');
