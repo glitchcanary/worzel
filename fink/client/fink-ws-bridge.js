@@ -19,7 +19,7 @@ export class FinkWsBridge {
 
   async connect() {
     // Authenticate via OTA endpoint
-    const otaUrl = this.#serverUrl.replace(/\/$/, '') + '/api/ota';
+    const otaUrl = this.#serverUrl.replace(/\/$/, '') + '/fink/api/ota';
     const deviceId = `infra-demo-${crypto.randomUUID().slice(0, 8)}`;
 
     const res = await fetch(otaUrl, {
