@@ -234,7 +234,10 @@ class AudioPlayer {
     src.start(this.nextTime);
     this.nextTime += buf.duration;
     this._sources.push(src);
-    src.onended = () => { this._sources = this._sources.filter(s => s !== src); };
+    src.onended = () => {
+      this._sources = this._sources.filter(s => s !== src);
+      if (this._sources.length === 0 && this.onIdle) this.onIdle();
+    };
   }
   _playFloat32(float32) {
     if (!float32 || float32.length === 0) return;
@@ -1337,6 +1340,19 @@ class FinkApp extends HTMLElement {
       audioFormat: mic.audioFormat,
     });
     this.player = new AudioPlayer(16000);
+    this._serverTtsDone = false;
+
+    // When all audio buffers finish playing, unsuppress mic
+    this.player.onIdle = () => {
+      if (this._isSpeaking || this._serverTtsDone) {
+        this._isSpeaking = false;
+        this._serverTtsDone = false;
+        mic.setPipelineState('idle');
+        story.setStatus('Ready.', 'info');
+        mic.autoRestart();
+        mic.unsuppressBrowserASR();
+      }
+    };
 
     this.client.on('stateChange', s => {
       status.textContent = s;
@@ -1390,18 +1406,19 @@ class FinkApp extends HTMLElement {
         this.clearResponseWatchdog();
         if (!inkNarrating) story.endStreaming();
         inkNarrating = false;
-        this._isSpeaking = false;
-        mic.setPipelineState('idle');
-        story.setStatus('Ready.', 'info');
-        mic.autoRestart();
-        mic.unsuppressBrowserASR();
+        // Mark server done sending — but audio may still be playing.
+        // Unsuppress happens in player.onIdle when playback actually finishes.
+        this._serverTtsDone = true;
       }
     });
 
     this.client.on('audio', data => {
-      // Suppress browser ASR immediately when audio arrives — don't wait for
-      // the tts.state=start message, which can lag behind the first audio frame
-      if (!this._isSpeaking) mic.suppressBrowserASR();
+      // Suppress on first audio frame only — don't re-suppress on every frame
+      if (!this._isSpeaking) {
+        this._isSpeaking = true;
+        mic.suppressBrowserASR();
+        mic.setPipelineState('speaking');
+      }
       this.player?.enqueueAuto(data);
     });
 
