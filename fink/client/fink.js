@@ -1498,24 +1498,19 @@ class FinkApp extends HTMLElement {
 
         if (isAllNav && msg.choices.length === 1) {
           // Single nav choice (e.g. "Next") — auto-advance after TTS finishes
-          // Don't show choices, don't unsuppress mic, just wait and advance
           const autoChoiceIndex = msg.choices[0].index;
-          const doAutoAdvance = () => {
-            console.log('[fink] Auto-advancing (single nav choice)');
-            this.player?.stop();
-            this._isSpeaking = false;
-            this.client?.send({ type: 'ink', action: 'choose', choice_index: autoChoiceIndex });
+          const checkAndAdvance = () => {
+            if (this.player && this.player._sources.length > 0) {
+              // Audio still playing — check again shortly
+              setTimeout(checkAndAdvance, 200);
+            } else {
+              console.log('[fink] Auto-advancing (single nav choice)');
+              this._isSpeaking = false;
+              this.client?.send({ type: 'ink', action: 'choose', choice_index: autoChoiceIndex });
+            }
           };
-          // Auto-advance when player goes idle, or after a short delay if no audio
-          if (this.player && this.player._sources.length > 0) {
-            const prevOnIdle = this.player.onIdle;
-            this.player.onIdle = () => {
-              this.player.onIdle = prevOnIdle;
-              doAutoAdvance();
-            };
-          } else {
-            setTimeout(doAutoAdvance, 500);
-          }
+          // Start checking after a brief delay
+          setTimeout(checkAndAdvance, 300);
         } else {
           story.setChoices(msg.choices, msg.suggestion);
           // Choices visible = user's turn. Unsuppress immediately.
