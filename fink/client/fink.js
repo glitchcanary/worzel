@@ -1523,17 +1523,9 @@ class FinkApp extends HTMLElement {
           story.setChoices(msg.choices, msg.suggestion);
           // Track choice text for echo detection
           this._lastChoiceText = msg.choices.map(c => c.text).join(' ').toLowerCase();
-          if (this._autoAdvancing) {
-            // Just auto-advanced — TTS is playing new content. Stay suppressed.
-            // Unsuppress will happen via onIdle + serverTtsDone.
-            this._autoAdvancing = false;
-          } else {
-            // User-initiated advance — unsuppress now.
-            this._isSpeaking = false;
-            this._serverTtsDone = false;
-            mic.unsuppressBrowserASR();
-            mic.setPipelineState('idle');
-          }
+          this._autoAdvancing = false;
+          // Don't unsuppress here — TTS may still be playing (choice readout).
+          // onIdle + serverTtsDone will unsuppress when audio truly finishes.
           if (!msg.narration || msg.narration.length === 0) {
             story.setStatus('Options updated.', 'info');
           }
