@@ -1480,14 +1480,44 @@ class FinkApp extends HTMLElement {
         }
       }
       if (msg.choices) {
-        story.setChoices(msg.choices, msg.suggestion);
-        // Choices visible = user's turn. Unsuppress NOW regardless of audio state.
-        this._isSpeaking = false;
-        this._serverTtsDone = false;
-        mic.unsuppressBrowserASR();
-        mic.setPipelineState('idle');
-        if (!msg.narration || msg.narration.length === 0) {
-          story.setStatus('Options updated.', 'info');
+        const navWords = ['next', 'try again', 'back', 'continue', 'get my results'];
+        const isAllNav = msg.choices.length > 0 && msg.choices.every(
+          c => navWords.some(w => c.text.toLowerCase().startsWith(w))
+        );
+
+        if (isAllNav && msg.choices.length === 1) {
+          // Single nav choice (e.g. "Next") — auto-advance after TTS finishes
+          // Don't show choices, don't unsuppress mic, just wait and advance
+          const autoChoiceIndex = msg.choices[0].index;
+          const doAutoAdvance = () => {
+            console.log('[fink] Auto-advancing (single nav choice)');
+            this.player?.stop();
+            this._isSpeaking = false;
+            this.client?.send({ type: 'ink', action: 'choose', choice_index: autoChoiceIndex });
+          };
+          // Auto-advance when player goes idle, or after a short delay if no audio
+          if (this.player && this.player._sources.length > 0) {
+            const prevOnIdle = this.player.onIdle;
+            this.player.onIdle = () => {
+              this.player.onIdle = prevOnIdle;
+              doAutoAdvance();
+            };
+          } else {
+            setTimeout(doAutoAdvance, 500);
+          }
+        } else {
+          story.setChoices(msg.choices, msg.suggestion);
+          // Choices visible = user's turn. Unsuppress after a brief delay
+          // to let any lingering TTS audio drain from the ASR buffer.
+          this._isSpeaking = false;
+          this._serverTtsDone = false;
+          setTimeout(() => {
+            mic.unsuppressBrowserASR();
+            mic.setPipelineState('idle');
+          }, 800);
+          if (!msg.narration || msg.narration.length === 0) {
+            story.setStatus('Options updated.', 'info');
+          }
         }
       }
       if (msg.isEnded) {
