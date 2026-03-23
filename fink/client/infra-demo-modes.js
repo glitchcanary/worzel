@@ -1,20 +1,20 @@
 import { FinkEventBus } from './fink-event-bus.js';
 import { FinkWsBridge } from './fink-ws-bridge.js';
-import { FinkLocalBridge } from './fink-local-bridge.js';
 import { FinkSpeaker } from './fink-speaker.js';
 import { FinkMediaDisplay } from './fink-media-display.js';
 import { FinkBrowserASR } from './fink-browser-asr.js';
 
-let currentMode = 'demo';
 let bus = null;
 let bridge = null;
 let speaker = null;
 let mediaDisplay = null;
 let asr = null;
+let micLive = false; // hands-free continuous listening mode
 
 const statusBar = document.querySelector('.statusbar');
 const statusText = document.getElementById('statusText');
-const statusStreams = document.getElementById('statusStreams');
+const micBtn = document.getElementById('micBtn');
+const micLabel = document.getElementById('micLabel');
 
 function setStatus(text, level = 'info') {
   statusText.textContent = text;
@@ -23,94 +23,77 @@ function setStatus(text, level = 'info') {
   else console.log('[infra-demo]', text);
 }
 
-async function switchMode(mode) {
-  // Tear down previous services
-  if (asr) { asr.destroy(); asr = null; }
-  if (speaker) { speaker.destroy(); speaker = null; }
-  if (mediaDisplay) { mediaDisplay.destroy(); mediaDisplay = null; }
-  if (bridge) {
-    if (bridge.disconnect) bridge.disconnect();
-    bridge = null;
-  }
-  bus = null;
-  currentMode = mode;
-
-  // Update tab UI
-  document.querySelectorAll('#modeTabs .topbar-tab').forEach(t =>
-    t.classList.toggle('active', t.dataset.mode === mode)
-  );
-
-  // Show/hide story tabs and mic button (only relevant in non-Demo mode)
-  const storyTabs = document.querySelector('.topbar-tabs:not(#modeTabs)');
-  storyTabs.style.display = mode === 'demo' ? '' : 'none';
-  document.getElementById('micBtn').style.display = mode === 'demo' ? 'none' : '';
-
-  if (mode === 'demo') {
-    window.disconnectLive();
-    window.switchStory(window.currentStoryKey || 'garden');
-    setStatus('demo mode — tap a choice or switch stories');
-    return;
-  }
-
-  // Create bus, wire panels, and start services
+async function connectLive() {
+  // Create bus and wire up panels + services
   bus = new FinkEventBus();
   window.connectLive(bus);
   speaker = new FinkSpeaker(bus);
   mediaDisplay = new FinkMediaDisplay(bus, document.getElementById('sceneImage'));
   asr = new FinkBrowserASR(bus);
 
-  // Wire STT results to choice matching — when the user speaks,
-  // try to match their words to a visible choice
-  bus.subscribe('stt', (data) => {
-    if (data.source !== 'browser') return;
-    console.log('[infra-demo] heard:', data.text);
-    // Simple substring matching against visible choices
-    const buttons = document.querySelectorAll('.choice-btn .choice-text');
-    const spoken = data.text.toLowerCase().trim();
-    for (const btn of buttons) {
-      const choiceText = btn.textContent.toLowerCase();
-      if (spoken.includes(choiceText) || choiceText.includes(spoken)) {
-        console.log('[infra-demo] matched choice:', btn.textContent);
-        btn.closest('.choice-btn').click();
-        return;
-      }
+  // When playback finishes and mic is in hands-free mode, auto-restart listening
+  bus.subscribe('playback_state', (data) => {
+    if (data.state === 'idle' && micLive && asr && asr.available) {
+      // Small delay so suppression flag clears first
+      setTimeout(() => {
+        if (micLive) bus.publish('listen', { state: 'start' });
+      }, 300);
     }
-    setStatus(`heard: "${data.text}" (no choice matched)`);
   });
 
-  if (mode === 'live') {
-    const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
-    const serverUrl = isLocal ? 'https://worzel.fly.dev' : '';
-    bridge = new FinkWsBridge(bus, isLocal ? { serverUrl } : {});
-    const target = isLocal ? serverUrl : location.origin;
-    setStatus(`connecting to ${target} ...`, 'connecting');
-    try {
-      await bridge.connect();
-      setStatus(`connected to ${target}`, 'connected');
-    } catch (err) {
-      const hint = isLocal ? ' (CORS may block localhost — deploy to Fly or set WORZEL_CORS_ORIGINS)' : '';
-      setStatus(`connection failed: ${err.message}${hint}`, 'error');
+  // Update mic button state when listen state changes
+  bus.subscribe('listen_state', (data) => {
+    if (data.state === 'listening') {
+      micBtn.classList.add('listening');
+    } else {
+      micBtn.classList.remove('listening');
+      // In hands-free mode, restart after utterance ends (unless suppressed by TTS)
+      if (micLive && data.state === 'stopped' && asr && asr.available) {
+        setTimeout(() => {
+          if (micLive) bus.publish('listen', { state: 'start' });
+        }, 200);
+      }
     }
-  } else if (mode === 'local') {
-    setStatus('local mode — load an .ink story to begin');
+  });
+
+  // Connect WebSocket to server
+  const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
+  const serverUrl = isLocal ? 'https://worzel.fly.dev' : '';
+  bridge = new FinkWsBridge(bus, isLocal ? { serverUrl } : {});
+  const target = isLocal ? serverUrl : location.origin;
+  setStatus(`connecting to ${target}...`, 'connecting');
+  try {
+    await bridge.connect();
+    setStatus(`connected`, 'connected');
+  } catch (err) {
+    const hint = isLocal ? ' (CORS may block localhost)' : '';
+    setStatus(`connection failed: ${err.message}${hint}`, 'error');
   }
 }
 
-// Mic button — toggle browser speech recognition
-document.getElementById('micBtn').addEventListener('click', () => {
+// Mic button — toggle hands-free continuous listening
+micBtn.addEventListener('click', () => {
   if (!asr || !asr.available) {
     setStatus('Speech recognition not available in this browser', 'error');
     return;
   }
-  if (asr.available) {
+  micLive = !micLive;
+  if (micLive) {
+    micBtn.classList.add('listening');
+    micLabel.textContent = 'Mic On';
     bus.publish('listen', { state: 'start' });
+  } else {
+    micBtn.classList.remove('listening');
+    micLabel.textContent = 'Mic';
+    bus.publish('listen', { state: 'stop' });
   }
 });
 
-// Mode tab clicks
-document.querySelectorAll('#modeTabs .topbar-tab').forEach(btn => {
-  btn.addEventListener('click', () => switchMode(btn.dataset.mode));
-});
-
-// Default to Live mode
-switchMode('live');
+// Wait for overlay click before connecting — ensures AudioContext is created
+// during a user gesture and no TTS audio is lost.
+if (window.__enterClicked) {
+  connectLive();
+} else {
+  setStatus('click to enter', 'info');
+  window.addEventListener('fink-enter', () => connectLive(), { once: true });
+}

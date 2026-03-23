@@ -319,6 +319,105 @@ export class InkPipeline {
   }
 
   /**
+   * Process pre-transcribed text (e.g. from browser-side ASR) through the
+   * classification + action pipeline, skipping audio decode and server ASR.
+   */
+  async processText(
+    text: string,
+    session: Session,
+    transport: Transport,
+    inkSession: InkSession,
+  ): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const abortController = new AbortController();
+    session.abortController = abortController;
+    const opusEncoder = new OpusEncoder({
+      sampleRate: 16000,
+      channels: 1,
+      bitrate: 24000,
+      enableDtx: false,
+    });
+
+    try {
+      if (this.isIgnorableAsrText(trimmed)) {
+        this.logger.info({ text: trimmed }, 'Ignoring low-value text input');
+        await transport.sendText(JSON.stringify({
+          type: 'input_ignored', reason: 'ack_junk', session_id: session.id,
+        }));
+        return;
+      }
+
+      this.logger.info({ text: trimmed, source: 'browser_asr' }, 'Text input received');
+      session.addDialogue('user', trimmed);
+
+      // Classify via InkRouter (same as audio pipeline step 3)
+      const state = inkSession.getState();
+      const classification = await this.router.classify(
+        trimmed, state, abortController.signal,
+      );
+      this.logger.info({
+        type: classification.type,
+        choiceIndex: classification.choiceIndex,
+        confidence: classification.confidence,
+        residualText: classification.residualText,
+      }, 'Text classification result');
+
+      // Act on classification (same as audio pipeline step 4)
+      switch (classification.type) {
+        case 'choice_match':
+          this.noMatchCount = 0;
+          await this.handleChoice(
+            session, transport, inkSession, opusEncoder,
+            classification, abortController.signal,
+          );
+          break;
+        case 'freeform_input':
+          this.noMatchCount = 0;
+          await this.handleFreeformInput(
+            session, transport, inkSession, opusEncoder,
+            trimmed, abortController.signal,
+          );
+          break;
+        case 'discussion':
+          this.noMatchCount = 0;
+          await this.handleLlmResponse(
+            session, transport, inkSession, opusEncoder,
+            trimmed, 'discussion', abortController.signal,
+          );
+          break;
+        case 'meta_query':
+          this.noMatchCount = 0;
+          await this.handleLlmResponse(
+            session, transport, inkSession, opusEncoder,
+            trimmed, 'meta', abortController.signal,
+          );
+          break;
+        case 'skip_ahead':
+          this.noMatchCount = 0;
+          await this.handleSkipAhead(
+            session, transport, inkSession, opusEncoder, abortController.signal,
+          );
+          break;
+        case 'no_match':
+          this.noMatchCount++;
+          await this.handleNoMatchResponse(
+            session, transport, inkSession, opusEncoder,
+            abortController.signal,
+          );
+          break;
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        this.logger.info({ sessionId: session.id }, 'Text pipeline aborted');
+      } else {
+        this.logger.error({ err, sessionId: session.id }, 'Text pipeline error');
+      }
+    }
+  }
+
+  /**
    * Narrate story segments + read choices aloud.
    * Used for the initial opening after hello handshake.
    */
@@ -913,14 +1012,19 @@ export class InkPipeline {
 
     const rateController = new AudioRateController();
 
-    // Build a natural sentence listing the choices
+    // Filter out navigation choices (Next, Try again, Back, etc.)
+    const navWords = ['next', 'try again', 'back', 'continue', 'get my results'];
+    const substantive = choices.filter(c => !navWords.some(w => c.text.toLowerCase().startsWith(w)));
+    if (substantive.length === 0) return; // all nav — nothing to read
+
+    // Brief listing — no "You can:" preamble
     let choiceText: string;
-    if (choices.length === 1) {
-      choiceText = `You can: ${choices[0]!.text}.`;
+    if (substantive.length === 1) {
+      choiceText = `${substantive[0]!.text}?`;
     } else {
-      const items = choices.map(c => c.text);
+      const items = substantive.map(c => c.text);
       const last = items.pop()!;
-      choiceText = `You can: ${items.join(', ')}, or ${last}.`;
+      choiceText = `${items.join(', ')}, or ${last}?`;
     }
 
     await transport.sendText(JSON.stringify({

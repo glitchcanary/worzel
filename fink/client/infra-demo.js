@@ -278,6 +278,15 @@ const SVG = {
     <rect x="12" y="8" width="16" height="8" fill="#3a2a1a" rx="2"/>
     <path d="M8 36 Q20 26 32 36" fill="#5a4a3a"/>
     <rect x="16" y="22" width="8" height="2" fill="#3a2a1a" rx="1"/>
+  </svg>`,
+
+  // TOC icon
+  avatar_toc: `<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="20" cy="20" r="20" fill="#1a1a2e"/>
+    <rect x="10" y="10" width="20" height="3" fill="#c97040" rx="1"/>
+    <rect x="10" y="17" width="16" height="2" fill="#5a6080" rx="1"/>
+    <rect x="10" y="23" width="18" height="2" fill="#5a6080" rx="1"/>
+    <rect x="10" y="29" width="14" height="2" fill="#5a6080" rx="1"/>
   </svg>`
 };
 
@@ -434,7 +443,7 @@ const STORIES = {
         paragraphs: ["You turn away. Some gardens are not meant to be entered.", "The gate disappears behind you. By morning, you will have forgotten it was there."],
         choices: [
           { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; } },
-          { text: "Try Bigtop Briefing", target: "_switch_bigtop", tags: {} }
+          { text: "Back to Stories", target: "_switch_toc", tags: {} }
         ],
         teasers: []
       },
@@ -445,7 +454,7 @@ const STORIES = {
         paragraphs: ["You sit together as the stars come out, one by one.", "That's the end of this path through the garden. Thank you for playing."],
         choices: [
           { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; } },
-          { text: "Try Bigtop Briefing", target: "_switch_bigtop", tags: {} }
+          { text: "Back to Stories", target: "_switch_toc", tags: {} }
         ],
         teasers: []
       },
@@ -456,7 +465,7 @@ const STORIES = {
         paragraphs: ['"They call me Mr Whiskers," the cat says. "And you?"', 'The cat purrs. "Well then, stranger. Welcome to the garden."', "And so begins a most unusual friendship."],
         choices: [
           { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; } },
-          { text: "Try Bigtop Briefing", target: "_switch_bigtop", tags: {} }
+          { text: "Back to Stories", target: "_switch_toc", tags: {} }
         ],
         teasers: []
       },
@@ -467,7 +476,7 @@ const STORIES = {
         paragraphs: ["The cat leads you to a hidden corner where the flowers burn like tiny stars.", '"Few are shown this," it whispers. "Remember it."'],
         choices: [
           { text: "Play again", target: "menu", tags: {}, onChoose(vars) { vars.lantern_lit = false; vars.courage = 0; } },
-          { text: "Try Bigtop Briefing", target: "_switch_bigtop", tags: {} }
+          { text: "Back to Stories", target: "_switch_toc", tags: {} }
         ],
         teasers: []
       }
@@ -774,7 +783,209 @@ const STORIES = {
         paragraphs: ["The case begins."],
         choices: [
           { text: "Play again", target: "office_wagon", tags: {}, onChoose(vars) { Object.assign(vars, { saw_photo: false, read_note: false, asked_whisper: false, distrust_boss: 0, case_accepted: false }); } },
-          { text: "Try The Enchanted Garden", target: "_switch_garden", tags: {} }
+          { text: "Back to Stories", target: "_switch_toc", tags: {} }
+        ],
+        teasers: []
+      }
+    }
+  },
+
+  // ── Table of Contents ──────────────────────────────────
+  toc: {
+    title: "Fink Stories",
+    startKnot: "main_menu",
+    voices: {
+      narrator: { name: "Narrator", desc: "Story menu narrator", traits: ["clear","neutral"], providers: {openai:"alloy", elevenlabs:"JBFqnCBsd6RMkjVDRZzb", edge:"en-US-AriaNeural"}, avatar: "avatar_toc" }
+    },
+    vars: {},
+    knots: {
+      main_menu: {
+        speaker: "narrator", mood: null,
+        scene: null,
+        media: [],
+        paragraphs: ["Welcome to Fink. Choose a story to begin."],
+        choices: [
+          { text: "The Enchanted Garden", target: "_switch_garden", tags: {}, voice_hint: "enchanted garden, garden" },
+          { text: "Bigtop Briefing", target: "_switch_bigtop", tags: { mood: "noir" }, voice_hint: "bigtop, briefing, circus" },
+          { text: "Radio Foundation Quiz", target: "_switch_radio", tags: {}, voice_hint: "radio quiz, foundation, ham radio" }
+        ],
+        teasers: []
+      }
+    }
+  },
+
+  // ── Radio Foundation Quiz (demo excerpt) ───────────────
+  radio: {
+    title: "Radio Foundation Quiz",
+    startKnot: "intro",
+    voices: {
+      narrator: { name: "Barney the Carny", desc: "Gruff old-school radio operator, theatrical authority", traits: ["deep","raspy","world-weary","showman"], providers: {elevenlabs:"wG54O0fjDbPBYb9MFXCb"}, avatar: "avatar_carney" }
+    },
+    vars: { score: 0, total: 20, q: 0 },
+    knots: {
+      intro: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        paragraphs: [
+          "Right then. Sit down.",
+          "I'm not here to hold your hand. I've been on the air since before you were born, and I've seen too many people key up without knowing what they're doing.",
+          "You want your Foundation licence? Prove you deserve it. 20 questions. No waffle. Get it right or learn something.",
+          "I'll give you memory tricks along the way. Old hams didn't pass exams by being clever — we passed by having good mnemonics and stubborn practice."
+        ],
+        choices: [
+          { text: "Let's go", target: "q1", tags: {}, voice_hint: "let's go, start, begin" },
+          { text: "I'm not ready...", target: "not_ready", tags: {}, voice_hint: "not ready, wait" }
+        ],
+        teasers: []
+      },
+      not_ready: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        paragraphs: ["Nobody's ever ready. That's why we practise. Now stop dithering."],
+        choices: [
+          { text: "Fine, go ahead", target: "q1", tags: {}, voice_hint: "fine, go ahead, ok" }
+        ],
+        teasers: []
+      },
+      q1: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        onEnter(vars) { vars.q = 1; },
+        paragraphs: ["Question 1. Basic stuff.", "What does the letter F stand for in \"RF\"?"],
+        choices: [
+          { text: "Frequency", target: "q1_right", tags: {}, voice_hint: "frequency" },
+          { text: "Foundation", target: "q1_wrong", tags: {}, voice_hint: "foundation" },
+          { text: "Field", target: "q1_wrong", tags: {}, voice_hint: "field" }
+        ],
+        teasers: []
+      },
+      q1_right: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        onEnter(vars) { vars.score++; },
+        paragraphs: [
+          "Correct. Radio Frequency. The clue's in the name. RF — the energy we work with every time we transmit.",
+          "RF sits between about 3 kHz and 300 GHz. You don't need to memorise all that for Foundation, but you DO need to know it's not magic — it's electromagnetic waves."
+        ],
+        choices: [
+          { text: "Next question", target: "q2", tags: {}, voice_hint: "next" }
+        ],
+        teasers: []
+      },
+      q1_wrong: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        paragraphs: [
+          "No. Radio FREQUENCY. Basic terminology. If you can't get the words right, how will you get the operating right?",
+          "RF — Radio Frequency — the electromagnetic energy we use to communicate. Remember it."
+        ],
+        choices: [
+          { text: "Next question", target: "q2", tags: {}, voice_hint: "next" }
+        ],
+        teasers: []
+      },
+      q2: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        onEnter(vars) { vars.q = 2; },
+        paragraphs: ["Question 2.", "A UK Foundation licence callsign starts with which prefix?"],
+        choices: [
+          { text: "M7", target: "q2_right", tags: {}, voice_hint: "m7" },
+          { text: "M0", target: "q2_wrong", tags: {}, voice_hint: "m0" },
+          { text: "G4", target: "q2_wrong", tags: {}, voice_hint: "g4" },
+          { text: "2E0", target: "q2_wrong", tags: {}, voice_hint: "2e0, two e zero" }
+        ],
+        teasers: []
+      },
+      q2_right: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        onEnter(vars) { vars.score++; },
+        paragraphs: [
+          "Good. M7 — that's you as a Foundation licensee. Three letters after it, assigned by Ofcom.",
+          "Full licence is M0. Intermediate is 2E0. The old G-prefixed calls are legacy."
+        ],
+        choices: [
+          { text: "Next", target: "q3", tags: {}, voice_hint: "next" }
+        ],
+        teasers: []
+      },
+      q2_wrong: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        paragraphs: [
+          "No. Foundation is M7. Intermediate is 2E0. Full is M0. Learn the hierarchy."
+        ],
+        choices: [
+          { text: "Next", target: "q3", tags: {}, voice_hint: "next" }
+        ],
+        teasers: []
+      },
+      q3: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        onEnter(vars) { vars.q = 3; },
+        paragraphs: ["Question 3.", "What is the maximum transmit power for a UK Foundation licence holder?"],
+        choices: [
+          { text: "10 watts", target: "q3_right", tags: {}, voice_hint: "10 watts, ten watts" },
+          { text: "50 watts", target: "q3_wrong", tags: {}, voice_hint: "50 watts" },
+          { text: "100 watts", target: "q3_wrong", tags: {}, voice_hint: "100 watts" },
+          { text: "5 watts", target: "q3_wrong", tags: {}, voice_hint: "5 watts" }
+        ],
+        teasers: []
+      },
+      q3_right: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        onEnter(vars) { vars.score++; },
+        paragraphs: [
+          "Right. 10 watts. Not a lot, but you'd be amazed what you can do with 10 watts and a decent aerial.",
+          "Some Foundation bands allow less — check the band plan. But 10 watts is your ceiling."
+        ],
+        choices: [
+          { text: "Next", target: "demo_end", tags: {}, voice_hint: "next" }
+        ],
+        teasers: []
+      },
+      q3_wrong: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        paragraphs: [
+          "Wrong. 10 watts. That's your lot on a Foundation licence.",
+          "50 watts is Intermediate. Full licence gets you 400 watts on most bands. But YOU get 10."
+        ],
+        choices: [
+          { text: "Next", target: "demo_end", tags: {}, voice_hint: "next" }
+        ],
+        teasers: []
+      },
+      demo_end: {
+        speaker: "narrator", mood: "noir",
+        scene: null,
+        media: [],
+        paragraphs(vars) {
+          return [
+            `Score so far: ${vars.score} out of ${vars.q}.`,
+            "This is a demo excerpt — the full quiz has 20 questions covering Ohm's Law, decibels, propagation, Q codes, safety, and more.",
+            "Switch to Live mode to play the full story, or pick another story."
+          ];
+        },
+        choices: [
+          { text: "Play again", target: "intro", tags: {}, onChoose(vars) { vars.score = 0; vars.q = 0; } },
+          { text: "Back to Stories", target: "_switch_toc", tags: {} },
+          { text: "Back to Stories", target: "_switch_toc", tags: {} },
+          { text: "Back to Stories", target: "_switch_toc", tags: {} }
         ],
         teasers: []
       }
@@ -787,7 +998,7 @@ const STORIES = {
 //  Engine
 // ═══════════════════════════════════════════════════════════
 
-let currentStoryKey = "garden";
+let currentStoryKey = "radio";
 window.currentStoryKey = currentStoryKey; // exposed for mode toggle
 let currentKnotKey = "";
 let vars = {};
@@ -809,6 +1020,8 @@ function switchStory(key) {
 function enterKnot(knotKey) {
   if (knotKey === "_switch_bigtop") return switchStory("bigtop");
   if (knotKey === "_switch_garden") return switchStory("garden");
+  if (knotKey === "_switch_radio") return switchStory("radio");
+  if (knotKey === "_switch_toc") return switchStory("toc");
 
   const story = STORIES[currentStoryKey];
   const knot = story.knots[knotKey];
@@ -1074,7 +1287,7 @@ document.querySelectorAll('.topbar-tab[data-story]').forEach(btn => {
   btn.addEventListener('click', () => switchStory(btn.dataset.story));
 });
 
-switchStory("garden");
+switchStory("radio");
 
 
 // ═══════════════════════════════════════════════════════════

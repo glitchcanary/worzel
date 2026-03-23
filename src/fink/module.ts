@@ -524,7 +524,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
     transport.onText(async (data: string) => {
       session.touchActivity();
 
-      let raw: { type?: string; action?: string; choice_index?: number; tts_speed?: number } | null = null;
+      let raw: { type?: string; action?: string; choice_index?: number; tts_speed?: number; text?: string } | null = null;
       try { raw = JSON.parse(data); } catch {}
 
       if (raw?.type === 'fink_settings') {
@@ -532,6 +532,18 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
           pipeline.ttsSpeed = raw.tts_speed;
           sessionLogger.info({ ttsSpeed: raw.tts_speed }, 'TTS speed updated');
         }
+        return;
+      }
+
+      if (raw?.type === 'stt_text' && typeof raw.text === 'string') {
+        const currentInk = inkSessions.get(session.id);
+        if (!currentInk) return;
+        sessionLogger.info({ text: raw.text }, 'Browser ASR text received');
+        session.abortController?.abort();
+        pipeline.clearAudio();
+        pipeline.processText(raw.text, session, transport, currentInk).catch(err => {
+          sessionLogger.error({ err }, 'Text pipeline error');
+        });
         return;
       }
 

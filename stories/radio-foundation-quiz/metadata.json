@@ -1,0 +1,27 @@
+{
+  "title": "Radio Foundation Quiz",
+  "author": "Fink Stories",
+  "description": "UK Ofcom Foundation Licence prep quiz. A gruff old-school ham quizzes you on 20 questions covering RF basics, regulations, safety, and operating procedures.",
+  "characters": {
+    "narrator": {
+      "voice": "barney_the_carny",
+      "voiceDirectives": {
+        "style": "gruff authoritative radio operator, theatrical but sincere"
+      }
+    }
+  },
+  "voices": {
+    "barney_the_carny": {
+      "description": "Gruff, theatrical voice with worn authority — repurposed from the circus barker for a seasoned radio operator.",
+      "traits": ["deep", "raspy", "world-weary", "showman", "authoritative"],
+      "style": {
+        "tone": "gruff",
+        "pace": "measured",
+        "texture": "gritty"
+      },
+      "providers": {
+        "elevenlabs": "wG54O0fjDbPBYb9MFXCb"
+      }
+    }
+  }
+}

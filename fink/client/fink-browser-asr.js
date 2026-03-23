@@ -11,6 +11,7 @@ export class FinkBrowserASR {
   #recognition = null;
   #available = false;
   #listening = false;
+  #suppressed = false;  // true while TTS is playing (suppress to avoid echo)
 
   constructor(bus) {
     this.#bus = bus;
@@ -74,6 +75,25 @@ export class FinkBrowserASR {
       }),
     );
 
+    // Suppress ASR while TTS is playing to avoid echo feedback
+    this.#unsubs.push(
+      bus.subscribe('tts', (data) => {
+        if (data.state === 'start') {
+          this.#suppressed = true;
+          if (this.#listening) {
+            console.log('[fink-asr] suppressing — TTS started');
+            this.#recognition.stop();
+          }
+        }
+      }),
+      bus.subscribe('playback_state', (data) => {
+        if (data.state === 'idle' && this.#suppressed) {
+          this.#suppressed = false;
+          console.log('[fink-asr] unsuppressed — playback idle');
+        }
+      }),
+    );
+
     bus.publish('listen_state', { available: true, state: 'ready' });
     console.log('[fink-asr] Web Speech API ready');
   }
@@ -83,6 +103,10 @@ export class FinkBrowserASR {
   start() {
     if (!this.#available || !this.#recognition) return;
     if (this.#listening) return;
+    if (this.#suppressed) {
+      console.log('[fink-asr] start blocked — TTS playing');
+      return;
+    }
     try {
       this.#recognition.start();
     } catch (e) {

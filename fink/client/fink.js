@@ -144,7 +144,12 @@ class OpusBrowserDecoder {
     this.ready = true;
   }
   decode(opusArrayBuffer) {
-    if (!this.ready || !this._decoder) return;
+    if (!this._decoder || this._decoder.state === 'closed') {
+      // Decoder was closed (e.g. by stop()) — reinitialize it
+      this.ready = false;
+      this.initSync();
+      if (!this.ready) return;
+    }
     const chunk = new EncodedAudioChunk({ type: 'key', timestamp: this._timestamp, data: opusArrayBuffer });
     this._timestamp += this._frameDurationUs;
     this._decoder.decode(chunk);
@@ -199,12 +204,23 @@ class AudioPlayer {
   enqueueAuto(audioArrayBuffer) {
     if (!audioArrayBuffer || audioArrayBuffer.byteLength === 0) return;
     const bytes = new Uint8Array(audioArrayBuffer, 0, Math.min(audioArrayBuffer.byteLength, 3));
+    // ID3 header (MP3) or MPEG sync word (MP3 without ID3 tag, e.g. Edge TTS)
     const isId3 = bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33;
-    if (isId3) {
+    const isMpeg = bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] & 0xE0) === 0xE0;
+    if (isId3 || isMpeg) {
       this.enqueueCompressed(audioArrayBuffer).catch(err => console.error('[fink] Compressed audio decode error:', err));
       return;
     }
-    this.enqueue(audioArrayBuffer);
+    // Try Opus decode, fall back to compressed decoder (handles many formats)
+    if (this._decoder?.ready) {
+      try {
+        this.enqueueOpus(audioArrayBuffer);
+      } catch {
+        this.enqueueCompressed(audioArrayBuffer).catch(() => this.enqueue(audioArrayBuffer));
+      }
+    } else {
+      this.enqueue(audioArrayBuffer);
+    }
   }
   _playAudioBuffer(buf) {
     if (!buf) return;
@@ -587,77 +603,113 @@ class FinkStory extends HTMLElement {
 customElements.define('fink-story', FinkStory);
 
 // ========================================================================
-// <fink-mic> — Simplified mic button (adapted from worzel-audio)
+// <fink-mic> — Voice input status indicator + browser speech recognition
 // ========================================================================
 class FinkMic extends HTMLElement {
   constructor() {
     super();
     this.recording = false;
     this._enabled = false;
+    this._muted = false;
     this._suspendInputUntil = 0;
-    this._hotMic = false; // always-on mic mode
-    this._silenceTimer = null;
-    this._silenceThreshold = 1200; // ms of silence before auto-stop
-    this._restartDelayMs = 900; // re-arm hot mic after TTS settles
+    this._browserASR = null;
+    this._browserASRAvailable = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    this._browserASRSuppressed = false;
+    this._suppressionTimeout = null;
+    this._asrRetries = 0;
+    this._state = 'offline'; // listening | hearing | thinking | narrating | muted | offline
+    // Server ASR fields (kept for fallback/Firefox)
+    this._useServerASR = localStorage.getItem('fink-mic-server') === 'true';
+    this._hotMic = false;
+    this._silenceThreshold = 1200;
+    this._restartDelayMs = 900;
     this._lastAudioTime = 0;
     this._speechDetected = false;
     this._speechStartTime = 0;
     this._recordingStartTime = 0;
-    this._minSpeechMs = 120; // ignore tiny bursts and residual audio
+    this._minSpeechMs = 120;
     this._speechThreshold = 0.01;
     this._fallbackSpeechThreshold = 0.006;
     this._maxHotMicTurnMs = 7000;
-    this._peakRms = 0; // peak RMS energy during this recording
+    this._peakRms = 0;
     this._autoRestartTimer = null;
+
+    const micSvg = `<svg class="mic-icon-svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>`;
+    const mutedSvg = `<svg class="mic-icon-svg" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>`;
+    const speakerSvg = `<svg class="mic-icon-svg" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
+
     this.attachShadow({ mode: 'open' }).innerHTML = `
       <style>
-        :host { display: flex; justify-content: center; padding: 12px; }
-        .wrap { display: flex; align-items: center; gap: 12px; }
-        .mode-btn {
-          padding: 6px 10px;
-          border-radius: 999px;
-          border: 1px solid var(--fink-border, #1a1a3e);
-          background: #13253f;
-          color: var(--fink-text-secondary, #8b8fa3);
-          font-size: 0.72rem;
-          font-family: system-ui, sans-serif;
-          cursor: pointer;
-        }
-        .mode-btn.hot {
-          border-color: #22c55e;
-          color: #dcfce7;
-        }
-        button.mic {
-          width: 56px; height: 56px; border-radius: 50%;
-          border: 2px solid var(--fink-accent, #e94560);
+        :host { display: flex; justify-content: center; padding: 10px 12px; }
+        .strip { display: flex; align-items: center; gap: 10px; width: 100%; }
+
+        /* ── Mic indicator ── */
+        .mic-indicator {
+          width: 40px; height: 40px; border-radius: 50%;
+          border: 2px solid #3a4060;
           background: var(--fink-bg, #16213e); cursor: pointer;
           display: flex; align-items: center; justify-content: center;
-          transition: all 0.15s; touch-action: none;
-          -webkit-touch-callout: none; user-select: none;
+          transition: all 0.25s; flex-shrink: 0;
+          position: relative;
         }
-        button.mic:hover { background: #1e2a4a; }
-        button.mic.rec { background: var(--fink-accent, #e94560); }
-        button.mic.hot { border-color: #22c55e; }
-        button.mic.hot.rec { background: #16a34a; }
-        button.mic:disabled { opacity: 0.3; cursor: default; }
-        .icon { width: 24px; height: 24px; fill: var(--fink-accent, #e94560); }
-        button.mic.rec .icon { fill: white; }
-        button.mic.hot .icon { fill: #22c55e; }
-        button.mic.hot.rec .icon { fill: white; }
-        .hint {
-          font-size: 0.8rem; color: var(--fink-text-muted, #5a5e73);
-          font-family: system-ui, sans-serif;
+        .mic-indicator:disabled { opacity: 0.3; cursor: default; }
+        .mic-icon-svg { width: 20px; height: 20px; }
+
+        /* States */
+        .mic-indicator[data-state="listening"] {
+          border-color: #60a5fa; color: #60a5fa;
+          animation: pulse-ring 2s ease-in-out infinite;
         }
-        .state-label {
-          font-size: 0.75rem; font-family: system-ui, sans-serif;
-          color: var(--fink-text-secondary); min-width: 80px;
+        .mic-indicator[data-state="hearing"] {
+          border-color: #93c5fd; color: #93c5fd;
+          background: rgba(96,165,250,0.12);
+          animation: none;
         }
-        .state-label.thinking { color: #f59e0b; }
-        .state-label.speaking { color: #22c55e; }
-        .state-label.listening { color: #e94560; }
-        .speed-ctl {
-          display: flex; gap: 2px; margin-left: 4px;
+        .mic-indicator[data-state="thinking"] {
+          border-color: #f59e0b; color: #f59e0b;
+          animation: none;
         }
+        .mic-indicator[data-state="narrating"] {
+          border-color: #6b7280; color: #6b7280;
+          animation: none;
+        }
+        .mic-indicator[data-state="muted"] {
+          border-color: #4b5563; color: #4b5563;
+          animation: none; opacity: 0.7;
+        }
+        .mic-indicator[data-state="offline"] {
+          border-color: #374151; color: #374151;
+          animation: none; opacity: 0.5;
+        }
+
+        @keyframes pulse-ring {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(96,165,250,0.25); }
+          50% { box-shadow: 0 0 0 6px rgba(96,165,250,0); }
+        }
+
+        /* ── Info area ── */
+        .mic-info { flex: 1; min-width: 0; }
+        .mic-label {
+          font-size: 0.78rem; font-family: system-ui, sans-serif;
+          color: var(--fink-text-muted, #5a5e73);
+          transition: color 0.2s;
+        }
+        .mic-label[data-state="listening"] { color: #60a5fa; }
+        .mic-label[data-state="hearing"] { color: #93c5fd; }
+        .mic-label[data-state="thinking"] { color: #f59e0b; }
+        .mic-label[data-state="narrating"] { color: #6b7280; }
+
+        .mic-interim {
+          font-size: 0.72rem; font-family: system-ui, sans-serif;
+          color: #93c5fd; font-style: italic;
+          max-height: 1.4em; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap;
+          opacity: 0; transition: opacity 0.15s;
+        }
+        .mic-interim.visible { opacity: 1; }
+
+        /* ── Speed control ── */
+        .speed-ctl { display: flex; gap: 2px; flex-shrink: 0; }
         .spd {
           background: transparent; border: 1px solid var(--fink-text-muted, #5a5e73);
           color: var(--fink-text-muted, #5a5e73); border-radius: 4px;
@@ -667,14 +719,13 @@ class FinkMic extends HTMLElement {
         .spd:hover { border-color: var(--fink-text-secondary, #8b8fa3); color: var(--fink-text-secondary); }
         .spd.active { background: var(--fink-primary, #0f3460); border-color: var(--fink-accent, #e94560); color: var(--fink-text, #e8e8e8); }
       </style>
-      <div class="wrap">
-        <button class="mode-btn" type="button">Mode: Push To Talk</button>
-        <button class="mic" disabled>
-          <svg class="icon" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+      <div class="strip">
+        <button class="mic-indicator" data-state="offline" disabled aria-label="Toggle microphone">
+          ${micSvg}
         </button>
-        <div>
-          <div class="hint">Voice trigger mode. Press and speak when ready.</div>
-          <div class="state-label"></div>
+        <div class="mic-info">
+          <div class="mic-label" data-state="offline">Connecting...</div>
+          <div class="mic-interim"></div>
         </div>
         <div class="speed-ctl">
           <button class="spd" data-speed="1">1x</button>
@@ -683,30 +734,24 @@ class FinkMic extends HTMLElement {
           <button class="spd" data-speed="1.5">1.5x</button>
         </div>
       </div>`;
-    const btn = this.shadowRoot.querySelector('button.mic');
-    const hint = this.shadowRoot.querySelector('.hint');
-    const modeBtn = this.shadowRoot.querySelector('.mode-btn');
 
-    // Push-to-talk handlers
-    btn.addEventListener('pointerdown', e => {
-      if (this._hotMic) return; // hot mic uses click toggle
-      e.preventDefault(); btn.setPointerCapture(e.pointerId); this.startRec('manual');
-    });
-    btn.addEventListener('pointerup', e => {
-      if (this._hotMic) return;
-      btn.releasePointerCapture(e.pointerId); this.stopRec();
-    });
-    btn.addEventListener('lostpointercapture', () => { if (!this._hotMic && this.recording) this.stopRec(); });
+    this._micSvg = micSvg;
+    this._mutedSvg = mutedSvg;
+    this._speakerSvg = speakerSvg;
 
-    // Hot mic click toggle
-    btn.addEventListener('click', () => {
-      if (!this._hotMic) return;
-      if (this.recording) this.stopRec();
-      else this.startRec('manual');
+    // Mic indicator tap: toggle mute
+    this.shadowRoot.querySelector('.mic-indicator').addEventListener('click', () => {
+      if (!this._enabled) return;
+      if (this._muted) {
+        this._muted = false;
+        this._startBrowserASR();
+        this._setState('listening');
+      } else {
+        this._muted = true;
+        this._stopBrowserASR();
+        this._setState('muted');
+      }
     });
-
-    // Explicit mode toggle
-    modeBtn.addEventListener('click', () => this.toggleHotMic());
 
     // Speed buttons
     const savedSpeed = localStorage.getItem('fink-tts-speed');
@@ -731,22 +776,154 @@ class FinkMic extends HTMLElement {
     });
   }
 
-  toggleHotMic() {
-    this._hotMic = !this._hotMic;
-    const btn = this.shadowRoot.querySelector('button.mic');
-    const hint = this.shadowRoot.querySelector('.hint');
-    const modeBtn = this.shadowRoot.querySelector('.mode-btn');
-    btn.classList.toggle('hot', this._hotMic);
-    modeBtn.classList.toggle('hot', this._hotMic);
-    modeBtn.textContent = this._hotMic ? 'Mode: Hot Mic' : 'Mode: Push To Talk';
-    hint.textContent = this._hotMic
-      ? 'Open-mic mode is active. Use the mic control to open or close the line.'
-      : 'Voice trigger mode. Press and speak when ready.';
-    if (this._hotMic && this._enabled && !this.recording) {
-      this.startRec('toggle');
+  // ── State management ──
+
+  _setState(state) {
+    this._state = state;
+    const indicator = this.shadowRoot.querySelector('.mic-indicator');
+    const label = this.shadowRoot.querySelector('.mic-label');
+    const interim = this.shadowRoot.querySelector('.mic-interim');
+    indicator.dataset.state = state;
+    label.dataset.state = state;
+
+    const labels = {
+      listening: 'Listening...',
+      hearing: '', // interim text shown instead
+      thinking: 'Thinking...',
+      narrating: 'Narrating...',
+      muted: 'Muted — tap mic to unmute',
+      offline: 'Speech unavailable',
+    };
+    label.textContent = labels[state] || '';
+
+    // Swap icon for narrating (speaker) and muted (slashed mic)
+    if (state === 'narrating') {
+      indicator.innerHTML = this._speakerSvg;
+    } else if (state === 'muted') {
+      indicator.innerHTML = this._mutedSvg;
+    } else {
+      indicator.innerHTML = this._micSvg;
     }
-    if (this.recording && !this._hotMic) this.stopRec();
+
+    // Clear interim text when not hearing
+    if (state !== 'hearing') {
+      interim.textContent = '';
+      interim.classList.remove('visible');
+    }
   }
+
+  // ── Browser ASR ──
+
+  _startBrowserASR() {
+    if (this._browserASR) return;
+    if (this._muted) return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
+    this._browserASR = recognition;
+    this._asrRetries = 0;
+
+    const interim = this.shadowRoot.querySelector('.mic-interim');
+
+    recognition.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal && transcript.trim()) {
+          if (this._browserASRSuppressed) {
+            console.log('[fink-mic] discarded (narrating):', transcript.trim().slice(0, 60));
+            return;
+          }
+          console.log('[fink-mic] heard:', transcript.trim());
+          interim.textContent = '';
+          interim.classList.remove('visible');
+          this._setState('thinking');
+          this.dispatchEvent(new CustomEvent('fink-stt-text', {
+            bubbles: true,
+            detail: { text: transcript.trim(), source: 'browser' },
+          }));
+        } else if (!event.results[i].isFinal && transcript.trim() && !this._browserASRSuppressed) {
+          // Show interim text
+          interim.textContent = transcript.trim();
+          interim.classList.add('visible');
+          if (this._state === 'listening') this._setState('hearing');
+        }
+      }
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error === 'no-speech' || event.error === 'aborted') return;
+      console.error('[fink-mic] ASR error:', event.error);
+      if (event.error === 'not-allowed') {
+        this._setState('offline');
+      }
+    };
+
+    recognition.onend = () => {
+      // Auto-restart if still enabled and not muted (cap retries to prevent loop)
+      if (this._enabled && !this._muted && this._asrRetries < 10) {
+        this._asrRetries++;
+        this._browserASR = null;
+        setTimeout(() => {
+          if (this._enabled && !this._muted) this._startBrowserASR();
+        }, 200);
+      } else if (this._asrRetries >= 10) {
+        console.warn('[fink-mic] ASR restart limit reached');
+        this._browserASR = null;
+        this._setState('offline');
+      }
+    };
+
+    try {
+      recognition.start();
+      if (!this._browserASRSuppressed) this._setState('listening');
+    } catch (e) {
+      console.error('[fink-mic] ASR start failed:', e);
+      this._browserASR = null;
+    }
+  }
+
+  _stopBrowserASR() {
+    if (this._browserASR) {
+      try { this._browserASR.stop(); } catch {}
+      this._browserASR = null;
+    }
+    this._browserASRSuppressed = false;
+    if (this._suppressionTimeout) { clearTimeout(this._suppressionTimeout); this._suppressionTimeout = null; }
+  }
+
+  /** Suppress — keep running but discard results (TTS playing). */
+  suppressBrowserASR() {
+    this._browserASRSuppressed = true;
+    this._setState('narrating');
+    if (this._suppressionTimeout) clearTimeout(this._suppressionTimeout);
+    this._suppressionTimeout = setTimeout(() => {
+      if (this._browserASRSuppressed) {
+        console.warn('[fink-mic] suppression safety timeout');
+        this.unsuppressBrowserASR();
+      }
+    }, 15000);
+  }
+
+  /** Unsuppress — accept results again. */
+  unsuppressBrowserASR() {
+    this._browserASRSuppressed = false;
+    if (this._suppressionTimeout) { clearTimeout(this._suppressionTimeout); this._suppressionTimeout = null; }
+    this._asrRetries = 0; // reset retry counter
+    if (this._muted) {
+      this._setState('muted');
+    } else {
+      this._setState('listening');
+      // Ensure recognition is still alive
+      if (this._enabled && !this._browserASR) this._startBrowserASR();
+    }
+  }
+
+  // ── Server ASR (fallback for Firefox / quality upgrade) ──
 
   get hotMic() { return this._hotMic; }
 
@@ -762,22 +939,42 @@ class FinkMic extends HTMLElement {
     return this._encoder?.format ?? 'pcm';
   }
 
-  enable() { this._enabled = true; this.shadowRoot.querySelector('button.mic').disabled = false; }
-  disable() { this._enabled = false; this.shadowRoot.querySelector('button.mic').disabled = true; if (this.recording) this.stopRec(); this.releaseAudioGraph(); }
+  enable() {
+    this._enabled = true;
+    this.shadowRoot.querySelector('.mic-indicator').disabled = false;
+    if (this._browserASRAvailable && !this._useServerASR) {
+      this._startBrowserASR();
+    } else {
+      // Firefox or explicit server ASR: start hot mic mode
+      this._hotMic = true;
+      this._setState('listening');
+    }
+  }
+  disable() {
+    this._enabled = false;
+    this.shadowRoot.querySelector('.mic-indicator').disabled = true;
+    if (this.recording) this.stopRec();
+    this._stopBrowserASR();
+    this.releaseAudioGraph();
+    this._setState('offline');
+  }
   suspendInput(ms = 1200) {
     this._suspendInputUntil = Date.now() + ms;
   }
   setPipelineState(state) {
-    const label = this.shadowRoot.querySelector('.state-label');
-    label.className = 'state-label';
-    if (state === 'thinking') { label.classList.add('thinking'); label.textContent = 'Thinking...'; }
-    else if (state === 'speaking') { label.classList.add('speaking'); label.textContent = 'Narrating...'; }
-    else if (state === 'listening') { label.classList.add('listening'); label.textContent = 'Listening...'; }
-    else { label.textContent = ''; }
+    // Map legacy pipeline states to new state machine
+    if (state === 'thinking') this._setState('thinking');
+    else if (state === 'speaking') this._setState('narrating');
+    else if (state === 'listening') this._setState('listening');
+    else if (state === 'idle') {
+      if (this._muted) this._setState('muted');
+      else this._setState('listening');
+    }
   }
 
-  /** Auto-restart recording in hot mic mode (called after TTS finishes). */
+  /** Auto-restart for server ASR hot mic mode. */
   autoRestart() {
+    if (this._browserASRAvailable && !this._useServerASR) return;
     if (this._hotMic && this._enabled && !this.recording) {
       if (this._autoRestartTimer) clearTimeout(this._autoRestartTimer);
       this._autoRestartTimer = setTimeout(() => {
@@ -791,7 +988,15 @@ class FinkMic extends HTMLElement {
   async _ensureAudioGraph() {
     if (this.mediaStream && this.audioCtx && this.audioCtx.state !== 'closed') return;
     this.mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      audio: {
+        sampleRate: { ideal: 16000 },
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        voiceIsolation: true,    // Chrome 132+: AI-powered background noise removal
+        latency: { ideal: 0 },  // minimize latency for real-time speech
+      },
     });
     this.audioCtx = new AudioContext({ sampleRate: 16000 });
     await this.audioCtx.audioWorklet.addModule('./pcm-processor.js');
@@ -1017,16 +1222,28 @@ class FinkApp extends HTMLElement {
       mic.setPipelineState('thinking');
     });
     mic.addEventListener('fink-audio-data', e => this.client?.sendAudio(e.detail.audio));
+
+    // Browser ASR: text comes directly, no audio streaming needed
+    mic.addEventListener('fink-stt-text', e => {
+      console.log('[fink] Browser ASR text:', e.detail.text);
+      story.setStatus('Interpreting...', 'thinking');
+      mic.setPipelineState('thinking');
+      this.armResponseWatchdog(story, mic, 'browser speech');
+      this.client?.send({ type: 'stt_text', text: e.detail.text });
+    });
+
     mic.addEventListener('fink-speed-change', e => {
       this.client?.send({ type: 'fink_settings', tts_speed: e.detail.speed });
     });
 
-    // Choice card tapped — abort current audio, then send ink:choose to server
+    // Choice card tapped — kill audio immediately, abort server, advance
     story.addEventListener('fink-choice', e => {
       console.log('[fink] Choice tapped:', e.detail.choiceIndex);
       if (this.client?.currentState === 'connected') {
         mic.suspendInput(1500);
-        this.player?.stop();
+        this.player?.stop();           // hard stop — no fade, no backlog
+        this._isSpeaking = false;
+        mic.suppressBrowserASR();      // suppress until new TTS starts
         this.client.abort();
         story.setStatus('Advancing...', 'thinking');
         this.armResponseWatchdog(story, mic, 'story advance');
@@ -1063,14 +1280,18 @@ class FinkApp extends HTMLElement {
     if (e.key === ' ' || e.code === 'Space') {
       if (this._isSpeaking) {
         e.preventDefault();
-        story.setStatus('Skipping ahead...', 'thinking');
-        mic.suspendInput(700);
+        // Quick fade (150ms) then hard stop — no lingering backlog
         this.client?.abort();
-        await this.player?.fadeStop(500);
-        mic.setPipelineState('idle');
+        await this.player?.fadeStop(150);
         this._isSpeaking = false;
-        story.setStatus('Skipped. Your next move is open.', 'info');
+        mic.setPipelineState('idle');
+        if (story.hasChoices()) {
+          story.setStatus('Pick a choice.', 'info');
+        } else {
+          story.setStatus('Skipped.', 'info');
+        }
         mic.autoRestart();
+        mic.unsuppressBrowserASR();
         return;
       }
       if (story.activateFocusedChoice()) {
@@ -1160,6 +1381,7 @@ class FinkApp extends HTMLElement {
         if (!inkNarrating) story.startStreaming();
         if (!this.player) this.player = new AudioPlayer(16000);
         mic.setPipelineState('speaking');
+        mic.suppressBrowserASR();
       }
       else if (ev.state === 'sentence_start' && ev.text) {
         if (!inkNarrating) story.appendStreaming(ev.text + ' ');
@@ -1172,10 +1394,16 @@ class FinkApp extends HTMLElement {
         mic.setPipelineState('idle');
         story.setStatus('Ready.', 'info');
         mic.autoRestart();
+        mic.unsuppressBrowserASR();
       }
     });
 
-    this.client.on('audio', data => this.player?.enqueueAuto(data));
+    this.client.on('audio', data => {
+      // Suppress browser ASR immediately when audio arrives — don't wait for
+      // the tts.state=start message, which can lag behind the first audio frame
+      if (!this._isSpeaking) mic.suppressBrowserASR();
+      this.player?.enqueueAuto(data);
+    });
 
     this.client.on('inputIgnored', msg => {
       this.clearResponseWatchdog();

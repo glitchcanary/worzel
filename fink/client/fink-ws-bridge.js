@@ -15,6 +15,13 @@ export class FinkWsBridge {
     bus.subscribe('ink:choose', ({ choiceIndex }) => {
       this.#send({ type: 'ink', action: 'choose', choice_index: choiceIndex });
     });
+
+    // Forward browser ASR text to server for LLM classification
+    bus.subscribe('stt', (data) => {
+      if (data.source === 'browser' && data.text) {
+        this.#send({ type: 'stt_text', text: data.text });
+      }
+    });
   }
 
   async connect() {

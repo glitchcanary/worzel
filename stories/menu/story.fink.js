@@ -7,6 +7,7 @@ Welcome to Fink. Choose a story to begin.
 + City 311 Services # voice_hint:city 311 services, city services, 311, three one one, parking, pothole # FINK:finkalike311
 + WarClaude Training # voice_hint:warclaude training, war claude training, warclaude, war claude, war, training, military # FINK:warclaude-ep1
 + Bigtop Briefing # voice_hint:bigtop briefing, big top briefing, bigtop, big top, circus, briefing, noir, detective, hallyboo # FINK:bigtop-briefing
++ Radio Foundation Quiz # voice_hint:radio quiz, foundation quiz, ham radio, radio, elmer # FINK:radio-foundation-quiz
 + Glitch Corner # voice_hint:glitch corner, glitch menu, glitch stories -> glitch_corner
 + Developer's Corner # voice_hint:developer corner, dev corner, developer menu, test stories -> dev_corner
 
