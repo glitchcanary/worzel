@@ -1248,16 +1248,17 @@ class FinkApp extends HTMLElement {
         console.log('[fink] Discarding long ASR text (likely echo):', text.slice(0, 60));
         return;
       }
-      // Echo detection: if ASR text overlaps heavily with last TTS narration, discard
-      if (this._lastNarrationText && text.length > 20) {
+      // Echo detection: if ASR text overlaps heavily with last TTS output, discard
+      if (text.length > 20) {
         const heard = text.toLowerCase();
-        const narration = this._lastNarrationText;
-        // Check if >50% of the heard words appear in the narration
-        const words = heard.split(/\s+/);
-        const matchCount = words.filter(w => w.length > 2 && narration.includes(w)).length;
-        if (matchCount / words.length > 0.5) {
-          console.log('[fink] Echo detected, discarding:', text.slice(0, 60));
-          return;
+        const corpus = [this._lastNarrationText, this._lastChoiceText].filter(Boolean).join(' ');
+        if (corpus) {
+          const words = heard.split(/\s+/);
+          const matchCount = words.filter(w => w.length > 2 && corpus.includes(w)).length;
+          if (matchCount / words.length > 0.5) {
+            console.log('[fink] Echo detected, discarding:', text.slice(0, 60));
+            return;
+          }
         }
       }
       console.log('[fink] Browser ASR text:', text);
@@ -1498,27 +1499,33 @@ class FinkApp extends HTMLElement {
 
         if (isAllNav && msg.choices.length === 1) {
           // Single nav choice (e.g. "Next") — auto-advance after TTS finishes
+          // Stay suppressed — the next ink_state will unsuppress when appropriate
+          this._autoAdvancing = true;
           const autoChoiceIndex = msg.choices[0].index;
           const checkAndAdvance = () => {
             if (this.player && this.player._sources.length > 0) {
-              // Audio still playing — check again shortly
               setTimeout(checkAndAdvance, 200);
             } else {
               console.log('[fink] Auto-advancing (single nav choice)');
-              this._isSpeaking = false;
               this.client?.send({ type: 'ink', action: 'choose', choice_index: autoChoiceIndex });
             }
           };
-          // Start checking after a brief delay
           setTimeout(checkAndAdvance, 300);
         } else {
           story.setChoices(msg.choices, msg.suggestion);
-          // Choices visible = user's turn. Unsuppress immediately.
-          // Echo detection handles any lingering TTS audio in the ASR buffer.
-          this._isSpeaking = false;
-          this._serverTtsDone = false;
-          mic.unsuppressBrowserASR();
-          mic.setPipelineState('idle');
+          // Track choice text for echo detection
+          this._lastChoiceText = msg.choices.map(c => c.text).join(' ').toLowerCase();
+          if (this._autoAdvancing) {
+            // Just auto-advanced — TTS is playing new content. Stay suppressed.
+            // Unsuppress will happen via onIdle + serverTtsDone.
+            this._autoAdvancing = false;
+          } else {
+            // User-initiated advance — unsuppress now.
+            this._isSpeaking = false;
+            this._serverTtsDone = false;
+            mic.unsuppressBrowserASR();
+            mic.setPipelineState('idle');
+          }
           if (!msg.narration || msg.narration.length === 0) {
             story.setStatus('Options updated.', 'info');
           }
