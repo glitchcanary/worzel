@@ -6,6 +6,8 @@ export interface ElevenLabsTTSOptions {
   voice: string;
   model: string;
   sampleRate: number;
+  /** ElevenLabs pronunciation dictionary IDs (created via their API). */
+  pronunciationDictionaryIds?: string[];
 }
 
 /**
@@ -47,6 +49,12 @@ export class ElevenLabsTTS implements TTSProvider {
         text,
         model_id: this.options.model,
         output_format: `pcm_${sampleRate}`,
+        ...(this.options.pronunciationDictionaryIds?.length ? {
+          pronunciation_dictionary_locators: this.options.pronunciationDictionaryIds.map(id => ({
+            pronunciation_dictionary_id: id,
+            version_id: 'latest',
+          })),
+        } : {}),
       }),
     });
 

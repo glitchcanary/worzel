@@ -99,13 +99,16 @@ function createTTS(config: AppConfig, logger?: pino.Logger): TTSProvider {
         sampleRate: config.tts.sampleRate,
       });
       break;
-    case 'elevenlabs':
+    case 'elevenlabs': {
+      const dictIds = process.env['ELEVENLABS_PRONUNCIATION_DICT_IDS']?.split(',').map(s => s.trim()).filter(Boolean);
       provider = new ElevenLabsTTS({
         apiKey: config.apiKeys.elevenlabs ?? '',
         model: config.tts.model,
         voice: config.tts.voice,
         sampleRate: config.tts.sampleRate,
+        pronunciationDictionaryIds: dictIds,
       });
+    }
       break;
     case 'piper-local':
     case 'kokoro-local':
