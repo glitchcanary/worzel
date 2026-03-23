@@ -907,10 +907,16 @@ class FinkMic extends HTMLElement {
     if (this._suppressionTimeout) { clearTimeout(this._suppressionTimeout); this._suppressionTimeout = null; }
   }
 
-  /** Suppress — keep running but discard results (TTS playing). */
+  /** Suppress — stop recognition entirely to clear the audio buffer. */
   suppressBrowserASR() {
     this._browserASRSuppressed = true;
     this._setState('narrating');
+    // Actually stop recognition so the browser clears its audio buffer.
+    // This prevents echo from leaking through when we restart.
+    if (this._browserASR) {
+      try { this._browserASR.stop(); } catch {}
+      this._browserASR = null;
+    }
     if (this._suppressionTimeout) clearTimeout(this._suppressionTimeout);
     this._suppressionTimeout = setTimeout(() => {
       if (this._browserASRSuppressed) {
@@ -920,7 +926,7 @@ class FinkMic extends HTMLElement {
     }, 15000);
   }
 
-  /** Unsuppress — accept results again. */
+  /** Unsuppress — restart recognition fresh (clean audio buffer). */
   unsuppressBrowserASR() {
     this._browserASRSuppressed = false;
     if (this._suppressionTimeout) { clearTimeout(this._suppressionTimeout); this._suppressionTimeout = null; }
