@@ -1350,16 +1350,15 @@ class FinkApp extends HTMLElement {
     this.player = new AudioPlayer(16000);
     this._serverTtsDone = false;
 
-    // When all audio buffers finish playing, unsuppress mic
+    // When all audio buffers finish playing AND server is done sending, unsuppress mic
     this.player.onIdle = () => {
-      if (this._isSpeaking || this._serverTtsDone) {
-        this._isSpeaking = false;
-        this._serverTtsDone = false;
-        mic.setPipelineState('idle');
-        story.setStatus('Ready.', 'info');
-        mic.autoRestart();
-        mic.unsuppressBrowserASR();
-      }
+      if (!this._serverTtsDone) return; // server still sending — more audio coming
+      this._isSpeaking = false;
+      this._serverTtsDone = false;
+      mic.setPipelineState('idle');
+      story.setStatus('Ready.', 'info');
+      mic.autoRestart();
+      mic.unsuppressBrowserASR();
     };
 
     this.client.on('stateChange', s => {
@@ -1416,9 +1415,17 @@ class FinkApp extends HTMLElement {
         this.clearResponseWatchdog();
         if (!inkNarrating) story.endStreaming();
         inkNarrating = false;
-        // Mark server done sending — but audio may still be playing.
-        // Unsuppress happens in player.onIdle when playback actually finishes.
+        // Mark server done sending. If audio already finished playing,
+        // unsuppress now. Otherwise onIdle will handle it.
         this._serverTtsDone = true;
+        if (this.player && this.player._sources.length === 0) {
+          this._isSpeaking = false;
+          this._serverTtsDone = false;
+          mic.setPipelineState('idle');
+          story.setStatus('Ready.', 'info');
+          mic.autoRestart();
+          mic.unsuppressBrowserASR();
+        }
       }
     });
 
