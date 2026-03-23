@@ -1236,11 +1236,24 @@ class FinkApp extends HTMLElement {
 
     // Browser ASR: text comes directly, no audio streaming needed
     mic.addEventListener('fink-stt-text', e => {
-      console.log('[fink] Browser ASR text:', e.detail.text);
+      const text = e.detail.text;
+      // Echo detection: if ASR text overlaps heavily with last TTS narration, discard
+      if (this._lastNarrationText && text.length > 20) {
+        const heard = text.toLowerCase();
+        const narration = this._lastNarrationText;
+        // Check if >50% of the heard words appear in the narration
+        const words = heard.split(/\s+/);
+        const matchCount = words.filter(w => w.length > 2 && narration.includes(w)).length;
+        if (matchCount / words.length > 0.5) {
+          console.log('[fink] Echo detected, discarding:', text.slice(0, 60));
+          return;
+        }
+      }
+      console.log('[fink] Browser ASR text:', text);
       story.setStatus('Interpreting...', 'thinking');
       mic.setPipelineState('thinking');
       this.armResponseWatchdog(story, mic, 'browser speech');
-      this.client?.send({ type: 'stt_text', text: e.detail.text });
+      this.client?.send({ type: 'stt_text', text });
     });
 
     mic.addEventListener('fink-speed-change', e => {
@@ -1456,8 +1469,10 @@ class FinkApp extends HTMLElement {
     this.client.on('inkState', msg => {
       this.clearResponseWatchdog();
       console.log('[fink] Ink state:', msg);
+      // Track last narration text for echo detection
       if (msg.narration && msg.narration.length > 0) {
         inkNarrating = true;
+        this._lastNarrationText = msg.narration.map(s => s.text).join(' ').toLowerCase();
         story.setStatus('Advanced.', 'info');
         for (const seg of msg.narration) {
           if (seg.image) story.addImage(seg.image);
@@ -1466,6 +1481,11 @@ class FinkApp extends HTMLElement {
       }
       if (msg.choices) {
         story.setChoices(msg.choices, msg.suggestion);
+        // Choices visible = user's turn. Unsuppress NOW regardless of audio state.
+        this._isSpeaking = false;
+        this._serverTtsDone = false;
+        mic.unsuppressBrowserASR();
+        mic.setPipelineState('idle');
         if (!msg.narration || msg.narration.length === 0) {
           story.setStatus('Options updated.', 'info');
         }
