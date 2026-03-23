@@ -1237,6 +1237,11 @@ class FinkApp extends HTMLElement {
     // Browser ASR: text comes directly, no audio streaming needed
     mic.addEventListener('fink-stt-text', e => {
       const text = e.detail.text;
+      // Length guard: human utterances are short. Anything over 100 chars is echo.
+      if (text.length > 100) {
+        console.log('[fink] Discarding long ASR text (likely echo):', text.slice(0, 60));
+        return;
+      }
       // Echo detection: if ASR text overlaps heavily with last TTS narration, discard
       if (this._lastNarrationText && text.length > 20) {
         const heard = text.toLowerCase();
