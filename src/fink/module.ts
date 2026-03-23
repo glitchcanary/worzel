@@ -219,9 +219,13 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
   const { app, logger, sessionManager } = options;
   const config = applyFinkOverrides(options.config);
   const providers = config === options.config ? options.providers : createProviders(config, logger);
-  const fallbackTts = config.tts.provider === options.config.tts.provider
+  // Only use a fallback TTS if the base provider is actually implemented
+  // (Edge TTS is currently a stub that generates silence)
+  const baseTts = options.providers.tts;
+  const baseTtsIsStub = baseTts.provider === 'edge' || baseTts.name === 'edge-tts';
+  const fallbackTts = (config.tts.provider === options.config.tts.provider || baseTtsIsStub)
     ? undefined
-    : options.providers.tts;
+    : baseTts;
   const routePrefix = options.routePrefix ?? '/fink';
   const wsPath = options.wsPath ?? '/ws/fink';
   const apiPrefix = options.apiPrefix ?? `${routePrefix}/api`;
