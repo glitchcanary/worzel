@@ -626,6 +626,7 @@ class FinkMic extends HTMLElement {
     this._browserASR = null;
     this._browserASRAvailable = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
     this._browserASRSuppressed = false;
+    this._asrInstanceId = 0;
     this._suppressionTimeout = null;
     this._asrRetries = 0;
     this._state = 'offline'; // listening | hearing | thinking | narrating | muted | offline
@@ -826,8 +827,12 @@ class FinkMic extends HTMLElement {
   // ── Browser ASR ──
 
   _startBrowserASR() {
-    if (this._browserASR) return;
     if (this._muted) return;
+    // If one is already running, stop it first
+    if (this._browserASR) {
+      try { this._browserASR.stop(); } catch {}
+      this._browserASR = null;
+    }
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
@@ -838,10 +843,13 @@ class FinkMic extends HTMLElement {
     recognition.maxAlternatives = 1;
     this._browserASR = recognition;
     this._asrRetries = 0;
+    // Tag this instance so onend only handles its own lifecycle
+    const instanceId = ++this._asrInstanceId;
 
     const interim = this.shadowRoot.querySelector('.mic-interim');
 
     recognition.onresult = (event) => {
+      if (this._browserASR !== recognition) return; // stale instance
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal && transcript.trim()) {
@@ -858,7 +866,6 @@ class FinkMic extends HTMLElement {
             detail: { text: transcript.trim(), source: 'browser' },
           }));
         } else if (!event.results[i].isFinal && transcript.trim() && !this._browserASRSuppressed) {
-          // Show interim text
           interim.textContent = transcript.trim();
           interim.classList.add('visible');
           if (this._state === 'listening') this._setState('hearing');
@@ -869,28 +876,28 @@ class FinkMic extends HTMLElement {
     recognition.onerror = (event) => {
       if (event.error === 'no-speech' || event.error === 'aborted') return;
       console.error('[fink-mic] ASR error:', event.error);
-      if (event.error === 'not-allowed') {
-        this._setState('offline');
-      }
+      if (event.error === 'not-allowed') this._setState('offline');
     };
 
     recognition.onend = () => {
-      // Auto-restart if still enabled and not muted (cap retries to prevent loop)
-      if (this._enabled && !this._muted && this._asrRetries < 10) {
+      // Only handle if this is still the current instance
+      if (this._asrInstanceId !== instanceId) return;
+      if (this._browserASR !== recognition) return;
+      this._browserASR = null;
+      // Auto-restart if still enabled and not muted
+      if (this._enabled && !this._muted && !this._browserASRSuppressed && this._asrRetries < 10) {
         this._asrRetries++;
-        this._browserASR = null;
         setTimeout(() => {
-          if (this._enabled && !this._muted) this._startBrowserASR();
+          if (this._enabled && !this._muted && !this._browserASRSuppressed && !this._browserASR) {
+            this._startBrowserASR();
+          }
         }, 200);
-      } else if (this._asrRetries >= 10) {
-        console.warn('[fink-mic] ASR restart limit reached');
-        this._browserASR = null;
-        this._setState('offline');
       }
     };
 
     try {
       recognition.start();
+      console.log('[fink-mic] ASR started (instance', instanceId + ')');
       if (!this._browserASRSuppressed) this._setState('listening');
     } catch (e) {
       console.error('[fink-mic] ASR start failed:', e);
@@ -1507,6 +1514,7 @@ class FinkApp extends HTMLElement {
               setTimeout(checkAndAdvance, 200);
             } else {
               console.log('[fink] Auto-advancing (single nav choice)');
+              mic.suppressBrowserASR(); // new question TTS is about to play
               this.client?.send({ type: 'ink', action: 'choose', choice_index: autoChoiceIndex });
             }
           };
