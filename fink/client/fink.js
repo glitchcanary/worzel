@@ -130,22 +130,33 @@ class OpusBrowserDecoder {
     if (this.ready) return;
     if (typeof AudioDecoder === 'undefined') return;
     this._decodedSampleRate = null;
+    this._errorCount = 0;
     this._decoder = new AudioDecoder({
       output: (audioData) => {
+        this._errorCount = 0; // reset on successful decode
         if (!this._decodedSampleRate) this._decodedSampleRate = audioData.sampleRate;
         const float32 = new Float32Array(audioData.numberOfFrames);
         audioData.copyTo(float32, { planeIndex: 0 });
         audioData.close();
         if (this._onDecoded) this._onDecoded(float32, this._decodedSampleRate);
       },
-      error: (e) => console.error('[fink] Opus decoder error:', e.message),
+      error: (e) => {
+        this._errorCount = (this._errorCount || 0) + 1;
+        if (this._errorCount <= 3) console.warn('[fink] Opus decode error:', e.message);
+        if (this._errorCount === 3) console.warn('[fink] Suppressing further Opus errors (bad stream)');
+        // After repeated errors, mark decoder as broken so enqueueAuto falls back
+        if (this._errorCount >= 5) this._broken = true;
+      },
     });
     this._decoder.configure({ codec: 'opus', sampleRate: this.sampleRate, numberOfChannels: 1 });
+    this._broken = false;
     this.ready = true;
   }
+  get broken() { return this._broken; }
+  clearBroken() { this._broken = false; this._errorCount = 0; }
   decode(opusArrayBuffer) {
+    if (this._broken) return; // stop feeding bad data
     if (!this._decoder || this._decoder.state === 'closed') {
-      // Decoder was closed (e.g. by stop()) — reinitialize it
       this.ready = false;
       this.initSync();
       if (!this.ready) return;
@@ -211,15 +222,12 @@ class AudioPlayer {
       this.enqueueCompressed(audioArrayBuffer).catch(err => console.error('[fink] Compressed audio decode error:', err));
       return;
     }
-    // Try Opus decode, fall back to compressed decoder (handles many formats)
-    if (this._decoder?.ready) {
-      try {
-        this.enqueueOpus(audioArrayBuffer);
-      } catch {
-        this.enqueueCompressed(audioArrayBuffer).catch(() => this.enqueue(audioArrayBuffer));
-      }
+    // Try Opus if decoder is healthy, fall back to compressed decoder
+    if (this._decoder?.ready && !this._decoder.broken) {
+      this.enqueueOpus(audioArrayBuffer);
     } else {
-      this.enqueue(audioArrayBuffer);
+      // Decoder broken or unavailable — try browser's built-in decoder
+      this.enqueueCompressed(audioArrayBuffer).catch(() => this.enqueue(audioArrayBuffer));
     }
   }
   _playAudioBuffer(buf) {
@@ -1396,6 +1404,8 @@ class FinkApp extends HTMLElement {
         story.setStatus('Speaking...', 'speaking');
         if (!inkNarrating) story.startStreaming();
         if (!this.player) this.player = new AudioPlayer(16000);
+        // Reset decoder broken flag for new TTS segment (different provider may work)
+        if (this.player._decoder) this.player._decoder.clearBroken();
         mic.setPipelineState('speaking');
         mic.suppressBrowserASR();
       }
