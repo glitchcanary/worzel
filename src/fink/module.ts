@@ -38,6 +38,7 @@ export interface FinkRuntime {
   config: AppConfig;
   providers: Providers;
   fallbackTts?: Providers['tts'];
+  ttsChain: Providers['tts'][];
   logger: pino.Logger;
   sessionManager: SessionManager;
   storyManager: StoryManager;
@@ -219,13 +220,20 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
   const { app, logger, sessionManager } = options;
   const config = applyFinkOverrides(options.config);
   const providers = config === options.config ? options.providers : createProviders(config, logger);
-  // Only use a fallback TTS if the base provider is actually implemented
-  // (Edge TTS is currently a stub that generates silence)
+
+  // Build TTS chain: primary (Fink override) + any working fallbacks
+  // Skip Edge TTS (stub that generates silence)
+  const ttsChain: Providers['tts'][] = [providers.tts];
   const baseTts = options.providers.tts;
   const baseTtsIsStub = baseTts.provider === 'edge' || baseTts.name === 'edge-tts';
-  const fallbackTts = (config.tts.provider === options.config.tts.provider || baseTtsIsStub)
-    ? undefined
-    : baseTts;
+  if (config.tts.provider !== options.config.tts.provider && !baseTtsIsStub) {
+    ttsChain.push(baseTts);
+  }
+  // Legacy single fallback for backward compat
+  const fallbackTts = ttsChain.length > 1 ? ttsChain[1] : undefined;
+  logger.info({
+    ttsChain: ttsChain.map(p => p.provider ?? p.name),
+  }, 'TTS provider chain configured');
   const routePrefix = options.routePrefix ?? '/fink';
   const wsPath = options.wsPath ?? '/ws/fink';
   const apiPrefix = options.apiPrefix ?? `${routePrefix}/api`;
@@ -303,6 +311,7 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
     config,
     providers,
     fallbackTts,
+    ttsChain,
     logger,
     sessionManager,
     storyManager,
@@ -321,6 +330,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
     config,
     providers,
     fallbackTts,
+    ttsChain,
     logger,
     sessionManager,
     storyManager,
@@ -378,6 +388,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
       llm: providers.llm,
       tts: providers.tts,
       ttsFallback: fallbackTts,
+      ttsChain,
       logger: sessionLogger,
       voiceAliases,
       choiceVoice,

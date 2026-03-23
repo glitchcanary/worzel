@@ -53,6 +53,8 @@ export interface InkPipelineOptions {
   llm: LLMProvider;
   tts: TTSProvider;
   ttsFallback?: TTSProvider;
+  /** Ordered list of TTS providers to try. Overrides tts/ttsFallback if set. */
+  ttsChain?: TTSProvider[];
   logger: pino.Logger;
   voiceAliases?: Record<string, string>;
   choiceVoice?: string;
@@ -91,12 +93,10 @@ const IGNORABLE_ASR_PHRASES = new Set([
 export class InkPipeline {
   private readonly asr: ASRProvider;
   private readonly llm: LLMProvider;
-  private readonly tts: TTSProvider;
-  private readonly ttsFallback?: TTSProvider;
+  private readonly ttsChain: TTSProvider[];
   private readonly logger: pino.Logger;
   private readonly router: InkRouter;
-  private readonly voiceResolver: VoiceResolver;
-  private readonly fallbackVoiceResolver?: VoiceResolver;
+  private readonly voiceResolvers: VoiceResolver[];
   private readonly choiceVoice: string;
   private readonly fallbackChoiceVoice?: string;
   private readonly onFinkLink?: FinkLinkHandler;
@@ -106,23 +106,33 @@ export class InkPipeline {
   /** Track consecutive no_match results to auto-read choices */
   private noMatchCount = 0;
 
+  // Legacy accessors for code that references tts/ttsFallback directly
+  // @ts-expect-error — used via this.tts throughout the class
+  private get tts(): TTSProvider { return this.ttsChain[0]!; }
+  // @ts-expect-error — used via this.ttsFallback in resolveVoiceWith calls
+  private get ttsFallback(): TTSProvider | undefined { return this.ttsChain[1]; }
+  private get voiceResolver(): VoiceResolver { return this.voiceResolvers[0]!; }
+  private get fallbackVoiceResolver(): VoiceResolver | undefined { return this.voiceResolvers[1]; }
+
   constructor(options: InkPipelineOptions) {
     this.asr = options.asr;
     this.llm = options.llm;
-    this.tts = options.tts;
-    this.ttsFallback = options.ttsFallback;
+
+    // Build TTS chain: explicit chain > tts+fallback > tts alone
+    if (options.ttsChain && options.ttsChain.length > 0) {
+      this.ttsChain = options.ttsChain;
+    } else if (options.ttsFallback) {
+      this.ttsChain = [options.tts, options.ttsFallback];
+    } else {
+      this.ttsChain = [options.tts];
+    }
+
     this.logger = options.logger;
     this.router = new InkRouter({ llm: options.llm });
-    this.voiceResolver = new VoiceResolver({
-      provider: options.tts.provider ?? options.tts.name.replace(/-tts$/, ''),
+    this.voiceResolvers = this.ttsChain.map(p => new VoiceResolver({
+      provider: p.provider ?? p.name.replace(/-tts$/, ''),
       aliases: options.voiceAliases,
-    });
-    this.fallbackVoiceResolver = options.ttsFallback
-      ? new VoiceResolver({
-          provider: options.ttsFallback.provider ?? options.ttsFallback.name.replace(/-tts$/, ''),
-          aliases: options.voiceAliases,
-        })
-      : undefined;
+    }));
     this.choiceVoice = options.choiceVoice ?? 'nova';
     this.fallbackChoiceVoice = options.fallbackChoiceVoice;
     this.onFinkLink = options.onFinkLink;
@@ -495,6 +505,11 @@ export class InkPipeline {
     );
   }
 
+  /**
+   * Try each TTS provider in the chain until one succeeds.
+   * For volatile TTS, start from the cheapest (last in chain) and work up.
+   * For persistent TTS, start from the best (first in chain) and fall back.
+   */
   private async synthesizeWithFallback(
     text: string,
     options: {
@@ -505,69 +520,44 @@ export class InkPipeline {
       cacheTtlMs?: number;
     },
   ): Promise<{ result: Awaited<ReturnType<TTSProvider['synthesize']>>; provider: string; fallback: boolean }> {
-    if (options.cacheScope === 'volatile' && this.ttsFallback) {
-      this.logger.info({
-        provider: this.tts.provider ?? this.tts.name,
-        fallbackProvider: this.ttsFallback.provider ?? this.ttsFallback.name,
-        cacheScope: options.cacheScope,
-        textLength: text.length,
-      }, 'Routing volatile TTS to fallback provider');
+    // For volatile (ephemeral) TTS, try cheapest first (reverse chain order)
+    // For persistent (narration) TTS, try best quality first (chain order)
+    const isVolatile = options.cacheScope === 'volatile';
+    const order = isVolatile && this.ttsChain.length > 1
+      ? [...this.ttsChain].reverse()
+      : this.ttsChain;
+
+    let lastErr: unknown;
+    for (let i = 0; i < order.length; i++) {
+      const provider = order[i]!;
+      const resolverIdx = this.ttsChain.indexOf(provider);
+      const resolver = this.voiceResolvers[resolverIdx];
+      const voice = resolverIdx === 0 ? options.primaryVoice
+        : resolver?.resolve(this.choiceVoice) ?? options.fallbackVoice;
+
       try {
-        const result = await this.ttsFallback.synthesize(text, {
-          voice: options.fallbackVoice,
+        const result = await provider.synthesize(text, {
+          voice,
           speed: options.speed,
           cacheScope: options.cacheScope,
           cacheTtlMs: options.cacheTtlMs,
         });
         return {
           result,
-          provider: this.ttsFallback.provider ?? this.ttsFallback.name,
-          fallback: true,
+          provider: provider.provider ?? provider.name,
+          fallback: resolverIdx !== 0,
         };
       } catch (err) {
+        lastErr = err;
         this.logger.warn({
-          provider: this.ttsFallback.provider ?? this.ttsFallback.name,
-          primaryProvider: this.tts.provider ?? this.tts.name,
+          provider: provider.provider ?? provider.name,
+          position: `${i + 1}/${order.length}`,
           err: err instanceof Error ? err.message : String(err),
-          text,
-        }, 'Volatile TTS fallback provider failed, retrying primary');
+          textLength: text.length,
+        }, 'TTS provider failed, trying next in chain');
       }
     }
-
-    try {
-      const result = await this.tts.synthesize(text, {
-        voice: options.primaryVoice,
-        speed: options.speed,
-        cacheScope: options.cacheScope,
-        cacheTtlMs: options.cacheTtlMs,
-      });
-      return {
-        result,
-        provider: this.tts.provider ?? this.tts.name,
-        fallback: false,
-      };
-    } catch (err) {
-      if (!this.ttsFallback) throw err;
-
-      this.logger.warn({
-        provider: this.tts.provider ?? this.tts.name,
-        fallbackProvider: this.ttsFallback.provider ?? this.ttsFallback.name,
-        err: err instanceof Error ? err.message : String(err),
-        text,
-      }, 'Primary TTS failed, falling back');
-
-      const result = await this.ttsFallback.synthesize(text, {
-        voice: options.fallbackVoice,
-        speed: options.speed,
-        cacheScope: options.cacheScope,
-        cacheTtlMs: options.cacheTtlMs,
-      });
-      return {
-        result,
-        provider: this.ttsFallback.provider ?? this.ttsFallback.name,
-        fallback: true,
-      };
-    }
+    throw lastErr ?? new Error('All TTS providers in chain failed');
   }
 
   /**
