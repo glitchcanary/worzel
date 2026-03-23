@@ -923,7 +923,7 @@ class FinkMic extends HTMLElement {
         console.warn('[fink-mic] suppression safety timeout');
         this.unsuppressBrowserASR();
       }
-    }, 15000);
+    }, 5000);
   }
 
   /** Unsuppress — restart recognition fresh (clean audio buffer). */
