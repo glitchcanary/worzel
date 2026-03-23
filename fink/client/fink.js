@@ -751,9 +751,18 @@ class FinkMic extends HTMLElement {
     this._mutedSvg = mutedSvg;
     this._speakerSvg = speakerSvg;
 
-    // Mic indicator tap: toggle mute
+    // Mic indicator tap: toggle mute, or force-recover from stuck narrating state
     this.shadowRoot.querySelector('.mic-indicator').addEventListener('click', () => {
       if (!this._enabled) return;
+      if (this._state === 'narrating' || this._browserASRSuppressed) {
+        // Force recover from stuck suppression
+        console.log('[fink-mic] force unsuppress via tap');
+        this._browserASRSuppressed = false;
+        this._muted = false;
+        this._startBrowserASR();
+        this._setState('listening');
+        return;
+      }
       if (this._muted) {
         this._muted = false;
         this._startBrowserASR();
@@ -924,13 +933,9 @@ class FinkMic extends HTMLElement {
       try { this._browserASR.stop(); } catch {}
       this._browserASR = null;
     }
-    if (this._suppressionTimeout) clearTimeout(this._suppressionTimeout);
-    this._suppressionTimeout = setTimeout(() => {
-      if (this._browserASRSuppressed) {
-        console.warn('[fink-mic] suppression safety timeout');
-        this.unsuppressBrowserASR();
-      }
-    }, 5000);
+    // No timeout — only onIdle (audio finished + tts.stop) unsuppresses.
+    // A timeout here was causing ASR to restart mid-TTS and hear the speakers.
+    if (this._suppressionTimeout) { clearTimeout(this._suppressionTimeout); this._suppressionTimeout = null; }
   }
 
   /** Unsuppress — restart recognition fresh (clean audio buffer). */
