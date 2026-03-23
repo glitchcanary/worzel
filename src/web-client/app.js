@@ -509,7 +509,7 @@ class WorzelAudio extends HTMLElement {
         await this._encoder.init();
         console.log(`[worzel] Audio format: ${this._encoder.format}`);
       }
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate:16000, channelCount:1, echoCancellation:true, noiseSuppression:true } });
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate:16000, channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
       this.audioCtx = new AudioContext({ sampleRate: 16000 });
       const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
       await this.audioCtx.audioWorklet.addModule('/pcm-processor.js');

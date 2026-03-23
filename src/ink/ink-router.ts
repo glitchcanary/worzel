@@ -264,6 +264,7 @@ IMPORTANT:
 - Imperatives, short action phrases, and destination phrases usually mean CHOICE or NONE, not DISCUSSION.
 - Never invent a new option. Pick the closest listed choice or return NONE.
 - If the player says something like "follow the smell" and one choice is "go to the animals", that should be CHOICE, not NONE, because the intent clearly points to that destination.
+- Interpret idioms, cultural references, and indirect speech. E.g. "make like Columbo" means "ask one more question"; "let's bounce" means "leave"; "take the red pill" means "learn the truth". Match the underlying INTENT to the closest choice.
 
 Respond with ONLY the classification word/code, nothing else.`,
     }];

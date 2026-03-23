@@ -115,7 +115,7 @@ export class WorzelAudio extends HTMLElement {
     try {
       // Get microphone
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
 
       // Set up AudioWorklet
