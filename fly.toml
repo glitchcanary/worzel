@@ -9,12 +9,25 @@ primary_region = 'iad'
   NODE_ENV = 'production'
   WORZEL_HOST = '0.0.0.0'
   WORZEL_PORT = '3000'
-  WORZEL_LLM_PROVIDER = 'openai'
-  WORZEL_LLM_URL = 'https://api.openai.com/v1/chat/completions'
-  WORZEL_LLM_MODEL = 'gpt-4o-mini'
+  # LLM — Anthropic Claude for story routing
+  WORZEL_LLM_PROVIDER = 'anthropic'
+  WORZEL_LLM_URL = 'https://api.anthropic.com/v1/messages'
+  WORZEL_LLM_MODEL = 'claude-haiku-4-5-20251001'
+  WORZEL_LLM_SMART_PROVIDER = 'anthropic'
+  WORZEL_LLM_SMART_MODEL = 'claude-opus-4-6'
+  # ASR — Groq Whisper for server-side speech recognition
+  WORZEL_ASR_PROVIDER = 'groq'
+  WORZEL_ASR_URL = 'https://api.groq.com/openai/v1/audio/transcriptions'
+  WORZEL_ASR_MODEL = 'whisper-large-v3-turbo'
+  WORZEL_ASR_LANGUAGE = 'en'
+  # TTS — OpenAI as base (fallback), ElevenLabs as Fink primary
+  WORZEL_TTS_PROVIDER = 'openai'
+  WORZEL_TTS_MODEL = 'gpt-4o-mini-tts'
+  WORZEL_TTS_VOICE = 'ballad'
   FINK_TTS_PROVIDER = 'elevenlabs'
   FINK_TTS_MODEL = 'eleven_multilingual_v2'
   FINK_TTS_VOICE = 'wG54O0fjDbPBYb9MFXCb'
+  # General
   WORZEL_CORS_ORIGINS = 'http://localhost:8000,http://localhost:3000'
   FINK_DEFAULT_STORY = 'menu'
 
