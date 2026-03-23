@@ -263,6 +263,13 @@ class AudioPlayer {
       this._gain.connect(this.ctx.destination);
     }
   }
+  /** Milliseconds until all queued audio finishes playing. 0 if already silent. */
+  msUntilIdle() {
+    if (!this.ctx || this._sources.length === 0) return 0;
+    const remaining = this.nextTime - this.ctx.currentTime;
+    return Math.max(0, remaining * 1000);
+  }
+
   fadeStop(durationMs = 500) {
     if (!this.ctx || !this._gain) {
       this.stop();
@@ -923,31 +930,46 @@ class FinkMic extends HTMLElement {
     if (this._suppressionTimeout) { clearTimeout(this._suppressionTimeout); this._suppressionTimeout = null; }
   }
 
-  /** Suppress — stop recognition entirely to clear the audio buffer. */
+  /** Suppress — stop recognition and clear audio buffer. */
   suppressBrowserASR() {
     this._browserASRSuppressed = true;
     this._setState('narrating');
-    // Actually stop recognition so the browser clears its audio buffer.
-    // This prevents echo from leaking through when we restart.
     if (this._browserASR) {
       try { this._browserASR.stop(); } catch {}
       this._browserASR = null;
     }
-    // No timeout — only onIdle (audio finished + tts.stop) unsuppresses.
-    // A timeout here was causing ASR to restart mid-TTS and hear the speakers.
-    if (this._suppressionTimeout) { clearTimeout(this._suppressionTimeout); this._suppressionTimeout = null; }
+    if (this._unsuppressTimer) { clearTimeout(this._unsuppressTimer); this._unsuppressTimer = null; }
   }
 
-  /** Unsuppress — restart recognition fresh (clean audio buffer). */
-  unsuppressBrowserASR() {
+  /**
+   * Schedule unsuppress using precise AudioContext timing.
+   * Call this when tts.stop arrives — all audio is queued by then,
+   * so player.msUntilIdle() gives the exact ms until silence.
+   */
+  scheduleUnsuppress(player) {
+    if (this._unsuppressTimer) { clearTimeout(this._unsuppressTimer); this._unsuppressTimer = null; }
+    const delay = player ? player.msUntilIdle() : 0;
+    const margin = 100; // 100ms safety margin after last sample
+    console.log(`[fink-mic] scheduling unsuppress in ${Math.round(delay + margin)}ms`);
+    this._unsuppressTimer = setTimeout(() => {
+      this._unsuppressTimer = null;
+      this._unsuppress();
+    }, delay + margin);
+  }
+
+  /** Unsuppress immediately (used after player.stop / space skip). */
+  unsuppressNow() {
+    if (this._unsuppressTimer) { clearTimeout(this._unsuppressTimer); this._unsuppressTimer = null; }
+    this._unsuppress();
+  }
+
+  _unsuppress() {
     this._browserASRSuppressed = false;
-    if (this._suppressionTimeout) { clearTimeout(this._suppressionTimeout); this._suppressionTimeout = null; }
-    this._asrRetries = 0; // reset retry counter
+    this._asrRetries = 0;
     if (this._muted) {
       this._setState('muted');
     } else {
       this._setState('listening');
-      // Ensure recognition is still alive
       if (this._enabled && !this._browserASR) this._startBrowserASR();
     }
   }
@@ -1255,23 +1277,10 @@ class FinkApp extends HTMLElement {
     // Browser ASR: text comes directly, no audio streaming needed
     mic.addEventListener('fink-stt-text', e => {
       const text = e.detail.text;
-      // Length guard: human utterances are short. Anything over 100 chars is echo.
+      // Length guard: human utterances for choice selection are short
       if (text.length > 100) {
-        console.log('[fink] Discarding long ASR text (likely echo):', text.slice(0, 60));
+        console.log('[fink] Discarding long ASR text:', text.slice(0, 60));
         return;
-      }
-      // Echo detection: if ASR text overlaps heavily with last TTS output, discard
-      if (text.length > 20) {
-        const heard = text.toLowerCase();
-        const corpus = [this._lastNarrationText, this._lastChoiceText].filter(Boolean).join(' ');
-        if (corpus) {
-          const words = heard.split(/\s+/);
-          const matchCount = words.filter(w => w.length > 2 && corpus.includes(w)).length;
-          if (matchCount / words.length > 0.5) {
-            console.log('[fink] Echo detected, discarding:', text.slice(0, 60));
-            return;
-          }
-        }
       }
       console.log('[fink] Browser ASR text:', text);
       story.setStatus('Interpreting...', 'thinking');
@@ -1289,17 +1298,13 @@ class FinkApp extends HTMLElement {
       console.log('[fink] Choice tapped:', e.detail.choiceIndex);
       if (this.client?.currentState === 'connected') {
         mic.suspendInput(1500);
-        this.player?.stop();           // hard stop — no fade, no backlog
+        this.player?.stop();           // hard stop — msUntilIdle() now returns 0
         this._isSpeaking = false;
         mic.suppressBrowserASR();      // suppress until new TTS starts
         this.client.abort();
         story.setStatus('Advancing...', 'thinking');
         this.armResponseWatchdog(story, mic, 'story advance');
-        this.client.send({
-          type: 'ink',
-          action: 'choose',
-          choice_index: e.detail.choiceIndex,
-        });
+        this.client.send({ type: 'ink', action: 'choose', choice_index: e.detail.choiceIndex });
       }
     });
   }
@@ -1339,7 +1344,7 @@ class FinkApp extends HTMLElement {
           story.setStatus('Skipped.', 'info');
         }
         mic.autoRestart();
-        mic.unsuppressBrowserASR();
+        mic.unsuppressNow(); // player is stopped, safe to listen immediately
         return;
       }
       if (story.activateFocusedChoice()) {
@@ -1385,18 +1390,6 @@ class FinkApp extends HTMLElement {
       audioFormat: mic.audioFormat,
     });
     this.player = new AudioPlayer(16000);
-    this._serverTtsDone = false;
-
-    // When all audio buffers finish playing AND server is done sending, unsuppress mic
-    this.player.onIdle = () => {
-      if (!this._serverTtsDone) return; // server still sending — more audio coming
-      this._isSpeaking = false;
-      this._serverTtsDone = false;
-      mic.setPipelineState('idle');
-      story.setStatus('Ready.', 'info');
-      mic.autoRestart();
-      mic.unsuppressBrowserASR();
-    };
 
     this.client.on('stateChange', s => {
       status.textContent = s;
@@ -1440,7 +1433,6 @@ class FinkApp extends HTMLElement {
         story.setStatus('Speaking...', 'speaking');
         if (!inkNarrating) story.startStreaming();
         if (!this.player) this.player = new AudioPlayer(16000);
-        // Reset decoder broken flag for new TTS segment (different provider may work)
         if (this.player._decoder) this.player._decoder.clearBroken();
         mic.setPipelineState('speaking');
         mic.suppressBrowserASR();
@@ -1452,27 +1444,17 @@ class FinkApp extends HTMLElement {
         this.clearResponseWatchdog();
         if (!inkNarrating) story.endStreaming();
         inkNarrating = false;
-        // Mark server done sending. If audio already finished playing,
-        // unsuppress now. Otherwise onIdle will handle it.
-        this._serverTtsDone = true;
-        if (this.player && this.player._sources.length === 0) {
-          this._isSpeaking = false;
-          this._serverTtsDone = false;
-          mic.setPipelineState('idle');
-          story.setStatus('Ready.', 'info');
-          mic.autoRestart();
-          mic.unsuppressBrowserASR();
-        }
+        this._isSpeaking = false;
+        // Server is done sending. All audio is now queued in the player.
+        // Use precise AudioContext timing to unsuppress at exactly the right moment.
+        mic.scheduleUnsuppress(this.player);
+        mic.setPipelineState('idle');
+        story.setStatus('Ready.', 'info');
+        mic.autoRestart();
       }
     });
 
     this.client.on('audio', data => {
-      // Suppress on first audio frame only — don't re-suppress on every frame
-      if (!this._isSpeaking) {
-        this._isSpeaking = true;
-        mic.suppressBrowserASR();
-        mic.setPipelineState('speaking');
-      }
       this.player?.enqueueAuto(data);
     });
 
@@ -1489,14 +1471,12 @@ class FinkApp extends HTMLElement {
       mic.autoRestart();
     });
 
-    // Ink state updates — text already displayed here, suppress TTS streaming display
+    // Ink state updates
     this.client.on('inkState', msg => {
       this.clearResponseWatchdog();
       console.log('[fink] Ink state:', msg);
-      // Track last narration text for echo detection
       if (msg.narration && msg.narration.length > 0) {
         inkNarrating = true;
-        this._lastNarrationText = msg.narration.map(s => s.text).join(' ').toLowerCase();
         story.setStatus('Advanced.', 'info');
         for (const seg of msg.narration) {
           if (seg.image) story.addImage(seg.image);
@@ -1510,27 +1490,19 @@ class FinkApp extends HTMLElement {
         );
 
         if (isAllNav && msg.choices.length === 1) {
-          // Single nav choice (e.g. "Next") — auto-advance after TTS finishes
-          // Stay suppressed — the next ink_state will unsuppress when appropriate
-          this._autoAdvancing = true;
+          // Single nav choice — auto-advance after audio finishes.
+          // scheduleUnsuppress from tts.stop will fire, but we auto-advance
+          // before it unsuppresses (suppress stays active for next question).
           const autoChoiceIndex = msg.choices[0].index;
-          const checkAndAdvance = () => {
-            if (this.player && this.player._sources.length > 0) {
-              setTimeout(checkAndAdvance, 200);
-            } else {
-              console.log('[fink] Auto-advancing (single nav choice)');
-              mic.suppressBrowserASR(); // new question TTS is about to play
-              this.client?.send({ type: 'ink', action: 'choose', choice_index: autoChoiceIndex });
-            }
-          };
-          setTimeout(checkAndAdvance, 300);
+          const waitMs = this.player ? this.player.msUntilIdle() : 0;
+          setTimeout(() => {
+            console.log('[fink] Auto-advancing (single nav choice)');
+            mic.suppressBrowserASR(); // stay suppressed for next question's TTS
+            this.client?.send({ type: 'ink', action: 'choose', choice_index: autoChoiceIndex });
+          }, waitMs + 100);
         } else {
           story.setChoices(msg.choices, msg.suggestion);
-          // Track choice text for echo detection
-          this._lastChoiceText = msg.choices.map(c => c.text).join(' ').toLowerCase();
-          this._autoAdvancing = false;
-          // Don't unsuppress here — TTS may still be playing (choice readout).
-          // onIdle + serverTtsDone will unsuppress when audio truly finishes.
+          // Don't unsuppress here — scheduleUnsuppress handles it precisely.
           if (!msg.narration || msg.narration.length === 0) {
             story.setStatus('Options updated.', 'info');
           }
