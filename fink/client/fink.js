@@ -1507,14 +1507,12 @@ class FinkApp extends HTMLElement {
           }
         } else {
           story.setChoices(msg.choices, msg.suggestion);
-          // Choices visible = user's turn. Unsuppress after a brief delay
-          // to let any lingering TTS audio drain from the ASR buffer.
+          // Choices visible = user's turn. Unsuppress immediately.
+          // Echo detection handles any lingering TTS audio in the ASR buffer.
           this._isSpeaking = false;
           this._serverTtsDone = false;
-          setTimeout(() => {
-            mic.unsuppressBrowserASR();
-            mic.setPipelineState('idle');
-          }, 800);
+          mic.unsuppressBrowserASR();
+          mic.setPipelineState('idle');
           if (!msg.narration || msg.narration.length === 0) {
             story.setStatus('Options updated.', 'info');
           }
