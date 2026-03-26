@@ -330,9 +330,13 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
       const path = request.url.split('?')[0] ?? '';
       const finkBase = routePrefix ? `${routePrefix}/` : '/';
 
-      // Allow public paths: login page, API config endpoint, static assets, health
+      // Allow public paths: login page + its assets, API config endpoint, health
       if (
         path === `${routePrefix}/login` ||
+        path === `${routePrefix}/login.js` ||
+        path === `${routePrefix}/register.js` ||
+        path === `${routePrefix}/sb-auth.js` ||
+        path.startsWith(`${routePrefix}/dist/`) ||
         path.startsWith(`${apiPrefix}/supabase-config`) ||
         path.startsWith(`${apiPrefix}/health`) ||
         path.startsWith(`${apiPrefix}/ota`) ||
