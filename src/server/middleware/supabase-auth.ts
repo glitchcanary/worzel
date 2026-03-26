@@ -65,20 +65,26 @@ export function createSupabaseAuthHook(config: SupabaseConfig) {
 
 /**
  * Verify a Supabase access token for WebSocket upgrade requests.
+ * Checks (in order): query param `sb-token`, Authorization header, cookie.
  * Returns the user ID or null if invalid/unconfigured.
  */
 export async function verifySupabaseWsToken(
   config: SupabaseConfig,
   url: string,
   cookieHeader?: string,
+  authorizationHeader?: string,
 ): Promise<string | null> {
   const client = getSupabaseClient(config);
   if (!client) return null;
 
-  // Check query param first
   try {
     const parsed = new URL(url, 'http://localhost');
     let token = parsed.searchParams.get('sb-token');
+
+    // Fall back to Authorization header (for clients that set headers on WS)
+    if (!token && authorizationHeader?.startsWith('Bearer ')) {
+      token = authorizationHeader.slice(7);
+    }
 
     // Fall back to cookie
     if (!token && cookieHeader) {

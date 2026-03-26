@@ -335,14 +335,23 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
       // Only gate Fink routes
       if (!path.startsWith(finkBase) && path !== routePrefix) return;
 
-      // Check for token in cookie
+      // Check for token in: query param, Authorization header, or cookie.
+      // Query param is the primary path when cookies are disabled — the login
+      // page appends ?sb-token=... on redirect. The Fink client JS strips it
+      // from the URL on load and stores it in localStorage for future API calls.
+      const urlObj = new URL(request.url, 'http://localhost');
+      const qsToken = urlObj.searchParams.get('sb-token');
+
+      const authHeader = request.headers.authorization;
+      const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+
       const cookieHeader = request.headers.cookie ?? '';
-      const sbToken = cookieHeader.split(';')
+      const cookieToken = cookieHeader.split(';')
         .map(c => c.trim())
         .find(c => c.startsWith('sb-token='))
         ?.slice(9);
 
-      if (!sbToken) {
+      if (!qsToken && !bearerToken && !cookieToken) {
         reply.redirect(`${routePrefix}/login?redirect=${encodeURIComponent(request.url)}`);
         return;
       }
@@ -427,7 +436,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
 
     // If Supabase is enabled, also accept Supabase tokens for WebSocket auth
     const supabaseUserId = isSupabaseEnabled(config.supabase)
-      ? await verifySupabaseWsToken(config.supabase, url, req.headers.cookie)
+      ? await verifySupabaseWsToken(config.supabase, url, req.headers.cookie, req.headers.authorization)
       : null;
 
     const verifiedDeviceId = supabaseUserId ?? verifyWsToken(config.auth.secret, url);

@@ -184,12 +184,19 @@
     }
 
     function setTokenAndRedirect(session) {
-      // Store token as cookie for the server middleware to read
       const token = session.access_token;
-      document.cookie = `sb-token=${token}; path=/; max-age=${session.expires_in ?? 3600}; SameSite=Lax`;
-      // Redirect to main Fink app
+
+      // Store in localStorage (works even when cookies are blocked)
+      try { localStorage.setItem('sb-token', token); } catch {}
+
+      // Also try cookie as a belt-and-suspenders approach for the server redirect gate
+      try { document.cookie = `sb-token=${token}; path=/; max-age=${session.expires_in ?? 3600}; SameSite=Lax`; } catch {}
+
+      // Redirect with token in query param so the server gate can verify
+      // without relying on cookies. The Fink client will strip it on load.
       const redirect = new URLSearchParams(window.location.search).get('redirect') || './';
-      window.location.href = redirect;
+      const separator = redirect.includes('?') ? '&' : '?';
+      window.location.href = `${redirect}${separator}sb-token=${encodeURIComponent(token)}`;
     }
 
     function showMessage(text, type = 'error') {
