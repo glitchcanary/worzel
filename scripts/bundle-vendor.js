@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Bundle third-party client dependencies into fink/client/vendor/ using esbuild.
+// Bundle third-party client dependencies into fink/client/dist/ using esbuild.
 // Run as part of `npm run build`. Output files are gitignored (generated).
 //
 // Security note: bundling from node_modules (npm-audited, lockfile-pinned) is
@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const outDir = join(__dirname, '../fink/client/vendor');
+const outDir = join(__dirname, '../fink/client/dist');
 
 await build({
   entryPoints: ['@supabase/supabase-js'],
@@ -29,4 +29,4 @@ const bundle = readFileSync(join(outDir, 'supabase.js'));
 const hash = createHash('sha256').update(bundle).digest('base64');
 writeFileSync(join(outDir, 'supabase.js.sha256'), `sha256-${hash}\n`);
 
-console.log(`bundled supabase → fink/client/vendor/supabase.js (sha256-${hash.slice(0, 16)}...)`);
+console.log(`bundled supabase → fink/client/dist/supabase.js (sha256-${hash.slice(0, 16)}...)`);
