@@ -246,7 +246,12 @@ export class InkSession {
    * Write a story variable.
    */
   setVariable(name: string, value: string | number | boolean): void {
-    this.story.variablesState[name] = value;
+    try {
+      this.story.variablesState[name] = value;
+    } catch {
+      // Variable not declared in this story — silently skip.
+      // Stories that want profile vars must declare them with VAR at the top.
+    }
   }
 
   /**
