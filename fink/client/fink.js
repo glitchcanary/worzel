@@ -9,6 +9,7 @@
 // - User speech appears briefly as a transcript, not a persistent bubble
 
 import { OpusBrowserEncoder } from './opus-encoder.js';
+import { appendSbTokenToWsUrl } from './sb-auth.js';
 
 // ========================================================================
 // WsClient — WebSocket protocol client (copied from Worzel, + ink msgs)
@@ -52,6 +53,8 @@ class WsClient {
       if (window.location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
         wsUrl = 'wss://' + wsUrl.slice(5);
       }
+      // Append Supabase token for cookie-free auth (no-op if not logged in via Supabase)
+      wsUrl = appendSbTokenToWsUrl(wsUrl);
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = 'arraybuffer';
       this.ws.onopen = () => {

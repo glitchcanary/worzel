@@ -27,6 +27,8 @@ primary_region = 'iad'
   FINK_TTS_PROVIDER = 'elevenlabs'
   FINK_TTS_MODEL = 'eleven_multilingual_v2'
   FINK_TTS_VOICE = 'wG54O0fjDbPBYb9MFXCb'
+  # Supabase auth (experimental) — set via `fly secrets set`
+  # WORZEL_SUPABASE_URL, WORZEL_SUPABASE_ANON_KEY, WORZEL_SUPABASE_JWT_SECRET
   # General
   WORZEL_CORS_ORIGINS = 'http://localhost:8000,http://localhost:3000'
   FINK_DEFAULT_STORY = 'menu'

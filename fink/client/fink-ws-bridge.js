@@ -1,6 +1,8 @@
 // FinkWsBridge — adapts the existing Worzel WebSocket protocol into bus events.
 // Borrows connection logic from fink.js WsClient (does NOT modify it).
 
+import { appendSbTokenToWsUrl } from './sb-auth.js';
+
 export class FinkWsBridge {
   #bus;
   #ws = null;
@@ -42,6 +44,8 @@ export class FinkWsBridge {
     if (window.location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
       wsUrl = 'wss://' + wsUrl.slice(5);
     }
+    // Append Supabase token for cookie-free auth (no-op if not logged in via Supabase)
+    wsUrl = appendSbTokenToWsUrl(wsUrl);
 
     this.#ws = new WebSocket(wsUrl);
     this.#ws.binaryType = 'arraybuffer';

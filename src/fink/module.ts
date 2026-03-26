@@ -20,6 +20,7 @@ import { InkSession } from '../ink/ink-session.js';
 import { InkPipeline } from './ink-pipeline.js';
 import type { ParentStoryState } from './ink-pipeline.js';
 import { sanitizeDeviceId } from '../utils/sanitize.js';
+import { isSupabaseEnabled, createSupabaseAuthHook, verifySupabaseWsToken } from '../server/middleware/supabase-auth.js';
 import type { Session } from '../session/session.js';
 import type { Transport } from '../transport/interface.js';
 
@@ -271,7 +272,23 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
 
   app.post(`${apiPrefix}/ota`, createFinkOtaHandler(config, wsPath));
 
-  app.get(`${apiPrefix}/stories`, async () => ({
+  // Supabase login flow (experimental)
+  const supabaseEnabled = isSupabaseEnabled(config.supabase);
+  const supabaseAuthHook = createSupabaseAuthHook(config.supabase);
+
+  if (supabaseEnabled) {
+    // Public endpoint: expose Supabase project URL + anon key so the login page can init the client
+    app.get(`${apiPrefix}/supabase-config`, async () => ({
+      url: config.supabase.url,
+      anonKey: config.supabase.anonKey,
+    }));
+
+    logger.info('Supabase auth enabled for Fink');
+  }
+
+  app.get(`${apiPrefix}/stories`, {
+    ...(supabaseEnabled ? { preHandler: supabaseAuthHook } : {}),
+  }, async () => ({
     stories: storyManager.listStories(),
     default: defaultStoryId,
   }));
@@ -292,6 +309,55 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
   });
 
   const finkClientDir = join(projectRoot, 'fink', 'client');
+
+  // When Supabase auth is enabled, gate the main Fink UI behind login.
+  // The login page itself and its assets are always served publicly.
+  if (supabaseEnabled) {
+    // Serve login.html at the Fink root when user has no valid token
+    app.get(`${routePrefix}/login`, async (_request, reply) => {
+      return reply.sendFile('login.html', finkClientDir);
+    });
+
+    // Redirect unauthenticated users from the Fink index to login
+    app.addHook('onRequest', async (request, reply) => {
+      const path = request.url.split('?')[0] ?? '';
+      const finkBase = routePrefix ? `${routePrefix}/` : '/';
+
+      // Allow public paths: login page, API config endpoint, static assets, health
+      if (
+        path === `${routePrefix}/login` ||
+        path.startsWith(`${apiPrefix}/supabase-config`) ||
+        path.startsWith(`${apiPrefix}/health`) ||
+        path.startsWith(`${apiPrefix}/ota`) ||
+        path.endsWith('.ico')
+      ) return;
+
+      // Only gate Fink routes
+      if (!path.startsWith(finkBase) && path !== routePrefix) return;
+
+      // Check for token in: query param, Authorization header, or cookie.
+      // Query param is the primary path when cookies are disabled — the login
+      // page appends ?sb-token=... on redirect. The Fink client JS strips it
+      // from the URL on load and stores it in localStorage for future API calls.
+      const urlObj = new URL(request.url, 'http://localhost');
+      const qsToken = urlObj.searchParams.get('sb-token');
+
+      const authHeader = request.headers.authorization;
+      const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+
+      const cookieHeader = request.headers.cookie ?? '';
+      const cookieToken = cookieHeader.split(';')
+        .map(c => c.trim())
+        .find(c => c.startsWith('sb-token='))
+        ?.slice(9);
+
+      if (!qsToken && !bearerToken && !cookieToken) {
+        reply.redirect(`${routePrefix}/login?redirect=${encodeURIComponent(request.url)}`);
+        return;
+      }
+    });
+  }
+
   await app.register(fastifyStatic, {
     root: finkClientDir,
     prefix: routePrefix ? `${routePrefix}/` : '/',
@@ -357,7 +423,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         maxPayload: 512 * 1024,
       });
 
-  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+  wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
     const ip = req.socket.remoteAddress ?? 'unknown';
 
     const ipCheck = rateLimiter.checkIp(ip);
@@ -367,7 +433,13 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
     }
 
     const url = req.url ?? '';
-    const verifiedDeviceId = verifyWsToken(config.auth.secret, url);
+
+    // If Supabase is enabled, also accept Supabase tokens for WebSocket auth
+    const supabaseUserId = isSupabaseEnabled(config.supabase)
+      ? await verifySupabaseWsToken(config.supabase, url, req.headers.cookie, req.headers.authorization)
+      : null;
+
+    const verifiedDeviceId = supabaseUserId ?? verifyWsToken(config.auth.secret, url);
     if (!verifiedDeviceId) {
       ws.close(1008, 'unauthorized');
       return;
