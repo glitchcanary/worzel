@@ -81,6 +81,12 @@ export const LlmSmartConfigSchema = z.object({
   model: z.string().optional(),
 });
 
+export const SupabaseConfigSchema = z.object({
+  url: z.string().url().optional(),
+  anonKey: z.string().optional(),
+  jwtSecret: z.string().optional(),
+});
+
 export const TwilioConfigSchema = z.object({
   accountSid: z.string().optional(),
   authToken: z.string().optional(),
@@ -97,6 +103,7 @@ export const AppConfigSchema = z.object({
   llm: LlmConfigSchema.default({}),
   llmSmart: LlmSmartConfigSchema.default({}),
   tts: TtsConfigSchema.default({}),
+  supabase: SupabaseConfigSchema.default({}),
   twilio: TwilioConfigSchema.default({}),
   logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 });
@@ -111,5 +118,6 @@ export type AsrConfig = z.infer<typeof AsrConfigSchema>;
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 export type TtsConfig = z.infer<typeof TtsConfigSchema>;
 export type LlmSmartConfig = z.infer<typeof LlmSmartConfigSchema>;
+export type SupabaseConfig = z.infer<typeof SupabaseConfigSchema>;
 export type TwilioConfig = z.infer<typeof TwilioConfigSchema>;
 export type AppConfig = z.infer<typeof AppConfigSchema>;

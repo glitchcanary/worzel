@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fink — Sign In</title>
+  <link rel="icon" href="./favicon.ico" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #1a1a2e;
+      font-family: 'Georgia', 'Times New Roman', serif;
+      padding: 20px;
+      color: #e8e8e8;
+    }
+    .login-card {
+      width: 100%;
+      max-width: 400px;
+      background: #16213e;
+      border-radius: 12px;
+      padding: 40px 32px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .login-card h1 {
+      text-align: center;
+      font-size: 1.6rem;
+      margin-bottom: 8px;
+      color: #e94560;
+    }
+    .login-card .subtitle {
+      text-align: center;
+      font-size: 0.9rem;
+      color: #8b8fa3;
+      margin-bottom: 28px;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 0.85rem;
+      color: #8b8fa3;
+      margin-bottom: 6px;
+    }
+    .form-group input {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid #1a1a3e;
+      border-radius: 8px;
+      background: #1a2744;
+      color: #e8e8e8;
+      font-size: 1rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus {
+      border-color: #0f3460;
+    }
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-top: 8px;
+    }
+    .btn-primary {
+      background: #0f3460;
+      color: #e8e8e8;
+    }
+    .btn-primary:hover { background: #1a4a7a; }
+    .btn-secondary {
+      background: transparent;
+      color: #8b8fa3;
+      border: 1px solid #1a1a3e;
+      margin-top: 12px;
+    }
+    .btn-secondary:hover { background: #1a2744; }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .divider {
+      display: flex;
+      align-items: center;
+      margin: 20px 0;
+      color: #5a5e73;
+      font-size: 0.8rem;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #1a1a3e;
+    }
+    .divider span { padding: 0 12px; }
+    .message {
+      text-align: center;
+      font-size: 0.85rem;
+      margin-top: 16px;
+      min-height: 20px;
+    }
+    .message.error { color: #e94560; }
+    .message.success { color: #4ecdc4; }
+    .experimental-badge {
+      display: inline-block;
+      background: #e94560;
+      color: #fff;
+      font-size: 0.65rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      vertical-align: middle;
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <h1>Fink <span class="experimental-badge">Experimental</span></h1>
+    <p class="subtitle">Voice Interactive Fiction</p>
+
+    <form id="login-form">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required autocomplete="email" placeholder="you@example.com" />
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" placeholder="Password" />
+      </div>
+      <button type="submit" class="btn btn-primary" id="btn-signin">Sign In</button>
+    </form>
+
+    <div class="divider"><span>or</span></div>
+
+    <button type="button" class="btn btn-secondary" id="btn-magic">Send Magic Link</button>
+
+    <div class="message" id="message"></div>
+  </div>
+
+  <script type="module">
+    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+    // Supabase config is injected by the server at /fink/api/supabase-config
+    let supabase = null;
+
+    async function init() {
+      try {
+        const res = await fetch('./api/supabase-config');
+        if (!res.ok) {
+          showMessage('Supabase not configured. Contact your admin.', 'error');
+          disableForm();
+          return;
+        }
+        const cfg = await res.json();
+        supabase = createClient(cfg.url, cfg.anonKey);
+
+        // Check if already logged in
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          setTokenAndRedirect(session);
+        }
+
+        // Listen for auth state changes (e.g. magic link callback)
+        supabase.auth.onAuthStateChange((_event, session) => {
+          if (session) {
+            setTokenAndRedirect(session);
+          }
+        });
+      } catch (err) {
+        showMessage('Failed to initialize auth.', 'error');
+        disableForm();
+      }
+    }
+
+    function setTokenAndRedirect(session) {
+      // Store token as cookie for the server middleware to read
+      const token = session.access_token;
+      document.cookie = `sb-token=${token}; path=/; max-age=${session.expires_in ?? 3600}; SameSite=Lax`;
+      // Redirect to main Fink app
+      const redirect = new URLSearchParams(window.location.search).get('redirect') || './';
+      window.location.href = redirect;
+    }
+
+    function showMessage(text, type = 'error') {
+      const el = document.getElementById('message');
+      el.textContent = text;
+      el.className = `message ${type}`;
+    }
+
+    function disableForm() {
+      document.getElementById('btn-signin').disabled = true;
+      document.getElementById('btn-magic').disabled = true;
+    }
+
+    // Email + password sign in
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!supabase) return;
+
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+
+      if (!email) {
+        showMessage('Email is required.', 'error');
+        return;
+      }
+
+      const btn = document.getElementById('btn-signin');
+      btn.disabled = true;
+
+      if (!password) {
+        // No password — treat as magic link
+        await sendMagicLink(email);
+        btn.disabled = false;
+        return;
+      }
+
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      btn.disabled = false;
+
+      if (error) {
+        showMessage(error.message, 'error');
+      }
+    });
+
+    // Magic link
+    document.getElementById('btn-magic').addEventListener('click', async () => {
+      if (!supabase) return;
+      const email = document.getElementById('email').value.trim();
+      if (!email) {
+        showMessage('Enter your email first.', 'error');
+        return;
+      }
+      document.getElementById('btn-magic').disabled = true;
+      await sendMagicLink(email);
+      document.getElementById('btn-magic').disabled = false;
+    });
+
+    async function sendMagicLink(email) {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: window.location.href },
+      });
+      if (error) {
+        showMessage(error.message, 'error');
+      } else {
+        showMessage('Check your email for the login link!', 'success');
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
