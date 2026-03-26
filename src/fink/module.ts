@@ -429,6 +429,9 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
       });
 
   wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
+    // Create transport immediately so messages are buffered during async auth checks
+    const transport = new WebSocketTransport(ws);
+
     const ip = req.socket.remoteAddress ?? 'unknown';
 
     const ipCheck = rateLimiter.checkIp(ip);
@@ -462,8 +465,6 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
     } else {
       profile = makeGuestProfile();
     }
-
-    const transport = new WebSocketTransport(ws);
     const sessionLogger = sessionLoggerBase.child({ sessionId: session.id, deviceId: verifiedDeviceId, mode: 'fink' });
 
     let inkSession: InkSession | undefined;
