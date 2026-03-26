@@ -15,6 +15,8 @@ export class WebSocketTransport implements Transport {
   private binaryHandlers: ((data: Buffer) => void)[] = [];
   private closeHandlers: ((code: number, reason: string) => void)[] = [];
   private errorHandlers: ((error: Error) => void)[] = [];
+  private pendingText: string[] = [];
+  private pendingBinary: Buffer[] = [];
 
   constructor(private readonly ws: WebSocket) {
     this.id = randomUUID();
@@ -22,10 +24,18 @@ export class WebSocketTransport implements Transport {
     ws.on('message', (data: Buffer | string, isBinary: boolean) => {
       if (isBinary) {
         const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        for (const handler of this.binaryHandlers) handler(buf);
+        if (this.binaryHandlers.length > 0) {
+          for (const handler of this.binaryHandlers) handler(buf);
+        } else {
+          this.pendingBinary.push(buf);
+        }
       } else {
         const str = typeof data === 'string' ? data : data.toString('utf-8');
-        for (const handler of this.textHandlers) handler(str);
+        if (this.textHandlers.length > 0) {
+          for (const handler of this.textHandlers) handler(str);
+        } else {
+          this.pendingText.push(str);
+        }
       }
     });
 
@@ -70,10 +80,18 @@ export class WebSocketTransport implements Transport {
 
   onText(handler: (data: string) => void): void {
     this.textHandlers.push(handler);
+    if (this.pendingText.length > 0) {
+      const pending = this.pendingText.splice(0);
+      for (const msg of pending) handler(msg);
+    }
   }
 
   onBinary(handler: (data: Buffer) => void): void {
     this.binaryHandlers.push(handler);
+    if (this.pendingBinary.length > 0) {
+      const pending = this.pendingBinary.splice(0);
+      for (const buf of pending) handler(buf);
+    }
   }
 
   onClose(handler: (code: number, reason: string) => void): void {
