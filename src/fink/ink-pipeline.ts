@@ -1250,21 +1250,15 @@ export class InkPipeline {
     const pcm = srcSampleRate
       ? resamplePcm(pcmAudio, srcSampleRate, encoder.sampleRate)
       : pcmAudio;
-    const bytesPerFrame = encoder.frameSizeBytes;
+    const opusFrames = encoder.encodeAll(pcm);
     let packetsSent = 0;
-    for (let offset = 0; offset < pcm.length; offset += bytesPerFrame) {
+    for (const opusPacket of opusFrames) {
       if (signal.aborted) break;
       const delay = rateController.getDelay();
       if (delay > 0) {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
-      let frame = pcm.subarray(offset, offset + bytesPerFrame);
-      if (frame.length < bytesPerFrame) {
-        const padded = Buffer.alloc(bytesPerFrame);
-        frame.copy(padded);
-        frame = padded;
-      }
-      await transport.sendBinary(frame);
+      await transport.sendBinary(opusPacket);
       packetsSent++;
     }
     return packetsSent;
