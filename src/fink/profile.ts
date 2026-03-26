@@ -17,8 +17,7 @@ export interface Profile {
 const GUEST_COLORS = ['Purple', 'Red', 'Yellow', 'Green', 'Blue', 'Orange', 'Violet'] as const;
 
 export function makeGuestProfile(color?: string): Profile {
-  const selectedColor = GUEST_COLORS[Math.floor(Math.random() * GUEST_COLORS.length)]!;
-  const guest_color: string = color || selectedColor;
+  const guest_color = color ?? GUEST_COLORS[Math.floor(Math.random() * GUEST_COLORS.length)]!;
   return {
     id: '',
     name: `${guest_color} Guest`,
