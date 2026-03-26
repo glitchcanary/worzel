@@ -6,7 +6,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
  */
 const CSP_HEADER = [
   "default-src 'self'",
-  "script-src 'self' https://esm.sh",  // esm.sh needed for Supabase client in login.html
+  "script-src 'self'",
   "style-src 'self' 'unsafe-inline'", // unsafe-inline needed for Web Components Shadow DOM
   "img-src 'self' data: https:",  // Stories may reference external images
   "connect-src 'self' wss: ws: https:", // WebSocket + fetch for .fink.js files
