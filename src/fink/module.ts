@@ -21,6 +21,7 @@ import { InkPipeline } from './ink-pipeline.js';
 import type { ParentStoryState } from './ink-pipeline.js';
 import { sanitizeDeviceId } from '../utils/sanitize.js';
 import { isSupabaseEnabled, createSupabaseAuthHook, verifySupabaseWsToken } from '../server/middleware/supabase-auth.js';
+import { makeGuestProfile, fetchProfile, profileToInkVars, type Profile } from './profile.js';
 import type { Session } from '../session/session.js';
 import type { Transport } from '../transport/interface.js';
 
@@ -310,12 +311,18 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
 
   const finkClientDir = join(projectRoot, 'fink', 'client');
 
+  await app.register(fastifyStatic, {
+    root: finkClientDir,
+    prefix: routePrefix ? `${routePrefix}/` : '/',
+    decorateReply: true,
+  });
+
   // When Supabase auth is enabled, gate the main Fink UI behind login.
   // The login page itself and its assets are always served publicly.
   if (supabaseEnabled) {
     // Serve login.html at the Fink root when user has no valid token
     app.get(`${routePrefix}/login`, async (_request, reply) => {
-      return reply.sendFile('login.html', finkClientDir);
+      return reply.sendFile('login.html');
     });
 
     // Redirect unauthenticated users from the Fink index to login
@@ -357,12 +364,6 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
       }
     });
   }
-
-  await app.register(fastifyStatic, {
-    root: finkClientDir,
-    prefix: routePrefix ? `${routePrefix}/` : '/',
-    decorateReply: false,
-  });
 
   logger.info({
     routePrefix,
@@ -449,6 +450,13 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
     if (!session) {
       ws.close(1013, 'max_sessions');
       return;
+    }
+
+    let profile: Profile;
+    if (supabaseUserId) {
+      profile = (await fetchProfile(config.supabase, supabaseUserId)) ?? makeGuestProfile();
+    } else {
+      profile = makeGuestProfile();
     }
 
     const transport = new WebSocketTransport(ws);
@@ -562,6 +570,11 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         const metadata = storyManager.getMetadata(defaultStoryId);
         inkSession = new InkSession(defaultStoryId, storyJson, metadata);
         inkSessions.set(session.id, inkSession);
+
+        const inkVars = profileToInkVars(profile);
+        for (const [key, val] of Object.entries(inkVars)) {
+          inkSession.setVariable(key, val as string | number | boolean);
+        }
 
         const initial = inkSession.continue();
         sessionLogger.info({

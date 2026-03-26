@@ -1,6 +1,14 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { SupabaseConfig } from '../../config/schema.js';
+import { fetchProfile, type Profile } from '../../fink/profile.js';
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    supabaseUser?: unknown;
+    finkProfile?: Profile;
+  }
+}
 
 let supabaseClient: SupabaseClient | null = null;
 
@@ -59,7 +67,9 @@ export function createSupabaseAuthHook(config: SupabaseConfig) {
     }
 
     // Attach user to request for downstream handlers
-    (request as FastifyRequest & { supabaseUser?: unknown }).supabaseUser = data.user;
+    request.supabaseUser = data.user;
+    const profile = await fetchProfile(config, data.user.id);
+    request.finkProfile = profile ?? undefined;
   };
 }
 
