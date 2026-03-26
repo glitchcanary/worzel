@@ -33,7 +33,7 @@ Each stage is pluggable. Current implementations:
 ```bash
 npm install
 npm run build
-npm run start:unified
+npm start
 ```
 
 Create a `../.env` file (one directory up, outside git) with your API keys. Copy from `../.env.example`. At minimum you need `WORZEL_AUTH_SECRET` (32+ characters). The default LLM is Ollama with `qwen2.5:7b` (local, no API key).
@@ -42,29 +42,21 @@ The `.env` file lives **outside** the `worzel/` git directory to avoid committin
 
 Open `http://localhost:3000` for the main web client and `http://localhost:3000/fink/` for Fink. Use `WORZEL_HOST=0.0.0.0` in `.env` to listen on all interfaces.
 
-## Unified Server Management
-
-The unified server now has npm-managed lifecycle commands:
+## Server Management
 
 ```bash
-npm run start:unified      # Detached/background server
-npm run status:unified     # Show pid, port, log path
-npm run logs:unified       # Follow the unified server log
-npm run restart:unified    # Restart the detached server
-npm run stop:unified       # Stop the detached server
+npm start              # Start in background (daemon), returns prompt immediately
+npm run start:bg       # Same as npm start
+npm run start:fg       # Run in foreground (occupies terminal, useful for debugging)
+npm run stop           # Stop the background server
+npm run restart        # Restart the background server
+npm run status         # Show server health, pid, log path
+npm run logs           # Follow the server log
 ```
 
-Detached vs terminal-attached:
-
-- `npm run start:unified` starts the server in the background and returns your shell prompt immediately. It does **not** require the terminal window to stay open after startup.
-- `npm run start:unified:fg` runs the unified server in the foreground. It **does** keep the terminal occupied, and stopping that terminal session stops the server.
-
-Management behavior:
-
-- `npm run start:unified` waits for the health endpoint to come up before reporting success.
-- `npm run restart:unified` stops any existing detached instance, then starts a fresh one. If none is running, it still starts one.
-- `npm run status:unified` reports whether the server is healthy, not just whether a PID exists.
-- If startup fails, the manager prints the tail of the log automatically.
+- Background mode (`npm start` / `start:bg`) waits for the health endpoint before reporting success. If startup fails, it prints the log tail automatically.
+- Foreground mode (`start:fg`) keeps the terminal occupied — stopping the terminal stops the server.
+- `restart` stops any running instance then starts a fresh one; safe to run even if nothing is running.
 
 Runtime files:
 
@@ -141,8 +133,10 @@ Both send Opus-encoded audio at 16kHz over WebSocket.
 
 ```bash
 npm run dev          # Watch mode with auto-reload (tsx)
-npm test             # Run tests (vitest, 139+ passing)
+npm test             # Run tests (vitest)
 npm run lint         # Type check (tsc --noEmit)
+npm run debug:dev    # Run src/index.ts directly via tsx (no watch)
+npm run debug:fink   # Run standalone Fink server only
 ```
 
 ## Architecture

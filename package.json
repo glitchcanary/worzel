@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc && cp src/web-client/index.html src/web-client/app.js src/web-client/pcm-processor.js src/web-client/opus-encoder.js src/web-client/favicon.ico dist/web-client/ && cp -r src/web-client/i18n dist/web-client/ && cp -r src/web-client/styles dist/web-client/",
     "start": "bash scripts/unified-server.sh start",
+    "start:bg": "bash scripts/unified-server.sh start",
     "start:fg": "bash scripts/unified-server.sh run-fg",
     "stop": "bash scripts/unified-server.sh stop",
     "restart": "bash scripts/unified-server.sh restart",
