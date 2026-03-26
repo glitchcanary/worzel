@@ -8,19 +8,19 @@
   },
   "scripts": {
     "build": "tsc && cp src/web-client/index.html src/web-client/app.js src/web-client/pcm-processor.js src/web-client/opus-encoder.js src/web-client/favicon.ico dist/web-client/ && cp -r src/web-client/i18n dist/web-client/ && cp -r src/web-client/styles dist/web-client/",
-    "start": "node dist/index.js",
-    "start:unified": "bash scripts/unified-server.sh start",
-    "start:unified:fg": "bash scripts/unified-server.sh run-fg",
-    "stop:unified": "bash scripts/unified-server.sh stop",
-    "restart:unified": "bash scripts/unified-server.sh restart",
-    "status:unified": "bash scripts/unified-server.sh status",
-    "logs:unified": "bash scripts/unified-server.sh logs",
-    "start:dev": "tsx src/index.ts",
+    "start": "bash scripts/unified-server.sh start",
+    "start:fg": "bash scripts/unified-server.sh run-fg",
+    "stop": "bash scripts/unified-server.sh stop",
+    "restart": "bash scripts/unified-server.sh restart",
+    "status": "bash scripts/unified-server.sh status",
+    "logs": "bash scripts/unified-server.sh logs",
     "dev": "tsx --watch src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "fink": "node --env-file=../.env dist/fink/server.js"
+    "debug:index": "node dist/index.js",
+    "debug:dev": "tsx src/index.ts",
+    "debug:fink": "node --env-file=../.env dist/fink/server.js"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",
