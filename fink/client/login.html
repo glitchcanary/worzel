@@ -133,8 +133,8 @@
     <p class="subtitle">Voice Interactive Fiction</p>
 
     <div class="tabs">
-      <button id="tab-signin" class="tab active" onclick="showTab('signin')">Sign In</button>
-      <button id="tab-register" class="tab" onclick="showTab('register')">Register</button>
+      <button id="tab-signin" class="tab active">Sign In</button>
+      <button id="tab-register" class="tab">Register</button>
     </div>
 
     <div id="panel-signin">
@@ -190,6 +190,9 @@
       document.getElementById('tab-signin').classList.toggle('active', name === 'signin');
       document.getElementById('tab-register').classList.toggle('active', name === 'register');
     }
+
+    document.getElementById('tab-signin').addEventListener('click', () => showTab('signin'));
+    document.getElementById('tab-register').addEventListener('click', () => showTab('register'));
 
     async function init() {
       try {
