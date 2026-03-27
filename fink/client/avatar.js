@@ -109,7 +109,7 @@ export class AvatarScene {
     });
 
     VRMUtils.removeUnnecessaryVertices(gltf.scene);
-    VRMUtils.removeUnnecessaryJoints(gltf.scene);
+    VRMUtils.combineSkeletons(gltf.scene);
 
     this.#vrm = gltf.userData.vrm;
     if (!this.#vrm) throw new Error('No VRM data found in file');
@@ -129,21 +129,19 @@ export class AvatarScene {
 
   /**
    * Connect wawa-lipsync to the AudioPlayer's gain node.
-   * Creates a MediaStreamDestination tap and wires it to LipSync.
+   * wawa-lipsync.connectAudio() requires a non-empty audio.src string, which
+   * MediaStream objects can't provide. Instead we wire the analyser directly:
+   * gainNode → MediaStreamDestination → createMediaStreamSource → lipsync.analyser
    */
   connectAudioTap(gainNode, audioContext) {
     try {
+      this.#lipsync = new Lipsync();
+      // Export the player's audio as a MediaStream, then re-import it into
+      // wawa-lipsync's own AudioContext so cross-context routing isn't needed.
       const dest = audioContext.createMediaStreamDestination();
       gainNode.connect(dest);
-      const audio = new Audio();
-      audio.srcObject = dest.stream;
-      // wawa-lipsync checks audio.src — set srcObject via a blob URL workaround
-      // by using createObjectURL on the stream
-      audio.src = URL.createObjectURL(dest.stream);
-      audio.muted = true; // prevent double playback
-      this.#lipsyncAudio = audio;
-      this.#lipsync = new Lipsync();
-      this.#lipsync.connectAudio(audio);
+      const lipsyncSrc = this.#lipsync.audioContext.createMediaStreamSource(dest.stream);
+      lipsyncSrc.connect(this.#lipsync.analyser);
       console.log('[avatar] Lipsync tap connected');
     } catch (err) {
       console.warn('[avatar] Lipsync tap failed:', err);
