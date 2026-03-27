@@ -11,7 +11,7 @@
 import * as THREE from './vendor/three.module.js';
 import { GLTFLoader } from './vendor/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from './vendor/three-vrm.module.js';
-import { LipSync } from './vendor/wawa-lipsync.js';
+import { Lipsync } from './vendor/wawa-lipsync.js';
 
 // wawa-lipsync viseme → VRM 1.0 expression name
 // wawa-lipsync outputs: viseme_PP, viseme_FF, viseme_TH, viseme_DD, viseme_kk,
@@ -142,7 +142,7 @@ export class AvatarScene {
       audio.src = URL.createObjectURL(dest.stream);
       audio.muted = true; // prevent double playback
       this.#lipsyncAudio = audio;
-      this.#lipsync = new LipSync();
+      this.#lipsync = new Lipsync();
       this.#lipsync.connectAudio(audio);
       console.log('[avatar] Lipsync tap connected');
     } catch (err) {
