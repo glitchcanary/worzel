@@ -22,3 +22,4 @@ fink/client/dist/
 # Large binary assets — download separately
 third_party/scenes/splats/**/*.ply
 third_party/scenes/splats/**/*.splat
+fink/client/splats/
