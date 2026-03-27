@@ -9,7 +9,7 @@ const CSP_HEADER = [
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'", // unsafe-inline needed for Web Components Shadow DOM
   "img-src 'self' data: blob: https:",  // Stories may reference external images; blob: for GLTFLoader textures
-  "connect-src 'self' wss: ws: https:", // WebSocket + fetch for .fink.js files
+  "connect-src 'self' wss: ws: https: blob:", // WebSocket + fetch for .fink.js files; blob: for GLTFLoader textures
   "media-src 'self' blob: https:",  // Stories may reference external audio/video
   "font-src 'self'",
   "frame-src 'self'",  // Allow sandboxed iframes for .fink.js execution
