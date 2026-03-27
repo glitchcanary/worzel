@@ -18,3 +18,7 @@ esp32-client/simulator/build/
 third_party/**/*.onnx
 third_party/libopus/src/
 fink/client/dist/
+
+# Large binary assets — download separately
+third_party/scenes/splats/**/*.ply
+third_party/scenes/splats/**/*.splat
