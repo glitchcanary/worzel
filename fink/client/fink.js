@@ -264,6 +264,7 @@ class AudioPlayer {
       this._gain = this.ctx.createGain();
       this._gain.gain.value = 1;
       this._gain.connect(this.ctx.destination);
+      if (this._onGainReady) this._onGainReady(this._gain, this.ctx);
     }
   }
   /** Milliseconds until all queued audio finishes playing. 0 if already silent. */
@@ -1393,6 +1394,11 @@ class FinkApp extends HTMLElement {
       audioFormat: mic.audioFormat,
     });
     this.player = new AudioPlayer(16000);
+    this.player._onGainReady = (gainNode, audioCtx) => {
+      if (window.finkAvatarScene) {
+        window.finkAvatarScene.connectAudioTap(gainNode, audioCtx);
+      }
+    };
 
     this.client.on('stateChange', s => {
       status.textContent = s;
