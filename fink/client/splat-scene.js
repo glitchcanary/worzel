@@ -21,7 +21,7 @@ export class SplatScene {
   async load(url) {
     this.#viewer = new Viewer({
       canvas: this.#canvas,
-      cameraUp: [0, 1, 0],
+      cameraUp: [0, -1, 0],
       initialCameraPosition: [0, 1, 6],
       initialCameraLookAt: [0, 1, 0],
       selfDrivenMode: false,

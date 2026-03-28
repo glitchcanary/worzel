@@ -1234,7 +1234,12 @@ class FinkApp extends HTMLElement {
       if (this.client?.currentState === 'connected') {
         this.client.disconnect();
       } else {
-        await this.doConnect(input.value);
+        try {
+          await this.doConnect(input.value);
+        } catch (err) {
+          console.error('[fink] Connect failed:', err);
+          this.shadowRoot.querySelector('.status').textContent = `Error: ${err.message}`;
+        }
       }
     });
 
