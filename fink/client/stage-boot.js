@@ -45,6 +45,7 @@ const mgr = new StageWindowManager(document.body, {
   onAnyVisible()   { stage.resume(); },
 });
 
+
 // ── Environment cloud window (starts maximised = full screen background) ──────
 mgr.add({
   id:           'env',
@@ -97,6 +98,14 @@ stage.addCharacter('avatar', './avatars/sample9.gvrm', {
   window.finkAvatarScene._actor = actor;
   console.log('[stage-boot] Avatar character loaded');
 }).catch(e => console.warn('[stage-boot] Avatar load failed:', e));
+
+// ── Keep avatar rect in sync with window position/size ────────────────────────
+// Poll via rAF — cheap DOM read, handles drag/resize/min/max automatically.
+(function rectLoop() {
+  const rect = mgr.get('avatar')?.getContentRect() ?? null;
+  stage.setAvatarRect(rect);
+  requestAnimationFrame(rectLoop);
+})();
 
 // ── Start render loop ─────────────────────────────────────────────────────────
 stage.start();

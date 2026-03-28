@@ -147,6 +147,16 @@ export class StageWindow {
     return this.el.querySelector('.sw-content');
   }
 
+  /**
+   * Returns the current pixel rect of the content area (below title bar).
+   * { x, y, width, height } in page coordinates.
+   */
+  getContentRect() {
+    const content = this.el.querySelector('.sw-content');
+    if (this.state === 'minimised' || !content) return null;
+    return content.getBoundingClientRect();
+  }
+
   _applyState(newState) {
     const prev = this.state;
     this.state = newState;
@@ -231,7 +241,7 @@ export class StageWindowManager {
     this._container = container;
     this._cbs       = stageCallbacks;
     this._windows   = new Map();  // id → StageWindow
-    this._zBase     = 10;
+    this._zBase     = 1;   // stage windows live below fink-app (z-index 5)
   }
 
   /**

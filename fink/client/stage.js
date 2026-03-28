@@ -140,12 +140,13 @@ export class Stage {
   #threeScene;     // THREE.Scene — used by CharacterActor / Three.js render pass
   #avatarCamera;   // PerspectiveCamera — Y-up, for Three.js render pass
   #cloudCamera;    // PerspectiveCamera — Y-down (gaussian convention), for Viewer
-  #viewer  = null;
-  #clouds  = new Map();     // id → CloudActor
-  #chars   = new Map();     // id → CharacterActor
-  #rafId   = null;
-  #clock   = new THREE.Clock();
-  #resizeObs = null;
+  #viewer     = null;
+  #clouds     = new Map();   // id → CloudActor
+  #chars      = new Map();   // id → CharacterActor
+  #rafId      = null;
+  #clock      = new THREE.Clock();
+  #resizeObs  = null;
+  #avatarRect = null;  // { x, y, width, height } in CSS pixels — set by boot script
 
   /**
    * @param {HTMLCanvasElement} canvas
@@ -319,6 +320,13 @@ export class Stage {
   get isRunning() { return this.#rafId !== null; }
 
   /**
+   * Tell the Stage where to scissor the character (avatar) render.
+   * rect: { x, y, width, height } in CSS pixels from getBoundingClientRect().
+   * Pass null to render avatar full-screen.
+   */
+  setAvatarRect(rect) { this.#avatarRect = rect; }
+
+  /**
    * Main update — driven by RAF or callable manually.
    * @param {number} dt seconds since last frame
    */
@@ -364,8 +372,34 @@ export class Stage {
     // 5. Render clouds — clears canvas, uses cloudCamera.
     this.#viewer.render();
 
-    // 6. Render Three.js scene on top — autoClear=false preserves cloud layer.
-    this.#renderer.render(this.#threeScene, this.#avatarCamera);
+    // 6. Render character into avatar rect (scissored), or full-screen if no rect.
+    if (this.#avatarRect && this.#chars.size > 0) {
+      const r   = this.#avatarRect;
+      const dpr = this.#renderer.getPixelRatio();
+      const ch  = this.#renderer.domElement.height;
+      // Convert CSS rect to WebGL pixels (Y flipped).
+      const px = Math.round(r.x      * dpr);
+      const py = Math.round((ch - (r.y + r.height) * dpr));
+      const pw = Math.round(r.width  * dpr);
+      const ph = Math.round(r.height * dpr);
+
+      this.#renderer.setScissorTest(true);
+      this.#renderer.setScissor(px, py, pw, ph);
+      this.#renderer.setViewport(px, py, pw, ph);
+
+      // Update avatar camera aspect for this rect.
+      this.#avatarCamera.aspect = r.width / r.height;
+      this.#avatarCamera.updateProjectionMatrix();
+
+      this.#renderer.render(this.#threeScene, this.#avatarCamera);
+
+      this.#renderer.setScissorTest(false);
+      // Restore full viewport.
+      const fw = this.#renderer.domElement.width;
+      this.#renderer.setViewport(0, 0, fw, ch);
+    } else if (this.#chars.size > 0) {
+      this.#renderer.render(this.#threeScene, this.#avatarCamera);
+    }
   }
 
   dispose() {
