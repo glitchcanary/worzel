@@ -23,3 +23,4 @@ fink/client/dist/
 third_party/scenes/splats/**/*.ply
 third_party/scenes/splats/**/*.splat
 fink/client/splats/
+fink/client/avatars/*.gvrm
