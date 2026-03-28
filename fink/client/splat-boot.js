@@ -11,7 +11,7 @@ if (canvas) {
 
   const scene = new SplatScene(canvas);
   window.finkSplatScene = scene;
-  scene.load('./splats/soar.ply')
+  scene.load('./splats/soar.ksplat')
     .then(() => scene.start())
     .catch(e => console.warn('[splat-scene] load failed:', e));
 }
