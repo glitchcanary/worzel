@@ -25,6 +25,7 @@ export class SplatScene {
       initialCameraPosition: [0, 1, 6],
       initialCameraLookAt: [0, 1, 0],
       selfDrivenMode: false,
+      integerBasedSort: false,  // avoid SharedArrayBuffer/WASM sort worker
     });
     await this.#viewer.addSplatScene(url, {
       splatAlphaRemovalThreshold: 5,
