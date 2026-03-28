@@ -20,7 +20,7 @@
       position: fixed;
       inset: 0;
       z-index: 0;
-      pointer-events: none;
+      pointer-events: auto;  /* allow drag/zoom on the background scene */
     }
     #splat-canvas {
       width: 100%;
@@ -45,6 +45,8 @@
       display: block;
     }
     fink-app {
+      position: relative;
+      z-index: 5;
       width: 100%;
       max-width: 520px;
       height: 700px;
