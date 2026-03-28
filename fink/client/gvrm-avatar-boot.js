@@ -99,7 +99,14 @@ GVRM.load(GVRM_URL, scene, camera, renderer)
     gvrm = _gvrm;
     window.finkGvrm = gvrm;
     console.log('[gvrm-avatar] Loaded', GVRM_URL);
-    // Position avatar — sample9 loads at origin, nudge into frame
+
+    // gaussian-splats-3d DropInViewer appends a full-screen position:absolute div
+    // to document.body as its rootElement. This intercepts all pointer events.
+    // Fix it: make every such overlay non-interactive.
+    document.querySelectorAll('body > div[style*="position: absolute"]').forEach(el => {
+      el.style.pointerEvents = 'none';
+    });
+
     if (gvrm.character?.currentVrm?.scene) {
       gvrm.character.currentVrm.scene.position.set(0, 0, 0);
     }
