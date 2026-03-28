@@ -91,8 +91,21 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-// Expose tap callback for fink.js audio player
-window.finkAvatarScene = { connectAudioTap };
+const ANIM = {
+  idle:      './animations/Breathing.fbx',
+  listening: './animations/Listening.fbx',
+  happy:     './animations/Happy Idle.fbx',
+  pointing:  './animations/Pointing.fbx',
+};
+
+// Expose tap callback and anim switcher for fink.js
+window.finkAvatarScene = {
+  connectAudioTap,
+  playAnim(name) {
+    const url = ANIM[name] ?? name;
+    gvrm?.changeFBX(url).catch(e => console.warn('[gvrm-avatar] FBX switch failed:', e));
+  },
+};
 
 GVRM.load(GVRM_URL, scene, camera, renderer)
   .then((_gvrm) => {
@@ -102,7 +115,6 @@ GVRM.load(GVRM_URL, scene, camera, renderer)
 
     // gaussian-splats-3d DropInViewer appends a full-screen position:absolute div
     // to document.body as its rootElement. This intercepts all pointer events.
-    // Fix it: make every such overlay non-interactive.
     document.querySelectorAll('body > div[style*="position: absolute"]').forEach(el => {
       el.style.pointerEvents = 'none';
     });
@@ -110,6 +122,8 @@ GVRM.load(GVRM_URL, scene, camera, renderer)
     if (gvrm.character?.currentVrm?.scene) {
       gvrm.character.currentVrm.scene.position.set(0, 0, 0);
     }
+
+    gvrm.changeFBX(ANIM.idle).catch(e => console.warn('[gvrm-avatar] FBX load failed:', e));
     animate();
   })
   .catch(err => console.error('[gvrm-avatar] Load failed:', err));

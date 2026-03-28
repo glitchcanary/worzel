@@ -24,3 +24,4 @@ third_party/scenes/splats/**/*.ply
 third_party/scenes/splats/**/*.splat
 fink/client/splats/
 fink/client/avatars/*.gvrm
+fink/client/animations/*.fbx
