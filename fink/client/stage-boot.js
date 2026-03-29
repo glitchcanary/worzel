@@ -13,6 +13,30 @@
 
 import { Stage }              from './stage.js';
 import { StageWindowManager } from './stage-windows.js';
+import { StageDebug }         from './stage-debug.js';
+
+// ── Feature flag: GAUSSIANS=OFF disables all 3D rendering ────────────────────
+const gaussiansMeta = document.querySelector('meta[name="fink:gaussians"]');
+if (gaussiansMeta?.getAttribute('content') === 'off') {
+  console.log('[stage-boot] Gaussians disabled (GAUSSIANS=OFF)');
+  // Still create the Fink window so the chat UI works.
+  const { StageWindowManager: SWM } = await import('./stage-windows.js');
+  const mgr2 = new SWM(document.body, {
+    setActorVisible() {},
+    onAllMinimised() {},
+    onAnyVisible() {},
+  });
+  const finkEl2 = document.createElement('fink-app');
+  const finkWin2 = mgr2.add({
+    id: 'fink', title: 'Fink',
+    x: Math.round(window.innerWidth / 2) - 260,
+    y: Math.round(window.innerHeight / 2) - 350,
+    width: 520, height: 700, initialState: 'normal',
+  });
+  finkWin2.contentEl.style.pointerEvents = 'auto';
+  finkWin2.contentEl.appendChild(finkEl2);
+  throw new Error('[stage-boot] Gaussians off — halting stage init');
+}
 
 // ── Canvas ────────────────────────────────────────────────────────────────────
 const canvas = document.getElementById('stage-canvas');
@@ -25,12 +49,10 @@ window.addEventListener('resize', () => {
   canvas.height = window.innerHeight;
 });
 
-// ── Stage (one WebGL context) ─────────────────────────────────────────────────
+// ── Stage (one WebGL context, Spark renderer) ─────────────────────────────────
 const stage = new Stage(canvas, {
-  cloudCameraPosition:  [0, 1, 6],
-  cloudCameraLookAt:    [0, 1, 0],
-  avatarCameraPosition: [0, 1.35, 2.5],
-  avatarCameraLookAt:   [0, 1.35, 0],
+  cameraPosition: [0, 0.4, 1.5],
+  cameraLookAt:   [0, 0.4, 0],
 });
 
 // ── Window manager ────────────────────────────────────────────────────────────
@@ -57,16 +79,30 @@ mgr.add({
   initialState: 'maximised',
 });
 
-// ── Avatar window (starts as small corner panel) ──────────────────────────────
+// ── Avatar window ─────────────────────────────────────────────────────────────
 mgr.add({
   id:           'avatar',
   title:        'Avatar',
-  x:            window.innerWidth  - 216,
-  y:            window.innerHeight - 292,
-  width:        200,
-  height:       260,
+  x:            Math.round(window.innerWidth  / 2) - 150,
+  y:            Math.round(window.innerHeight / 2) - 220,
+  width:        300,
+  height:       440,
   initialState: 'normal',
 });
+
+// ── Fink chat window ──────────────────────────────────────────────────────────
+const finkEl = document.createElement('fink-app');
+const finkWin = mgr.add({
+  id:           'fink',
+  title:        'Fink',
+  x:            Math.round(window.innerWidth  / 2) - 260,
+  y:            Math.round(window.innerHeight / 2) - 350,
+  width:        520,
+  height:       700,
+  initialState: 'normal',
+});
+finkWin.contentEl.style.pointerEvents = 'auto';
+finkWin.contentEl.appendChild(finkEl);
 
 // ── Expose finkAvatarScene shim immediately (fink.js may call it any time) ────
 // The real CharacterActor is set once GVRM finishes loading below.
@@ -82,30 +118,19 @@ window.finkAvatarScene = {
 
 // ── Load environment cloud ────────────────────────────────────────────────────
 stage.addCloud('env', './splats/soar.ksplat', {
-  cloudCameraPosition: [0, 1, 6],
-  cloudCameraLookAt:   [0, 1, 0],
-  splatAlphaRemovalThreshold: 5,
+  cameraPosition: [0, 1, 6],
+  cameraLookAt:   [0, 1, 0],
 }).then(actor => {
   console.log('[stage-boot] Environment cloud loaded');
 }).catch(e => console.warn('[stage-boot] Environment load failed:', e));
 
 // ── Load avatar character ─────────────────────────────────────────────────────
-stage.addCharacter('avatar', './avatars/sample9.gvrm', {
-  initialAnim:          'idle',
-  avatarCameraPosition: [0, 1.35, 2.5],
-  avatarCameraLookAt:   [0, 1.35, 0],
+stage.addCharacter('avatar', './avatars/sample8.gvrm', {
+  initialAnim: 'idle',
 }).then(actor => {
   window.finkAvatarScene._actor = actor;
   console.log('[stage-boot] Avatar character loaded');
 }).catch(e => console.warn('[stage-boot] Avatar load failed:', e));
-
-// ── Keep avatar rect in sync with window position/size ────────────────────────
-// Poll via rAF — cheap DOM read, handles drag/resize/min/max automatically.
-(function rectLoop() {
-  const rect = mgr.get('avatar')?.getContentRect() ?? null;
-  stage.setAvatarRect(rect);
-  requestAnimationFrame(rectLoop);
-})();
 
 // ── Start render loop ─────────────────────────────────────────────────────────
 stage.start();
@@ -113,3 +138,4 @@ stage.start();
 // ── Debug handles ─────────────────────────────────────────────────────────────
 window.finkStage = stage;
 window.finkWinMgr = mgr;
+window.finkDebug = new StageDebug();  // Ctrl+Shift+D to toggle

@@ -11,6 +11,7 @@
     "start": "bash scripts/unified-server.sh start",
     "start:bg": "bash scripts/unified-server.sh start",
     "start:fg": "bash scripts/unified-server.sh run-fg",
+    "basicstart:fg": "GAUSSIANS=OFF bash scripts/unified-server.sh run-fg",
     "stop": "bash scripts/unified-server.sh stop",
     "restart": "bash scripts/unified-server.sh restart",
     "status": "bash scripts/unified-server.sh status",

@@ -310,11 +310,23 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
   });
 
   const finkClientDir = join(projectRoot, 'fink', 'client');
+  const gaussiansEnabled = (process.env['GAUSSIANS'] ?? 'on').toLowerCase() !== 'off';
 
   await app.register(fastifyStatic, {
     root: finkClientDir,
     prefix: routePrefix ? `${routePrefix}/` : '/',
     decorateReply: true,
+  });
+
+  // Serve index.html with feature flags injected as <meta> tags.
+  app.get(routePrefix ? `${routePrefix}/` : '/', async (_request, reply) => {
+    const { readFile } = await import('node:fs/promises');
+    const html = await readFile(join(finkClientDir, 'index.html'), 'utf8');
+    const injected = html.replace(
+      '<meta charset="UTF-8" />',
+      `<meta charset="UTF-8" />\n  <meta name="fink:gaussians" content="${gaussiansEnabled ? 'on' : 'off'}" />`,
+    );
+    reply.type('text/html').send(injected);
   });
 
   // When Supabase auth is enabled, gate the main Fink UI behind login.

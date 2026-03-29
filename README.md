@@ -118,9 +118,33 @@ Resolution order is:
 
 This lets Ink stay provider-neutral while still choosing different concrete voices on OpenAI, ElevenLabs, or Edge.
 
+## Security Policy Decisions
+
+These CSP or security changes have been explicitly approved and should be reviewed periodically:
+
+| Directive | Value added | Reason | Approved |
+|-----------|-------------|--------|----------|
+| `script-src` | `blob:` | Spark/GaussianSplats3D sort worker created as blob URL | 2026-03-28 |
+| `script-src` | `'wasm-unsafe-eval'` | WASM sort module (was GaussianSplats3D, now Spark) | 2026-03-28 |
+| `connect-src` | `data:` | Spark embeds WASM sorter as `data:application/wasm;base64,...` and fetches it internally | 2026-03-28 |
+| `style-src` | `'unsafe-inline'` | Web Components Shadow DOM inline styles | ongoing |
+| `img-src` | `data: blob: https:` | GLTFLoader textures (blob:), story images (https:), inline data URIs | ongoing |
+
+**Review checklist:** Are any of these still necessary? Could any be narrowed (e.g. replace `data:` in connect-src by extracting the WASM to a static file)?
+
 ## TODO
 
 - Add hybrid auth: Supabase for normal online identity, plus a local salted-hash fallback for offline/dev/admin login.
+
+## Fink Visual Layer
+
+Fink renders an interactive 3D scene using a combination of open technologies:
+
+- **3D Gaussian Splatting** — photorealistic environments and characters captured as gaussian splat point clouds, rendered via [Spark](https://sparkjs.dev/) (GPU-accelerated, WebGL2)
+- **VRM characters** — humanoid characters use the open [VRM standard](https://vrm.dev/) (built on glTF 2.0), with skeletal rigging, standardised bone mapping, and a blend shape expression system for facial animation
+- **Gaussian-VRM** — character models combine gaussian splats with VRM skeletons via the [gaussian-vrm](https://github.com/your-link-here) format from Tomohiro Hayakawa's lab, binding splat deformations to bone transforms so animated characters retain photorealistic appearance
+- **FBX animations** — body animations (idle breathing, listening, gestures) are standard FBX motion clips applied to the VRM skeleton
+- **Lipsync** — real-time mouth animation driven by [wawa-lipsync](https://github.com/nicktank/wawa-lipsync), which analyses the TTS audio stream and maps phoneme visemes to VRM expressions (`aa`, `ee`, `ih`, `oh`, `ou`)
 
 ## Clients
 

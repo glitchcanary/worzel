@@ -47,6 +47,7 @@ export class OpenAICompatLLM implements LLMProvider {
         max_tokens: options?.maxTokens ?? this.options.maxTokens,
         temperature: options?.temperature ?? this.options.temperature,
         stream: true,
+        stream_options: { include_usage: true },
       }),
       signal: options?.signal,
     });
@@ -84,7 +85,15 @@ export class OpenAICompatLLM implements LLMProvider {
           try {
             const parsed = JSON.parse(data) as {
               choices?: { delta?: { content?: string }; finish_reason?: string | null }[];
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
             };
+            if (parsed.usage) {
+              console.log('[openai-compat] token usage:', {
+                model: this.options.model,
+                input_tokens: parsed.usage.prompt_tokens,
+                output_tokens: parsed.usage.completion_tokens,
+              });
+            }
             const content = parsed.choices?.[0]?.delta?.content ?? '';
             const isDone = parsed.choices?.[0]?.finish_reason != null;
             if (content || isDone) {

@@ -10,7 +10,7 @@ const CSP_HEADER = [
   "worker-src blob:",         // explicit worker-src for sort worker
   "style-src 'self' 'unsafe-inline'", // unsafe-inline needed for Web Components Shadow DOM
   "img-src 'self' data: blob: https:",  // Stories may reference external images; blob: for GLTFLoader textures
-  "connect-src 'self' wss: ws: https: blob:", // WebSocket + fetch for .fink.js files; blob: for GLTFLoader textures
+  "connect-src 'self' wss: ws: https: blob: data:", // data: for Spark WASM bundle (approved 2026-03-28)
   "media-src 'self' blob: https:",  // Stories may reference external audio/video
   "font-src 'self'",
   "frame-src 'self'",  // Allow sandboxed iframes for .fink.js execution

@@ -9,12 +9,8 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
     body {
-      display: flex;
-      justify-content: center;
-      align-items: center;
       background: #1a1a2e;
       font-family: 'Georgia', 'Times New Roman', serif;
-      padding: 20px;
     }
     /* Single shared canvas — Stage compositor renders all clouds + characters here */
     #stage-canvas {
@@ -26,14 +22,11 @@
       z-index: 0;
       pointer-events: auto;
     }
-    /* Fink chat UI — sits above stage canvas, below stage windows */
+    /* fink-app fills its stage window content area */
     fink-app {
-      position: relative;
-      z-index: 5;
+      display: block;
       width: 100%;
-      max-width: 520px;
-      height: 700px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      height: 100%;
       --fink-bg: #16213e;
       --fink-header-bg: #0f3460;
       --fink-text: #e8e8e8;
@@ -48,13 +41,11 @@
       --fink-accent: #e94560;
       --fink-primary: #0f3460;
     }
-    /* Stage windows (injected by stage-windows.js) sit above fink-app */
   </style>
 </head>
 <body>
   <canvas id="stage-canvas"></canvas>
-  <fink-app></fink-app>
-  <!-- Stage windows injected into body by stage-boot.js -->
+  <!-- fink-app moved into a StageWindow by stage-boot.js -->
   <script type="module" src="sb-auth.js"></script>
   <script type="module" src="fink.js?v=5"></script>
   <script type="module" src="stage-boot.js"></script>

@@ -10,6 +10,7 @@ import { EdgeTTS } from './tts/edge-tts.js';
 import { OpenAITTS } from './tts/openai-tts.js';
 import { ElevenLabsTTS } from './tts/elevenlabs-tts.js';
 import { CachedTTSProvider } from './tts/cached-tts.js';
+import { CachedLLMProvider } from './llm/cached-llm.js';
 import type pino from 'pino';
 
 /**
@@ -23,11 +24,15 @@ export interface Providers {
 }
 
 export function createProviders(config: AppConfig, logger?: pino.Logger): Providers {
+  const llmCacheDir = process.env['WORZEL_LLM_CACHE_DIR'] ?? join(process.cwd(), 'tmp', 'llm-cache');
   return {
     asr: createASR(config),
-    llm: createLLM(config),
+    llm: new CachedLLMProvider(createLLM(config), { cacheDir: llmCacheDir, logger }),
     tts: createTTS(config, logger),
-    llmSmart: createLLMSmart(config),
+    llmSmart: (() => {
+      const smart = createLLMSmart(config);
+      return smart ? new CachedLLMProvider(smart, { cacheDir: llmCacheDir, logger }) : undefined;
+    })(),
   };
 }
 

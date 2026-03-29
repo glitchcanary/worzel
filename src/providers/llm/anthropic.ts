@@ -89,10 +89,19 @@ export class AnthropicLLM implements LLMProvider {
             const event = JSON.parse(data) as {
               type: string;
               delta?: { type: string; text?: string };
+              usage?: { input_tokens?: number; output_tokens?: number };
+              message?: { usage?: { input_tokens?: number; output_tokens?: number } };
             };
 
             if (event.type === 'content_block_delta' && event.delta?.text) {
               yield { text: event.delta.text, done: false };
+            } else if (event.type === 'message_delta' && event.usage) {
+              // Anthropic sends cumulative usage in message_delta before message_stop
+              console.log('[anthropic] token usage:', {
+                model: this.options.model,
+                input_tokens: event.message?.usage?.input_tokens ?? '?',
+                output_tokens: event.usage.output_tokens ?? '?',
+              });
             } else if (event.type === 'message_stop') {
               yield { text: '', done: true };
               return;

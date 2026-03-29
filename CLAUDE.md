@@ -29,6 +29,10 @@ When a product feature requires a security change:
 
 This applies even when the change seems obviously necessary or minor. The cost of a conversation is lower than the cost of a silently weakened security boundary.
 
+## Believe the user's observations
+
+When the user reports a visual or behavioural regression ("it looked better before", "the quality is worse", "it used to work"), **believe them immediately and investigate**. Do not suggest the asset is low quality, the hardware is slow, or that their expectation is wrong. They have ground truth you do not. Wasting their time arguing is the worst possible response.
+
 ## General
 
 - Node 22 required — `nvm use 22`

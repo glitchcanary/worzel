@@ -3,10 +3,14 @@
  *
  * Vocabulary:
  *   Gaussian      — one 3D Gaussian particle
- *   Cloud         — a named collection of Gaussians loaded from a file (.ksplat/.ply)
+ *   Cloud         — a named collection of Gaussians loaded from a file (.ksplat/.ply/.spz)
  *   CloudActor    — a Cloud placed on the Stage with position/quaternion/velocity
  *   CharacterActor— Gaussians bound to a VRM skeleton (gaussian-vrm)
  *   Stage         — one WebGL context, one RAF loop, all actors rendered together
+ *
+ * Renderer: Spark (@sparkjsdev/spark) — GPU-accelerated splat sorting, THREE.js integration.
+ * SparkRenderer is added to the scene once; SplatMesh objects are regular THREE.js objects.
+ * gaussian-vrm handles skeleton/FBX animation/lipsync on top.
  *
  * Usage:
  *   const stage = new Stage(canvas);
@@ -16,7 +20,7 @@
  */
 
 import * as THREE from './vendor/three.module.js';
-import { Viewer }  from './vendor/gaussian-splats-3d.module.js';
+import { SparkRenderer, SplatLoader, SplatMesh, SparkControls } from './vendor/spark.module.js';
 import { GVRM }    from './vendor/gaussian-vrm.min.js';
 import { Lipsync } from './vendor/wawa-lipsync.js';
 
@@ -31,12 +35,11 @@ const ALL_MOUTH_EXPRS = ['aa', 'ee', 'ih', 'oh', 'ou'];
 
 // ── CloudActor ─────────────────────────────────────────────────────────────────
 export class CloudActor {
-  constructor(id, sceneIndex, splatMesh) {
-    this.id           = id;
-    this._sceneIndex  = sceneIndex;
-    this._splatMesh   = splatMesh;
+  constructor(id, splatMesh) {
+    this.id         = id;
+    this._splatMesh = splatMesh;  // THREE.js Object3D (SplatMesh), already in scene
 
-    // Public transform — write these; _flush() pushes them to the underlying Cloud.
+    // Public transform — write these; _flush() syncs to the SplatMesh.
     this.position        = new THREE.Vector3();
     this.quaternion      = new THREE.Quaternion();
     this.scale           = new THREE.Vector3(1, 1, 1);
@@ -49,15 +52,12 @@ export class CloudActor {
     this.visible = true;
   }
 
-  /** Sync public state into the underlying SplatScene. Called by Stage.tick(). */
+  /** Sync public state into the underlying SplatMesh. Called by Stage.tick(). */
   _flush() {
-    const cloud = this._splatMesh.getScene(this._sceneIndex);
-    if (!cloud) return;
-    cloud.position.copy(this.position);
-    cloud.quaternion.copy(this.quaternion);
-    cloud.scale.copy(this.scale);
-    cloud.opacity = this.opacity;
-    cloud.visible = this.visible;
+    this._splatMesh.position.copy(this.position);
+    this._splatMesh.quaternion.copy(this.quaternion);
+    this._splatMesh.scale.copy(this.scale);
+    this._splatMesh.visible = this.visible;
   }
 }
 
@@ -107,10 +107,6 @@ export class CharacterActor {
   _update() {
     if (!this.#gvrm) return;
 
-    if (this.velocity.lengthSq() > 0) {
-      // position integration done by Stage; sync to VRM scene here
-    }
-
     if (this.#lipsync) {
       this.#lipsync.processAudio();
       this._applyViseme(this.#lipsync.viseme ?? 'sil');
@@ -137,26 +133,28 @@ export class CharacterActor {
 // ── Stage ──────────────────────────────────────────────────────────────────────
 export class Stage {
   #renderer;
-  #threeScene;     // THREE.Scene — used by CharacterActor / Three.js render pass
-  #avatarCamera;   // PerspectiveCamera — Y-up, for Three.js render pass
-  #cloudCamera;    // PerspectiveCamera — Y-down (gaussian convention), for Viewer
-  #viewer     = null;
+  #scene;          // Single THREE.Scene — splats + VRM meshes coexist via Spark
+  #camera;         // Single PerspectiveCamera — Y-up standard
+  #sparkRenderer = null;  // SparkRenderer THREE.js object added to scene
+  #controls   = null;    // SparkControls for orbit/fly navigation
   #clouds     = new Map();   // id → CloudActor
   #chars      = new Map();   // id → CharacterActor
   #rafId      = null;
   #clock      = new THREE.Clock();
   #resizeObs  = null;
   #avatarRect = null;  // { x, y, width, height } in CSS pixels — set by boot script
+  #maxFps     = 24;    // cap render rate; 0 = uncapped
+  #lastFrameT = 0;
 
   /**
    * @param {HTMLCanvasElement} canvas
    * @param {object} opts
-   * @param {number[]} opts.cloudCameraPosition  default [0,1,6]
-   * @param {number[]} opts.cloudCameraLookAt    default [0,1,0]
-   * @param {number[]} opts.avatarCameraPosition default [0,1.35,2.5]
-   * @param {number[]} opts.avatarCameraLookAt   default [0,1.35,0]
+   * @param {number[]} opts.cameraPosition  default [0,1,6]
+   * @param {number[]} opts.cameraLookAt    default [0,1,0]
+   * @param {number}   opts.maxFps          default 24 (0 = uncapped)
    */
   constructor(canvas, opts = {}) {
+    this.#maxFps = opts.maxFps ?? 24;
     const w = canvas.clientWidth  || canvas.width  || 800;
     const h = canvas.clientHeight || canvas.height || 600;
     const aspect = w / h;
@@ -165,90 +163,73 @@ export class Stage {
     this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.#renderer.setSize(w, h, false);
     this.#renderer.outputColorSpace = THREE.SRGBColorSpace;
-    // Don't auto-clear — the Viewer.render() clears explicitly; the Three.js
-    // pass runs on top without wiping the cloud layer.
-    this.#renderer.autoClear = false;
 
-    this.#threeScene = new THREE.Scene();
-    this.#threeScene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    this.#scene = new THREE.Scene();
+    this.#scene.add(new THREE.AmbientLight(0xffffff, 0.7));
     const key = new THREE.DirectionalLight(0xffffff, 1.2);
     key.position.set(1, 2, 2);
-    this.#threeScene.add(key);
+    this.#scene.add(key);
 
-    // Cloud camera — Y-down to match gaussian-splats-3d convention.
-    const cp = opts.cloudCameraPosition ?? [0, 1, 6];
-    const cl = opts.cloudCameraLookAt   ?? [0, 1, 0];
-    this.#cloudCamera = new THREE.PerspectiveCamera(60, aspect, 0.1, 500);
-    this.#cloudCamera.up.set(0, -1, 0);
-    this.#cloudCamera.position.set(...cp);
-    this.#cloudCamera.lookAt(new THREE.Vector3(...cl));
-
-    // Avatar camera — standard Y-up.
-    const ap = opts.avatarCameraPosition ?? [0, 1.35, 2.5];
-    const al = opts.avatarCameraLookAt   ?? [0, 1.35, 0];
-    this.#avatarCamera = new THREE.PerspectiveCamera(30, aspect, 0.1, 20);
-    this.#avatarCamera.position.set(...ap);
-    this.#avatarCamera.lookAt(new THREE.Vector3(...al));
+    // Single Y-up camera for everything — Spark handles splat depth correctly.
+    const cp = opts.cameraPosition ?? opts.cloudCameraPosition ?? [0, 1, 6];
+    const cl = opts.cameraLookAt   ?? opts.cloudCameraLookAt   ?? [0, 1, 0];
+    this.#camera = new THREE.PerspectiveCamera(65, aspect, 0.01, 500);
+    this.#camera.position.set(...cp);
+    this.#camera.lookAt(new THREE.Vector3(...cl));
 
     this.#resizeObs = new ResizeObserver(entries => {
       for (const entry of entries) {
         const { inlineSize: rw, blockSize: rh } = entry.contentBoxSize[0];
         if (!rw || !rh) continue;
         this.#renderer.setSize(rw, rh, false);
-        const a = rw / rh;
-        this.#cloudCamera.aspect = a;
-        this.#cloudCamera.updateProjectionMatrix();
-        this.#avatarCamera.aspect = a;
-        this.#avatarCamera.updateProjectionMatrix();
+        this.#camera.aspect = rw / rh;
+        this.#camera.updateProjectionMatrix();
       }
     });
     this.#resizeObs.observe(canvas);
+
+    // Orbit/fly controls — pointer drag to look, WASD to move.
+    this.#controls = new SparkControls({ canvas });
   }
 
   /**
-   * Load a Cloud from a .ksplat/.ply/.splat file and register it as a CloudActor.
+   * Load a Cloud from a .ksplat/.ply/.splat/.spz file and register it as a CloudActor.
    * @param {string} id   — unique actor name
    * @param {string} url  — path to cloud file
    * @param {object} opts — { position, quaternion, scale, opacity, visible,
-   *                          splatAlphaRemovalThreshold,
-   *                          cloudCameraPosition, cloudCameraLookAt }
+   *                          cameraPosition, cameraLookAt }
    * @returns {Promise<CloudActor>}
    */
   async addCloud(id, url, opts = {}) {
-    if (!this.#viewer) {
-      const cp = opts.cloudCameraPosition ?? [0, 1, 6];
-      const cl = opts.cloudCameraLookAt   ?? [0, 1, 0];
-      this.#cloudCamera.position.set(...cp);
-      this.#cloudCamera.lookAt(new THREE.Vector3(...cl));
-
-      this.#viewer = new Viewer({
-        canvas:      this.#renderer.domElement,
-        rootElement: this.#renderer.domElement.parentElement ?? document.body,
-        renderer:    this.#renderer,
-        threeScene:  this.#threeScene,
-        camera:      this.#cloudCamera,
-        selfDrivenMode:          false,
-        dynamicScene:            true,
-        sharedMemoryForWorkers:  false,
-      });
+    // Initialise SparkRenderer on first cloud load.
+    if (!this.#sparkRenderer) {
+      this.#sparkRenderer = new SparkRenderer({ renderer: this.#renderer });
+      this.#scene.add(this.#sparkRenderer);
     }
 
-    await this.#viewer.addSplatScene(url, {
-      splatAlphaRemovalThreshold: opts.splatAlphaRemovalThreshold ?? 5,
-    });
+    if (opts.cameraPosition ?? opts.cloudCameraPosition) {
+      const cp = opts.cameraPosition ?? opts.cloudCameraPosition;
+      this.#camera.position.set(...cp);
+    }
+    if (opts.cameraLookAt ?? opts.cloudCameraLookAt) {
+      const cl = opts.cameraLookAt ?? opts.cloudCameraLookAt;
+      this.#camera.lookAt(new THREE.Vector3(...cl));
+    }
 
-    const idx   = this.#viewer.splatMesh.scenes.length - 1;
-    const actor = new CloudActor(id, idx, this.#viewer.splatMesh);
+    const packedSplats = await new SplatLoader().loadAsync(url);
+    const splatMesh = new SplatMesh({ packedSplats });
+    this.#scene.add(splatMesh);
 
-    if (opts.position)            actor.position.set(...opts.position);
-    if (opts.quaternion)          actor.quaternion.copy(opts.quaternion);
-    if (opts.scale)               actor.scale.set(...opts.scale);
-    if (opts.opacity  !== undefined) actor.opacity  = opts.opacity;
-    if (opts.visible  !== undefined) actor.visible  = opts.visible;
+    const actor = new CloudActor(id, splatMesh);
+
+    if (opts.position)               actor.position.set(...opts.position);
+    if (opts.quaternion)             actor.quaternion.copy(opts.quaternion);
+    if (opts.scale)                  actor.scale.set(...opts.scale);
+    if (opts.visible !== undefined)  actor.visible = opts.visible;
 
     actor._flush();
     this.#clouds.set(id, actor);
-    console.log(`[Stage] Cloud '${id}' loaded (index ${idx}): ${url}`);
+    console.log(`[Stage] Cloud '${id}' loaded: ${url}`);
     return actor;
   }
 
@@ -256,26 +237,24 @@ export class Stage {
    * Load a .gvrm file and register it as a CharacterActor.
    * @param {string} id
    * @param {string} url
-   * @param {object} opts — { initialAnim, avatarCameraPosition, avatarCameraLookAt }
+   * @param {object} opts — { initialAnim, cameraPosition, cameraLookAt }
    * @returns {Promise<CharacterActor>}
    */
   async addCharacter(id, url, opts = {}) {
-    // Disable pointer-events on any body-level overlay divs the DropInViewer
-    // appends (gaussian-splats-3d loading spinner).
-    const cleanOverlays = () => {
-      document.querySelectorAll('body > div[style*="position: absolute"]').forEach(el => {
-        el.style.pointerEvents = 'none';
-      });
-    };
+    const gvrm = await GVRM.load(url, this.#scene, this.#camera, this.#renderer);
 
-    const gvrm = await GVRM.load(url, this.#threeScene, this.#avatarCamera, this.#renderer);
-    cleanOverlays();
+    // gaussian-vrm appends overlay divs to body — disable their pointer-events.
+    document.querySelectorAll('body > div[style*="position: absolute"]').forEach(el => {
+      el.style.pointerEvents = 'none';
+    });
 
-    if (opts.avatarCameraPosition) {
-      this.#avatarCamera.position.set(...opts.avatarCameraPosition);
+    if (opts.cameraPosition ?? opts.avatarCameraPosition) {
+      const cp = opts.cameraPosition ?? opts.avatarCameraPosition;
+      this.#camera.position.set(...cp);
     }
-    if (opts.avatarCameraLookAt) {
-      this.#avatarCamera.lookAt(new THREE.Vector3(...opts.avatarCameraLookAt));
+    if (opts.cameraLookAt ?? opts.avatarCameraLookAt) {
+      const cl = opts.cameraLookAt ?? opts.avatarCameraLookAt;
+      this.#camera.lookAt(new THREE.Vector3(...cl));
     }
 
     const actor = new CharacterActor(id);
@@ -287,20 +266,39 @@ export class Stage {
     return actor;
   }
 
+  /**
+   * Replace an existing CharacterActor with a new .gvrm file.
+   * Removes the old VRM scene from threeScene, loads the new one.
+   */
+  async swapCharacter(id, url, opts = {}) {
+    const old = this.#chars.get(id);
+    if (old?._gvrmScene) this.#scene.remove(old._gvrmScene);
+    this.#chars.delete(id);
+    return this.addCharacter(id, url, opts);
+  }
+
   /** Return any actor (Cloud or Character) by id. */
   getActor(id) {
     return this.#clouds.get(id) ?? this.#chars.get(id) ?? null;
   }
 
+  /** Set FPS cap. 0 = uncapped. Takes effect immediately. */
+  setMaxFps(fps) { this.#maxFps = fps; }
+
   /** Start the RAF loop. Safe to call before actors finish loading. */
   start() {
     if (this.#rafId !== null) return;
     this.#clock.start();
-    const tick = () => {
+    const tick = (now) => {
       this.#rafId = requestAnimationFrame(tick);
+      if (this.#maxFps > 0) {
+        const minInterval = 1000 / this.#maxFps;
+        if (now - this.#lastFrameT < minInterval) return;
+        this.#lastFrameT = now;
+      }
       this.tick(this.#clock.getDelta());
     };
-    tick();
+    requestAnimationFrame(tick);
   }
 
   pause() {
@@ -319,10 +317,27 @@ export class Stage {
 
   get isRunning() { return this.#rafId !== null; }
 
+  /** For debug panel: returns live camera reference. */
+  getCameras() {
+    return { avatar: this.#camera, cloud: this.#camera };
+  }
+
+  /**
+   * For debug panel: set camera position + lookAt.
+   * @param {'avatar'|'cloud'} which  (both refer to same camera now)
+   * @param {{ position: number[], lookAt: number[] }} state
+   */
+  setCameraState(_which, { position, lookAt }) {
+    this.#camera.position.set(...position);
+    this.#camera.lookAt(new THREE.Vector3(...lookAt));
+    this.#camera.updateProjectionMatrix();
+  }
+
   /**
    * Tell the Stage where to scissor the character (avatar) render.
    * rect: { x, y, width, height } in CSS pixels from getBoundingClientRect().
-   * Pass null to render avatar full-screen.
+   * Pass null to render full-screen.
+   * NOTE: with Spark, all actors share one scene+camera. This rect currently unused.
    */
   setAvatarRect(rect) { this.#avatarRect = rect; }
 
@@ -354,58 +369,21 @@ export class Stage {
       }
     }
 
-    if (!this.#viewer) {
-      // No clouds yet — still render the Three.js scene (character may be loaded).
-      this.#renderer.clear();
-      this.#renderer.render(this.#threeScene, this.#avatarCamera);
-      return;
-    }
-
-    // 3. Update cloud sorting (CPU work).
-    this.#viewer.update();
+    // 3. Update controls (orbit/fly navigation).
+    this.#controls.update(this.#camera);
 
     // 4. Update character animation + lipsync.
     for (const actor of this.#chars.values()) {
       actor._update();
     }
 
-    // 5. Render clouds — clears canvas, uses cloudCamera.
-    this.#viewer.render();
-
-    // 6. Render character into avatar rect (scissored), or full-screen if no rect.
-    if (this.#avatarRect && this.#chars.size > 0) {
-      const r   = this.#avatarRect;
-      const dpr = this.#renderer.getPixelRatio();
-      const ch  = this.#renderer.domElement.height;
-      // Convert CSS rect to WebGL pixels (Y flipped).
-      const px = Math.round(r.x      * dpr);
-      const py = Math.round((ch - (r.y + r.height) * dpr));
-      const pw = Math.round(r.width  * dpr);
-      const ph = Math.round(r.height * dpr);
-
-      this.#renderer.setScissorTest(true);
-      this.#renderer.setScissor(px, py, pw, ph);
-      this.#renderer.setViewport(px, py, pw, ph);
-
-      // Update avatar camera aspect for this rect.
-      this.#avatarCamera.aspect = r.width / r.height;
-      this.#avatarCamera.updateProjectionMatrix();
-
-      this.#renderer.render(this.#threeScene, this.#avatarCamera);
-
-      this.#renderer.setScissorTest(false);
-      // Restore full viewport.
-      const fw = this.#renderer.domElement.width;
-      this.#renderer.setViewport(0, 0, fw, ch);
-    } else if (this.#chars.size > 0) {
-      this.#renderer.render(this.#threeScene, this.#avatarCamera);
-    }
+    // 5. Render everything — Spark handles splat sorting + depth composite internally.
+    this.#renderer.render(this.#scene, this.#camera);
   }
 
   dispose() {
     this.pause();
     this.#resizeObs?.disconnect();
-    this.#viewer?.dispose();
     this.#renderer.dispose();
   }
 }
