@@ -142,8 +142,11 @@ function _buildSkinning(splatMesh, packedSplats, bindingData, skeleton) {
     bone.updateMatrixWorld(true);
   }
 
-  const maxBoneIndex = Math.max(...splatBoneIndices);
-  const numBones     = maxBoneIndex + 1;
+  let maxBoneIndex = 0;
+  for (let i = 0; i < splatBoneIndices.length; i++) {
+    if (splatBoneIndices[i] > maxBoneIndex) maxBoneIndex = splatBoneIndices[i];
+  }
+  const numBones = maxBoneIndex + 1;
 
   const skinning = new SplatSkinning({ mesh: splatMesh, numSplats, numBones });
 
@@ -163,17 +166,9 @@ function _buildSkinning(splatMesh, packedSplats, bindingData, skeleton) {
   // splatRelativePoses[i*3 .. i*3+2] is the offset from the splat to its bone's
   // world position, expressed in the original gsPosition/gsQuaternion cloud space.
   // We need each splat at: bone_world_pos + relative_offset_in_world_space.
-  const _bonePos  = new THREE.Vector3();
-  const _boneQuat = new THREE.Quaternion();
-  const _rel      = new THREE.Vector3();
-  const _newPos   = new THREE.Vector3();
-
-  // Read the gsQuaternion that defines the cloud's original orientation.
-  // The relative poses are stored in this cloud space, so we must rotate them
-  // by the cloud's original quaternion to get world-space offsets.
-  const gsQuat = bindingData.gsQuaternion
-    ? new THREE.Quaternion(...bindingData.gsQuaternion)
-    : new THREE.Quaternion();
+  const _bonePos = new THREE.Vector3();
+  const _rel     = new THREE.Vector3();
+  const _newPos  = new THREE.Vector3();
 
   for (let i = 0; i < numSplats; i++) {
     const boneIdx = splatBoneIndices[i];
@@ -181,15 +176,14 @@ function _buildSkinning(splatMesh, packedSplats, bindingData, skeleton) {
     if (!bone) continue;
 
     bone.getWorldPosition(_bonePos);
-    bone.getWorldQuaternion(_boneQuat);
 
-    // Relative pose is in the original cloud's local space — rotate to world
+    // splatRelativePoses is the world-space offset from the bone to each splat
+    // in the bind pose. No coordinate transform needed — add directly.
     _rel.set(
       splatRelativePoses[i * 3],
       splatRelativePoses[i * 3 + 1],
       splatRelativePoses[i * 3 + 2],
     );
-    _rel.applyQuaternion(gsQuat);
 
     _newPos.copy(_bonePos).add(_rel);
 
@@ -217,6 +211,103 @@ function _buildSkinning(splatMesh, packedSplats, bindingData, skeleton) {
 
   splatMesh.skinning = skinning;
   return skinning;
+}
+
+// ── Mixamo → VRM bone name map (ported from naruya/gaussian-vrm, MIT) ─────────
+const MIXAMO_TO_VRM = {
+  mixamorigHips:'hips', mixamorigSpine:'spine', mixamorigSpine1:'chest',
+  mixamorigSpine2:'upperChest', mixamorigNeck:'neck', mixamorigHead:'head',
+  mixamorigLeftShoulder:'leftShoulder', mixamorigLeftArm:'leftUpperArm',
+  mixamorigLeftForeArm:'leftLowerArm', mixamorigLeftHand:'leftHand',
+  mixamorigLeftHandThumb1:'leftThumbMetacarpal', mixamorigLeftHandThumb2:'leftThumbProximal',
+  mixamorigLeftHandThumb3:'leftThumbDistal', mixamorigLeftHandIndex1:'leftIndexProximal',
+  mixamorigLeftHandIndex2:'leftIndexIntermediate', mixamorigLeftHandIndex3:'leftIndexDistal',
+  mixamorigLeftHandMiddle1:'leftMiddleProximal', mixamorigLeftHandMiddle2:'leftMiddleIntermediate',
+  mixamorigLeftHandMiddle3:'leftMiddleDistal', mixamorigLeftHandRing1:'leftRingProximal',
+  mixamorigLeftHandRing2:'leftRingIntermediate', mixamorigLeftHandRing3:'leftRingDistal',
+  mixamorigLeftHandPinky1:'leftLittleProximal', mixamorigLeftHandPinky2:'leftLittleIntermediate',
+  mixamorigLeftHandPinky3:'leftLittleDistal', mixamorigRightShoulder:'rightShoulder',
+  mixamorigRightArm:'rightUpperArm', mixamorigRightForeArm:'rightLowerArm',
+  mixamorigRightHand:'rightHand', mixamorigRightHandPinky1:'rightLittleProximal',
+  mixamorigRightHandPinky2:'rightLittleIntermediate', mixamorigRightHandPinky3:'rightLittleDistal',
+  mixamorigRightHandRing1:'rightRingProximal', mixamorigRightHandRing2:'rightRingIntermediate',
+  mixamorigRightHandRing3:'rightRingDistal', mixamorigRightHandMiddle1:'rightMiddleProximal',
+  mixamorigRightHandMiddle2:'rightMiddleIntermediate', mixamorigRightHandMiddle3:'rightMiddleDistal',
+  mixamorigRightHandIndex1:'rightIndexProximal', mixamorigRightHandIndex2:'rightIndexIntermediate',
+  mixamorigRightHandIndex3:'rightIndexDistal', mixamorigRightHandThumb1:'rightThumbMetacarpal',
+  mixamorigRightHandThumb2:'rightThumbProximal', mixamorigRightHandThumb3:'rightThumbDistal',
+  mixamorigLeftUpLeg:'leftUpperLeg', mixamorigLeftLeg:'leftLowerLeg',
+  mixamorigLeftFoot:'leftFoot', mixamorigLeftToeBase:'leftToes',
+  mixamorigRightUpLeg:'rightUpperLeg', mixamorigRightLeg:'rightLowerLeg',
+  mixamorigRightFoot:'rightFoot', mixamorigRightToeBase:'rightToes',
+};
+
+/**
+ * Retarget a Mixamo FBX animation to a VRM skeleton.
+ * Ported from naruya/gaussian-vrm (MIT licence).
+ */
+function _retargetFbxToVrm(fbx, vrm) {
+  const clip = THREE.AnimationClip.findByName(fbx.animations, 'mixamo.com')
+    ?? fbx.animations[0];
+  if (!clip) return null;
+
+  const hipNode  = fbx.getObjectByName('mixamorigHips');
+  const hipHeight = hipNode ? hipNode.position.y : 1;
+  const vrmMeta  = vrm.meta;
+  const isVrm0   = !(vrmMeta?.metaVersion === '1' || vrmMeta?.specVersion?.startsWith('1'));
+
+  // Compute height scale so Hips translation matches avatar size
+  let hipPos0Y = 0;
+  vrm.scene.traverse(obj => {
+    if (obj.name && obj.name.toLowerCase().includes('hips')) hipPos0Y = obj.position.y;
+  });
+  const hipsNode = vrm.humanoid?.getNormalizedBoneNode('hips');
+  if (hipsNode) hipsNode.getWorldPosition({ set(x,y,z){ hipPos0Y = y; } });
+  const scale = Math.abs(hipPos0Y) * (vrm.scene.scale.y || 1) / hipHeight;
+
+  const tracks = [];
+  const _restQ = new THREE.Quaternion();
+  const _parentQ = new THREE.Quaternion();
+  const _animQ  = new THREE.Quaternion();
+
+  for (const track of clip.tracks) {
+    const parts    = track.name.split('.');
+    const boneName = parts[0];
+    const prop     = parts[1];
+    const vrmBoneId = MIXAMO_TO_VRM[boneName];
+    if (!vrmBoneId) continue;
+
+    const vrmBoneName = vrm.humanoid?.getNormalizedBoneNode(vrmBoneId)?.name;
+    if (!vrmBoneName) continue;
+
+    const srcBone = fbx.getObjectByName(boneName);
+    if (!srcBone) continue;
+
+    if (track instanceof THREE.QuaternionKeyframeTrack) {
+      srcBone.getWorldQuaternion(_restQ).invert();
+      srcBone.parent?.getWorldQuaternion(_parentQ);
+
+      const vals = track.values.slice();
+      for (let h = 0; h < vals.length; h += 4) {
+        _animQ.fromArray(vals, h);
+        _animQ.premultiply(_parentQ).multiply(_restQ);
+        // VRM0 needs X and Z negated
+        if (isVrm0) {
+          _animQ.x = -_animQ.x;
+          _animQ.z = -_animQ.z;
+        }
+        _animQ.toArray(vals, h);
+      }
+      tracks.push(new THREE.QuaternionKeyframeTrack(`${vrmBoneName}.${prop}`, track.times, vals));
+    } else if (track instanceof THREE.VectorKeyframeTrack) {
+      const vals = track.values.map((v, idx) =>
+        (isVrm0 && idx % 3 !== 1 ? -v : v) * scale
+      );
+      tracks.push(new THREE.VectorKeyframeTrack(`${vrmBoneName}.${prop}`, track.times, vals));
+    }
+  }
+
+  return new THREE.AnimationClip('vrmAnimation', clip.duration, tracks);
 }
 
 // ── CloudActor ─────────────────────────────────────────────────────────────────
@@ -276,6 +367,7 @@ export class CharacterActor {
   }
 
   async playAnim(name) {
+    if (!this._vrm) { console.warn(`[CharacterActor:${this.id}] playAnim before VRM ready`); return; }
     const url = this._animMap[name] ?? name;
     try {
       const fbxLoader = new FBXLoader();
@@ -286,14 +378,18 @@ export class CharacterActor {
         console.warn(`[CharacterActor:${this.id}] No animations in ${url}`);
         return;
       }
+      const clip = _retargetFbxToVrm(fbx, this._vrm);
+      if (!clip) {
+        console.warn(`[CharacterActor:${this.id}] Retargeting failed for ${url}`);
+        return;
+      }
       if (!this._mixer) {
         this._mixer = new THREE.AnimationMixer(this._vrm.scene);
       } else {
         this._mixer.stopAllAction();
       }
-      const clip   = fbx.animations[0];
-      const action = this._mixer.clipAction(clip);
-      action.play();
+      this._mixer.clipAction(clip).play();
+      console.log(`[CharacterActor:${this.id}] Playing anim: ${name}`);
     } catch (err) {
       console.warn(`[CharacterActor:${this.id}] FBX load failed: ${url}`, err);
     }
