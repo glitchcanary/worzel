@@ -506,6 +506,19 @@ export class Stage {
     this.#resizeObs.observe(canvas);
 
     this.#controls = new SparkControls({ canvas });
+
+    // Disable camera keyboard movement when a text input has focus — otherwise
+    // WASD is consumed by SparkControls instead of the Fink chat box.
+    document.addEventListener('focusin',  e => {
+      if (e.target.matches('input,textarea,[contenteditable]')) {
+        this.#controls.fpsMovement.enable = false;
+      }
+    });
+    document.addEventListener('focusout', e => {
+      if (e.target.matches('input,textarea,[contenteditable]')) {
+        this.#controls.fpsMovement.enable = true;
+      }
+    });
   }
 
   async addCloud(id, url, opts = {}) {
