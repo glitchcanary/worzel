@@ -2,15 +2,20 @@
  * stage.js — Stage compositor.
  *
  * Vocabulary:
- *   Gaussian      — one 3D Gaussian particle
- *   Cloud         — a named collection of Gaussians loaded from a file (.ksplat/.ply/.spz)
- *   CloudActor    — a Cloud placed on the Stage with position/quaternion/velocity
- *   CharacterActor— Gaussians bound to a VRM skeleton (gaussian-vrm)
- *   Stage         — one WebGL context, one RAF loop, all actors rendered together
+ *   Gaussian       — one 3D Gaussian particle
+ *   Cloud          — a named collection of Gaussians loaded from a file (.ksplat/.ply/.spz)
+ *   CloudActor     — a Cloud placed on the Stage with position/quaternion/velocity
+ *   CharacterActor — Gaussians bound to a VRM skeleton via Spark SplatSkinning
+ *   Stage          — one WebGL context, one RAF loop, all actors rendered together
  *
  * Renderer: Spark (@sparkjsdev/spark) — GPU-accelerated splat sorting, THREE.js integration.
- * SparkRenderer is added to the scene once; SplatMesh objects are regular THREE.js objects.
- * gaussian-vrm handles skeleton/FBX animation/lipsync on top.
+ * One SparkRenderer handles ALL splats (background clouds AND rigged characters).
+ * VRM skeleton drives Spark's built-in SplatSkinning (dual-quaternion, GPU-side).
+ *
+ * .gvrm files are unpacked directly here (no gaussian-vrm.min.js dependency):
+ *   model.vrm  → loaded by three-vrm, skeleton drives SplatSkinning
+ *   model.ply  → loaded by Spark SplatLoader into SplatMesh
+ *   data.json  → splatBoneIndices + splatRelativePoses → SplatSkinning.setSplatBones()
  *
  * Usage:
  *   const stage = new Stage(canvas);
@@ -20,9 +25,13 @@
  */
 
 import * as THREE from './vendor/three.module.js';
-import { SparkRenderer, SplatLoader, SplatMesh, SparkControls } from './vendor/spark.module.js';
-import { GVRM }    from './vendor/gaussian-vrm.min.js';
-import { Lipsync } from './vendor/wawa-lipsync.js';
+import { SparkRenderer, SplatLoader, SplatMesh, SplatSkinning, PackedSplats,
+         SparkControls, unpackSplat, setPackedSplat } from './vendor/spark.module.js';
+import { GLTFLoader }                from './vendor/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from './vendor/three-vrm.module.js';
+import { FBXLoader }                 from './vendor/FBXLoader.js';
+import JSZip                         from './vendor/jszip.module.js';
+import { Lipsync }                   from './vendor/wawa-lipsync.js';
 
 // ── Viseme → VRM expression map ───────────────────────────────────────────────
 const VISEME_TO_VRM = {
@@ -33,26 +42,198 @@ const VISEME_TO_VRM = {
 };
 const ALL_MOUTH_EXPRS = ['aa', 'ee', 'ih', 'oh', 'ou'];
 
+// ── .gvrm unpacker ────────────────────────────────────────────────────────────
+/**
+ * Unpack a .gvrm ZIP and return { vrm, plyBuffer, bindingData }.
+ *
+ * vrm         — loaded @pixiv/three-vrm VRM object, already added to scene
+ * plyBuffer   — ArrayBuffer of the raw PLY file
+ * bindingData — parsed data.json
+ */
+async function _loadGvrm(url, scene) {
+  const resp   = await fetch(url);
+  const zipBuf = await resp.arrayBuffer();
+  const zip    = await JSZip.loadAsync(zipBuf);
+
+  // 1. Parse data.json
+  const dataJson   = await zip.file('data.json').async('string');
+  const bindingData = JSON.parse(dataJson);
+  // Support legacy field name
+  if (!bindingData.splatRelativePoses && bindingData.relativePoses) {
+    bindingData.splatRelativePoses = bindingData.relativePoses;
+  }
+
+  // 2. Load VRM
+  const vrmBuf  = await zip.file('model.vrm').async('arraybuffer');
+  const vrmBlob = new Blob([vrmBuf], { type: 'model/gltf-binary' });
+  const vrmUrl  = URL.createObjectURL(vrmBlob);
+
+  const loader = new GLTFLoader();
+  loader.register(parser => new VRMLoaderPlugin(parser));
+  const gltf = await new Promise((resolve, reject) =>
+    loader.load(vrmUrl, resolve, undefined, reject)
+  );
+  URL.revokeObjectURL(vrmUrl);
+
+  VRMUtils.removeUnnecessaryVertices(gltf.scene);
+  VRMUtils.combineSkeletons(gltf.scene);
+
+  const vrm = gltf.userData.vrm;
+  if (!vrm) throw new Error('[_loadGvrm] No VRM data in model.vrm');
+
+  // Detect VRM version (0 needs rotation fix)
+  const meta = vrm.meta;
+  const isVrm0 = !(meta?.metaVersion === '1' || meta?.specVersion?.startsWith('1'));
+  if (isVrm0) VRMUtils.rotateVRM0(vrm);
+
+  // Apply model scale
+  const scale = bindingData.modelScale ?? 1;
+  vrm.scene.scale.setScalar(scale);
+
+  // Apply rest-pose bone adjustments from data.json
+  if (Array.isArray(bindingData.boneOperations)) {
+    for (const op of bindingData.boneOperations) {
+      const rawBone  = vrm.humanoid?.getRawBoneNode(op.boneName);
+      const normBone = vrm.humanoid?.getNormalizedBoneNode(op.boneName);
+      if (rawBone && op.position) {
+        rawBone.position.x += op.position.x ?? 0;
+        rawBone.position.y += op.position.y ?? 0;
+        rawBone.position.z += op.position.z ?? 0;
+      }
+      if (normBone && op.rotation) {
+        normBone.rotation.x = (op.rotation.x ?? 0) * Math.PI / 180;
+        normBone.rotation.y = (op.rotation.y ?? 0) * Math.PI / 180;
+        normBone.rotation.z = (op.rotation.z ?? 0) * Math.PI / 180;
+      }
+    }
+  }
+
+  // Add VRM mesh to scene (hidden — splat cloud is the visual)
+  vrm.scene.visible = false;
+  scene.add(vrm.scene);
+
+  // 3. Get PLY bytes
+  const plyBuffer = await zip.file('model.ply').async('arraybuffer');
+
+  console.log(`[_loadGvrm] ${url} — splats: ${bindingData.splatBoneIndices?.length ?? '?'}` +
+    `, bones used: ${new Set(bindingData.splatBoneIndices).size}` +
+    `, scale: ${scale}`);
+
+  return { vrm, plyBuffer, bindingData };
+}
+
+// ── SplatSkinning builder ─────────────────────────────────────────────────────
+/**
+ * Build a SplatSkinning from .gvrm binding data + VRM skeleton.
+ * Rebakes splat world positions (bone_world_pos + relative_offset) into PackedSplats,
+ * then sets rest poses and assigns each splat to its bone.
+ *
+ * The splatRelativePoses in data.json are the offsets from each splat to its bone's
+ * world position in the original cloud-local space. We convert them to world positions
+ * and bake them into the PackedSplats so Spark's dual-quat skinning can compute
+ * correct deltas at runtime.
+ */
+function _buildSkinning(splatMesh, packedSplats, bindingData, skeleton) {
+  const { splatBoneIndices, splatRelativePoses } = bindingData;
+  const numSplats = splatBoneIndices.length;
+
+  // Ensure all bone world matrices are current in bind pose
+  for (const bone of skeleton.bones) {
+    bone.updateMatrixWorld(true);
+  }
+
+  const maxBoneIndex = Math.max(...splatBoneIndices);
+  const numBones     = maxBoneIndex + 1;
+
+  const skinning = new SplatSkinning({ mesh: splatMesh, numSplats, numBones });
+
+  // --- Set rest pose for every bone we'll use ---
+  const _q = new THREE.Quaternion();
+  const _p = new THREE.Vector3();
+
+  for (let b = 0; b < numBones; b++) {
+    const bone = skeleton.bones[b];
+    if (!bone) continue;
+    bone.getWorldQuaternion(_q);
+    bone.getWorldPosition(_p);
+    skinning.setRestQuatPos(b, _q, _p);
+  }
+
+  // --- Rebake splat world positions ---
+  // splatRelativePoses[i*3 .. i*3+2] is the offset from the splat to its bone's
+  // world position, expressed in the original gsPosition/gsQuaternion cloud space.
+  // We need each splat at: bone_world_pos + relative_offset_in_world_space.
+  const _bonePos  = new THREE.Vector3();
+  const _boneQuat = new THREE.Quaternion();
+  const _rel      = new THREE.Vector3();
+  const _newPos   = new THREE.Vector3();
+
+  // Read the gsQuaternion that defines the cloud's original orientation.
+  // The relative poses are stored in this cloud space, so we must rotate them
+  // by the cloud's original quaternion to get world-space offsets.
+  const gsQuat = bindingData.gsQuaternion
+    ? new THREE.Quaternion(...bindingData.gsQuaternion)
+    : new THREE.Quaternion();
+
+  for (let i = 0; i < numSplats; i++) {
+    const boneIdx = splatBoneIndices[i];
+    const bone    = skeleton.bones[boneIdx];
+    if (!bone) continue;
+
+    bone.getWorldPosition(_bonePos);
+    bone.getWorldQuaternion(_boneQuat);
+
+    // Relative pose is in the original cloud's local space — rotate to world
+    _rel.set(
+      splatRelativePoses[i * 3],
+      splatRelativePoses[i * 3 + 1],
+      splatRelativePoses[i * 3 + 2],
+    );
+    _rel.applyQuaternion(gsQuat);
+
+    _newPos.copy(_bonePos).add(_rel);
+
+    // Preserve all other splat attributes (colour, scale, orientation)
+    const s = unpackSplat(packedSplats.packedArray, i, packedSplats.splatEncoding);
+    setPackedSplat(
+      packedSplats.packedArray, i,
+      _newPos.x, _newPos.y, _newPos.z,
+      s.scales.x, s.scales.y, s.scales.z,
+      s.quaternion.x, s.quaternion.y, s.quaternion.z, s.quaternion.w,
+      s.opacity, s.color.r, s.color.g, s.color.b,
+      packedSplats.splatEncoding,
+    );
+  }
+  packedSplats.needsUpdate = true;
+
+  // --- Assign each splat to its single bone (weight 1.0) ---
+  const _boneIdx = new THREE.Vector4();
+  const _weights = new THREE.Vector4(1, 0, 0, 0);
+  for (let i = 0; i < numSplats; i++) {
+    _boneIdx.set(splatBoneIndices[i], 0, 0, 0);
+    skinning.setSplatBones(i, _boneIdx, _weights);
+  }
+  skinning.skinTexture.needsUpdate = true;
+
+  splatMesh.skinning = skinning;
+  return skinning;
+}
+
 // ── CloudActor ─────────────────────────────────────────────────────────────────
 export class CloudActor {
   constructor(id, splatMesh) {
     this.id         = id;
-    this._splatMesh = splatMesh;  // THREE.js Object3D (SplatMesh), already in scene
+    this._splatMesh = splatMesh;
 
-    // Public transform — write these; _flush() syncs to the SplatMesh.
     this.position        = new THREE.Vector3();
     this.quaternion      = new THREE.Quaternion();
     this.scale           = new THREE.Vector3(1, 1, 1);
-
-    // Physics — integrated by Stage.tick() each frame.
-    this.velocity        = new THREE.Vector3();   // world-units / sec
-    this.angularVelocity = new THREE.Vector3();   // euler rates rad/sec (XYZ)
-
-    this.opacity = 1.0;
-    this.visible = true;
+    this.velocity        = new THREE.Vector3();
+    this.angularVelocity = new THREE.Vector3();
+    this.opacity         = 1.0;
+    this.visible         = true;
   }
 
-  /** Sync public state into the underlying SplatMesh. Called by Stage.tick(). */
   _flush() {
     this._splatMesh.position.copy(this.position);
     this._splatMesh.quaternion.copy(this.quaternion);
@@ -63,14 +244,20 @@ export class CloudActor {
 
 // ── CharacterActor ─────────────────────────────────────────────────────────────
 export class CharacterActor {
-  #gvrm    = null;
-  #lipsync = null;
-
   constructor(id) {
-    this.id       = id;
-    this.position = new THREE.Vector3();
-    this.velocity = new THREE.Vector3();
-    this.visible  = true;
+    this.id         = id;
+    this.position   = new THREE.Vector3();
+    this.velocity   = new THREE.Vector3();
+    this.visible    = true;
+
+    // Set by _attachSplats after load
+    this._vrm        = null;
+    this._splatMesh  = null;
+    this._packedSplats = null;
+    this._skinning   = null;
+    this._skeleton   = null;
+    this._mixer      = null;
+    this._lipsync    = null;
 
     this._animMap = {
       idle:      './animations/Breathing.fbx',
@@ -80,46 +267,76 @@ export class CharacterActor {
     };
   }
 
-  _attach(gvrm) {
-    this.#gvrm = gvrm;
+  _attachSplats(splatMesh, packedSplats, vrm, skeleton, skinning) {
+    this._splatMesh   = splatMesh;
+    this._packedSplats = packedSplats;
+    this._vrm         = vrm;
+    this._skeleton    = skeleton;
+    this._skinning    = skinning;
   }
 
-  playAnim(name) {
+  async playAnim(name) {
     const url = this._animMap[name] ?? name;
-    this.#gvrm?.changeFBX(url)
-      .catch(e => console.warn(`[CharacterActor:${this.id}] FBX switch failed:`, e));
+    try {
+      const fbxLoader = new FBXLoader();
+      const fbx = await new Promise((resolve, reject) =>
+        fbxLoader.load(url, resolve, undefined, reject)
+      );
+      if (!fbx.animations?.length) {
+        console.warn(`[CharacterActor:${this.id}] No animations in ${url}`);
+        return;
+      }
+      if (!this._mixer) {
+        this._mixer = new THREE.AnimationMixer(this._vrm.scene);
+      } else {
+        this._mixer.stopAllAction();
+      }
+      const clip   = fbx.animations[0];
+      const action = this._mixer.clipAction(clip);
+      action.play();
+    } catch (err) {
+      console.warn(`[CharacterActor:${this.id}] FBX load failed: ${url}`, err);
+    }
   }
 
   connectAudioTap(gainNode, audioContext) {
     try {
-      this.#lipsync = new Lipsync();
+      this._lipsync = new Lipsync();
       const dest = audioContext.createMediaStreamDestination();
       gainNode.connect(dest);
-      const src = this.#lipsync.audioContext.createMediaStreamSource(dest.stream);
-      src.connect(this.#lipsync.analyser);
+      const src = this._lipsync.audioContext.createMediaStreamSource(dest.stream);
+      src.connect(this._lipsync.analyser);
       console.log(`[CharacterActor:${this.id}] Lipsync tap connected`);
     } catch (err) {
       console.warn(`[CharacterActor:${this.id}] Lipsync tap failed:`, err);
     }
   }
 
-  /** Called by Stage.tick() each frame. */
-  _update() {
-    if (!this.#gvrm) return;
+  /** Called by Stage.tick() each frame with delta seconds. */
+  _update(dt) {
+    if (!this._vrm) return;
 
-    if (this.#lipsync) {
-      this.#lipsync.processAudio();
-      this._applyViseme(this.#lipsync.viseme ?? 'sil');
+    // Advance FBX animation mixer
+    if (this._mixer) this._mixer.update(dt);
+
+    // Advance VRM spring bones, expression update
+    this._vrm.update(dt);
+
+    // Lipsync
+    if (this._lipsync) {
+      this._lipsync.processAudio();
+      this._applyViseme(this._lipsync.viseme ?? 'sil');
     }
 
-    this.#gvrm.update();
+    // Push current bone world transforms to Spark GPU skinning
+    this._updateBones();
 
-    const vrmScene = this.#gvrm.character?.currentVrm?.scene;
-    if (vrmScene) vrmScene.visible = this.visible;
+    // Visibility
+    if (this._splatMesh) this._splatMesh.visible = this.visible;
   }
 
   _applyViseme(viseme) {
-    const em = this.#gvrm?.character?.currentVrm?.expressionManager;
+    const em = this._vrm?.expressionManager;
     if (!em) return;
     for (const name of ALL_MOUTH_EXPRS) {
       try { em.setValue(name, 0); } catch { /* expression absent */ }
@@ -128,36 +345,43 @@ export class CharacterActor {
     if (target) { try { em.setValue(target, 0.8); } catch { /* absent */ } }
     em.update?.();
   }
+
+  _updateBones() {
+    if (!this._skinning || !this._skeleton) return;
+    const { _skinning: skinning, _skeleton: skeleton } = this;
+    const _q = new THREE.Quaternion();
+    const _p = new THREE.Vector3();
+    for (let b = 0; b < skeleton.bones.length; b++) {
+      const bone = skeleton.bones[b];
+      if (!bone) continue;
+      bone.getWorldQuaternion(_q);
+      bone.getWorldPosition(_p);
+      skinning.setBoneQuatPos(b, _q, _p);
+    }
+    skinning.updateBones();
+  }
 }
 
 // ── Stage ──────────────────────────────────────────────────────────────────────
 export class Stage {
   #renderer;
-  #scene;          // Single THREE.Scene — splats + VRM meshes coexist via Spark
-  #camera;         // Single PerspectiveCamera — Y-up standard
-  #sparkRenderer = null;  // SparkRenderer THREE.js object added to scene
-  #controls   = null;    // SparkControls for orbit/fly navigation
-  #clouds     = new Map();   // id → CloudActor
-  #chars      = new Map();   // id → CharacterActor
-  #rafId      = null;
-  #clock      = new THREE.Clock();
-  #resizeObs  = null;
-  #avatarRect = null;  // { x, y, width, height } in CSS pixels — set by boot script
-  #maxFps     = 24;    // cap render rate; 0 = uncapped
-  #lastFrameT = 0;
+  #scene;
+  #camera;
+  #sparkRenderer = null;
+  #controls      = null;
+  #clouds        = new Map();
+  #chars         = new Map();
+  #rafId         = null;
+  #clock         = new THREE.Clock();
+  #resizeObs     = null;
+  #avatarRect    = null;
+  #maxFps        = 24;
+  #lastFrameT    = 0;
 
-  /**
-   * @param {HTMLCanvasElement} canvas
-   * @param {object} opts
-   * @param {number[]} opts.cameraPosition  default [0,1,6]
-   * @param {number[]} opts.cameraLookAt    default [0,1,0]
-   * @param {number}   opts.maxFps          default 24 (0 = uncapped)
-   */
   constructor(canvas, opts = {}) {
     this.#maxFps = opts.maxFps ?? 24;
-    const w = canvas.clientWidth  || canvas.width  || 800;
-    const h = canvas.clientHeight || canvas.height || 600;
-    const aspect = w / h;
+    const w      = canvas.clientWidth  || canvas.width  || 800;
+    const h      = canvas.clientHeight || canvas.height || 600;
 
     this.#renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -170,10 +394,9 @@ export class Stage {
     key.position.set(1, 2, 2);
     this.#scene.add(key);
 
-    // Single Y-up camera for everything — Spark handles splat depth correctly.
     const cp = opts.cameraPosition ?? opts.cloudCameraPosition ?? [0, 1, 6];
     const cl = opts.cameraLookAt   ?? opts.cloudCameraLookAt   ?? [0, 1, 0];
-    this.#camera = new THREE.PerspectiveCamera(65, aspect, 0.01, 500);
+    this.#camera = new THREE.PerspectiveCamera(65, w / h, 0.01, 500);
     this.#camera.position.set(...cp);
     this.#camera.lookAt(new THREE.Vector3(...cl));
 
@@ -188,20 +411,10 @@ export class Stage {
     });
     this.#resizeObs.observe(canvas);
 
-    // Orbit/fly controls — pointer drag to look, WASD to move.
     this.#controls = new SparkControls({ canvas });
   }
 
-  /**
-   * Load a Cloud from a .ksplat/.ply/.splat/.spz file and register it as a CloudActor.
-   * @param {string} id   — unique actor name
-   * @param {string} url  — path to cloud file
-   * @param {object} opts — { position, quaternion, scale, opacity, visible,
-   *                          cameraPosition, cameraLookAt }
-   * @returns {Promise<CloudActor>}
-   */
   async addCloud(id, url, opts = {}) {
-    // Initialise SparkRenderer on first cloud load.
     if (!this.#sparkRenderer) {
       this.#sparkRenderer = new SparkRenderer({ renderer: this.#renderer });
       this.#scene.add(this.#sparkRenderer);
@@ -217,36 +430,30 @@ export class Stage {
     }
 
     const packedSplats = await new SplatLoader().loadAsync(url);
-    const splatMesh = new SplatMesh({ packedSplats });
+    const splatMesh    = new SplatMesh({ packedSplats });
     this.#scene.add(splatMesh);
 
     const actor = new CloudActor(id, splatMesh);
-
-    if (opts.position)               actor.position.set(...opts.position);
-    if (opts.quaternion)             actor.quaternion.copy(opts.quaternion);
-    if (opts.scale)                  actor.scale.set(...opts.scale);
-    if (opts.visible !== undefined)  actor.visible = opts.visible;
-
+    if (opts.position)              actor.position.set(...opts.position);
+    if (opts.quaternion)            actor.quaternion.copy(opts.quaternion);
+    if (opts.scale)                 actor.scale.set(...opts.scale);
+    if (opts.visible !== undefined) actor.visible = opts.visible;
     actor._flush();
+
     this.#clouds.set(id, actor);
     console.log(`[Stage] Cloud '${id}' loaded: ${url}`);
     return actor;
   }
 
-  /**
-   * Load a .gvrm file and register it as a CharacterActor.
-   * @param {string} id
-   * @param {string} url
-   * @param {object} opts — { initialAnim, cameraPosition, cameraLookAt }
-   * @returns {Promise<CharacterActor>}
-   */
   async addCharacter(id, url, opts = {}) {
-    const gvrm = await GVRM.load(url, this.#scene, this.#camera, this.#renderer);
+    // Ensure SparkRenderer exists (needed for SplatMesh rendering)
+    if (!this.#sparkRenderer) {
+      this.#sparkRenderer = new SparkRenderer({ renderer: this.#renderer });
+      this.#scene.add(this.#sparkRenderer);
+    }
 
-    // gaussian-vrm appends overlay divs to body — disable their pointer-events.
-    document.querySelectorAll('body > div[style*="position: absolute"]').forEach(el => {
-      el.style.pointerEvents = 'none';
-    });
+    // 1. Unpack .gvrm
+    const { vrm, plyBuffer, bindingData } = await _loadGvrm(url, this.#scene);
 
     if (opts.cameraPosition ?? opts.avatarCameraPosition) {
       const cp = opts.cameraPosition ?? opts.avatarCameraPosition;
@@ -257,8 +464,30 @@ export class Stage {
       this.#camera.lookAt(new THREE.Vector3(...cl));
     }
 
+    // 2. Load PLY into Spark SplatMesh
+    const plyBlob      = new Blob([plyBuffer], { type: 'application/octet-stream' });
+    const plyUrl       = URL.createObjectURL(plyBlob);
+    const packedSplats = await new SplatLoader().loadAsync(plyUrl);
+    URL.revokeObjectURL(plyUrl);
+    console.log(`[Stage] PLY loaded — numSplats: ${packedSplats.numSplats}`);
+
+    const splatMesh = new SplatMesh({ packedSplats });
+    this.#scene.add(splatMesh);
+
+    // 3. Find VRM skeleton
+    let skeleton = null;
+    vrm.scene.traverse(obj => {
+      if (!skeleton && obj.isSkinnedMesh) skeleton = obj.skeleton;
+    });
+    if (!skeleton) throw new Error(`[Stage] No skeleton found in VRM: ${url}`);
+
+    // 4. Build SplatSkinning (rebakes positions + assigns bones)
+    const skinning = _buildSkinning(splatMesh, packedSplats, bindingData, skeleton);
+    console.log(`[Stage] SplatSkinning built — numBones: ${skinning.numBones}`);
+
+    // 5. Create and wire CharacterActor
     const actor = new CharacterActor(id);
-    actor._attach(gvrm);
+    actor._attachSplats(splatMesh, packedSplats, vrm, skeleton, skinning);
     actor.playAnim(opts.initialAnim ?? 'idle');
 
     this.#chars.set(id, actor);
@@ -266,26 +495,22 @@ export class Stage {
     return actor;
   }
 
-  /**
-   * Replace an existing CharacterActor with a new .gvrm file.
-   * Removes the old VRM scene from threeScene, loads the new one.
-   */
   async swapCharacter(id, url, opts = {}) {
     const old = this.#chars.get(id);
-    if (old?._gvrmScene) this.#scene.remove(old._gvrmScene);
+    if (old) {
+      if (old._vrm?.scene)  this.#scene.remove(old._vrm.scene);
+      if (old._splatMesh)   this.#scene.remove(old._splatMesh);
+    }
     this.#chars.delete(id);
     return this.addCharacter(id, url, opts);
   }
 
-  /** Return any actor (Cloud or Character) by id. */
   getActor(id) {
     return this.#clouds.get(id) ?? this.#chars.get(id) ?? null;
   }
 
-  /** Set FPS cap. 0 = uncapped. Takes effect immediately. */
   setMaxFps(fps) { this.#maxFps = fps; }
 
-  /** Start the RAF loop. Safe to call before actors finish loading. */
   start() {
     if (this.#rafId !== null) return;
     this.#clock.start();
@@ -317,36 +542,20 @@ export class Stage {
 
   get isRunning() { return this.#rafId !== null; }
 
-  /** For debug panel: returns live camera reference. */
   getCameras() {
     return { avatar: this.#camera, cloud: this.#camera };
   }
 
-  /**
-   * For debug panel: set camera position + lookAt.
-   * @param {'avatar'|'cloud'} which  (both refer to same camera now)
-   * @param {{ position: number[], lookAt: number[] }} state
-   */
   setCameraState(_which, { position, lookAt }) {
     this.#camera.position.set(...position);
     this.#camera.lookAt(new THREE.Vector3(...lookAt));
     this.#camera.updateProjectionMatrix();
   }
 
-  /**
-   * Tell the Stage where to scissor the character (avatar) render.
-   * rect: { x, y, width, height } in CSS pixels from getBoundingClientRect().
-   * Pass null to render full-screen.
-   * NOTE: with Spark, all actors share one scene+camera. This rect currently unused.
-   */
   setAvatarRect(rect) { this.#avatarRect = rect; }
 
-  /**
-   * Main update — driven by RAF or callable manually.
-   * @param {number} dt seconds since last frame
-   */
   tick(dt) {
-    // 1. Integrate physics for cloud actors.
+    // 1. Integrate physics for cloud actors
     for (const actor of this.#clouds.values()) {
       if (actor.velocity.lengthSq() > 0) {
         actor.position.addScaledVector(actor.velocity, dt);
@@ -362,22 +571,22 @@ export class Stage {
       actor._flush();
     }
 
-    // 2. Integrate physics for character actors.
+    // 2. Integrate physics for character actors
     for (const actor of this.#chars.values()) {
       if (actor.velocity.lengthSq() > 0) {
         actor.position.addScaledVector(actor.velocity, dt);
       }
     }
 
-    // 3. Update controls (orbit/fly navigation).
+    // 3. Update orbit/fly controls
     this.#controls.update(this.#camera);
 
-    // 4. Update character animation + lipsync.
+    // 4. Update character animation + lipsync + bone → GPU
     for (const actor of this.#chars.values()) {
-      actor._update();
+      actor._update(dt);
     }
 
-    // 5. Render everything — Spark handles splat sorting + depth composite internally.
+    // 5. Render — Spark handles splat sorting + depth composite
     this.#renderer.render(this.#scene, this.#camera);
   }
 
