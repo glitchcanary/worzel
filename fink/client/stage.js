@@ -257,12 +257,10 @@ function _retargetFbxToVrm(fbx, vrm) {
   const isVrm0   = !(vrmMeta?.metaVersion === '1' || vrmMeta?.specVersion?.startsWith('1'));
 
   // Compute height scale so Hips translation matches avatar size
-  let hipPos0Y = 0;
-  vrm.scene.traverse(obj => {
-    if (obj.name && obj.name.toLowerCase().includes('hips')) hipPos0Y = obj.position.y;
-  });
+  const _hipWorldPos = new THREE.Vector3();
   const hipsNode = vrm.humanoid?.getNormalizedBoneNode('hips');
-  if (hipsNode) hipsNode.getWorldPosition({ set(x,y,z){ hipPos0Y = y; } });
+  if (hipsNode) hipsNode.getWorldPosition(_hipWorldPos);
+  const hipPos0Y = _hipWorldPos.y || 1;
   const scale = Math.abs(hipPos0Y) * (vrm.scene.scale.y || 1) / hipHeight;
 
   const tracks = [];
