@@ -19,12 +19,8 @@ export class SplatScene {
   }
 
   async load(url) {
-    // Pass rootElement so the Viewer doesn't append a body-level overlay div.
-    // Controls attach to the splat panel, not a z-index:99999 body overlay.
-    const rootElement = this.#canvas.parentElement ?? document.body;
     this.#viewer = new Viewer({
       canvas: this.#canvas,
-      rootElement,
       cameraUp: [0, -1, 0],
       initialCameraPosition: [0, 1, 6],
       initialCameraLookAt: [0, 1, 0],

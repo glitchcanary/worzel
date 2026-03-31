@@ -3,30 +3,37 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Set content="on" to enable Gaussian splat rendering (experimental) -->
+  <meta name="fink:gaussians" content="off" />
   <title>Fink — Voice Interactive Fiction</title>
   <link rel="icon" href="./favicon.ico" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; overflow: hidden; }
+    html, body { height: 100%; }
     body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
       background: #1a1a2e;
       font-family: 'Georgia', 'Times New Roman', serif;
+      padding: 20px;
     }
-    /* Single shared canvas — Stage compositor renders all clouds + characters here */
-    #stage-canvas {
+    #stage-panel {
       position: fixed;
       inset: 0;
-      width: 100%;
-      height: 100%;
-      display: block;
       z-index: 0;
-      pointer-events: auto;
+      pointer-events: none;
     }
-    /* fink-app fills its stage window content area */
-    fink-app {
-      display: block;
+    #stage-canvas {
       width: 100%;
       height: 100%;
+      display: block;
+    }
+    fink-app {
+      width: 100%;
+      max-width: 520px;
+      height: 700px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
       --fink-bg: #16213e;
       --fink-header-bg: #0f3460;
       --fink-text: #e8e8e8;
@@ -44,8 +51,9 @@
   </style>
 </head>
 <body>
-  <canvas id="stage-canvas"></canvas>
-  <!-- fink-app moved into a StageWindow by stage-boot.js -->
+  <div id="stage-panel">
+    <canvas id="stage-canvas"></canvas>
+  </div>
   <script type="module" src="sb-auth.js"></script>
   <script type="module" src="fink.js?v=5"></script>
   <script type="module" src="stage-boot.js"></script>
