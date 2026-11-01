@@ -9,6 +9,7 @@
 import { Story } from 'inkjs';
 import type { Choice } from 'inkjs/engine/Choice';
 import { parseTags, mergeTags, type ParsedTags } from './ink-tags.js';
+import { resolveMediaUrl } from './media-resolver.js';
 import type { StoryCharacterMetadata, StoryMetadata, StoryVoiceProfile } from './story-manager.js';
 
 export interface InkChoice {
@@ -33,6 +34,8 @@ export interface NarrationSegment {
   voice?: string;
   voiceDirectives?: Record<string, string>;
   mood?: string;
+  /** Image URL resolved against BASEHREF and the story file URL. */
+  image?: string;
   tags: ParsedTags;
 }
 
@@ -57,6 +60,10 @@ export class InkSession {
   private _turnCount = 0;
   private _waitingForExternalInput?: string;
   private _lastNarration: NarrationSegment[] = [];
+  /** Current `# BASEHREF:` value; a BASEHREF tag stays in force until the next one. */
+  private basehref?: string;
+  /** URL of the story file, used as the base for BASEHREF and media paths. */
+  private readonly mediaBase?: string;
 
   constructor(storyId: string, storyJson: string, metadataOrDefaultVoice?: StoryMetadata | string) {
     this.storyId = storyId;
@@ -64,6 +71,7 @@ export class InkSession {
     if (typeof metadataOrDefaultVoice === 'string' || metadataOrDefaultVoice === undefined) {
       this.defaultVoice = metadataOrDefaultVoice;
     } else {
+      this.mediaBase = metadataOrDefaultVoice.mediaBase;
       this.defaultVoice = metadataOrDefaultVoice.characters?.['narrator']?.voice
         ?? metadataOrDefaultVoice.defaultVoices?.['narrator'];
       for (const [voiceId, profile] of Object.entries(metadataOrDefaultVoice.voices ?? {})) {
@@ -79,6 +87,7 @@ export class InkSession {
     const parsed = parseTags(globalTags);
     if (parsed.speaker) this.defaultSpeaker = parsed.speaker;
     if (parsed.voice) this.defaultVoice = parsed.voice;
+    if (parsed.basehref) this.basehref = parsed.basehref;
 
     // Accumulate any FOAF data from global tags
     if (parsed.foaf && Object.keys(parsed.foaf).length > 0) {
@@ -123,6 +132,8 @@ export class InkSession {
       }
 
       const speaker = tags.speaker ?? this.defaultSpeaker;
+      if (tags.basehref) this.basehref = tags.basehref;
+      const image = this.resolveMedia(tags.image);
 
       // Update character registry from tags
       this.updateCharacter(speaker, tags);
@@ -141,6 +152,7 @@ export class InkSession {
           ...(tags.voiceDirectives ?? {}),
         },
         mood: tags.mood ?? character?.mood,
+        ...(image ? { image } : {}),
         tags,
       });
     }
@@ -152,10 +164,17 @@ export class InkSession {
       if (narration.length > 0) {
         const last = narration[narration.length - 1]!;
         last.tags = mergeTags(last.tags, pendingTags);
+        if (!last.image) {
+          const image = this.resolveMedia(pendingTags.image);
+          if (image) last.image = image;
+        }
       } else {
+        if (pendingTags.basehref) this.basehref = pendingTags.basehref;
+        const image = this.resolveMedia(pendingTags.image);
         narration.push({
           text: '',
           speaker: pendingTags.speaker ?? this.defaultSpeaker,
+          ...(image ? { image } : {}),
           tags: pendingTags,
         });
       }
@@ -303,6 +322,11 @@ export class InkSession {
    */
   get isEnded(): boolean {
     return !this.story.canContinue && this.story.currentChoices.length === 0;
+  }
+
+  /** Resolve a media tag value against the current BASEHREF and the story URL. */
+  resolveMedia(value: string | undefined): string | undefined {
+    return resolveMediaUrl(value, this.basehref, this.mediaBase);
   }
 
   private parseChoices(): InkChoice[] {

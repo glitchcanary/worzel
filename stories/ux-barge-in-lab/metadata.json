@@ -1,5 +1,6 @@
 {
   "title": "UX Lab: Barge-In",
+  "group": "Voice UX lab",
   "author": "Worzel",
   "description": "Longer setup narration intended to expose interruption and hot-mic timing issues.",
   "characters": {

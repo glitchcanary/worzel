@@ -1,0 +1,131 @@
+{
+  "about": "Playable .fink.js stories published by danbri/glitchcan-minigam (and isle_of_glitch) on GitHub Pages. Listed in the Fink story picker; each is fetched and compiled on first use. Needs FINK_EXTERNAL_HOSTS to include danbri.github.io. Checked with glitchcan-minigam `npm run fink:check` on 2026-11-01.",
+  "stories": [
+    {
+      "id": "glitch-toc",
+      "group": "Glitch Canary",
+      "title": "Glitch Adventures",
+      "description": "The Glitch Canary table of contents: every published story, by voice.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/toc.fink.js"
+    },
+    {
+      "id": "glitch-bagend",
+      "group": "Glitch Canary",
+      "title": "Burrow's End",
+      "description": "A nod to the 1982 text adventures: a burrower, a wizard at the door, trolls in the woods.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/bagend.fink.js"
+    },
+    {
+      "id": "glitch-hampstead",
+      "group": "Glitch Canary",
+      "title": "Hampstead",
+      "description": "The social dynamics of 1980s London.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/hampstead.fink.js"
+    },
+    {
+      "id": "glitch-riverbend",
+      "group": "Glitch Canary",
+      "title": "Riverbend",
+      "description": "A village mystery: greed and jealousy behind a perfect high street.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/riverbend.fink.js"
+    },
+    {
+      "id": "glitch-shane-manor",
+      "group": "Glitch Canary",
+      "title": "Shane Manor",
+      "description": "A country-house mystery.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/shane-manor.fink.js"
+    },
+    {
+      "id": "glitch-skydock",
+      "group": "Glitch Canary",
+      "title": "Skydock Scuttlebutt",
+      "description": "Gossip, gemstones and candy dream terminals on a moonlit skydock.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/skydock.fink.js"
+    },
+    {
+      "id": "glitch-diamond-cave",
+      "group": "Glitch Canary",
+      "title": "Diamond Cave",
+      "description": "An underground cavern: collect gems, solve puzzles, escape.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/demos/diamond-cave.fink.js"
+    },
+    {
+      "id": "glitch-world-between-worlds",
+      "group": "Glitch Canary",
+      "title": "The World Between Worlds",
+      "description": "A hub wood, after the Wood Between the Worlds in The Magician's Nephew.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/world-between-worlds.fink.js"
+    },
+    {
+      "id": "glitch-hamfink-ch2",
+      "group": "Glitch Canary",
+      "title": "Hampstead 2026: the Mega Diamond Dimension",
+      "description": "Chapter 2 of the Hampstead sequel.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/demos/hamfink2026-ch2.fink.js"
+    },
+    {
+      "id": "glitch-hamfink-ch3",
+      "group": "Glitch Canary",
+      "title": "Hampstead 2026, chapter 3",
+      "description": "Chapter 3 of the Hampstead sequel.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/demos/hamfink2026-ch3.fink.js"
+    },
+    {
+      "id": "glitch-mudslide-mines",
+      "group": "Glitch Canary",
+      "title": "Mudslide Mines",
+      "description": "A test of a text route into a 2D platformer.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/mudslidemines.fink.js"
+    },
+    {
+      "id": "glitch-ukrainian",
+      "group": "Glitch Canary",
+      "title": "Ukrainian lesson",
+      "description": "A short language-learning story.",
+      "url": "https://danbri.github.io/glitchcan-minigam/inklet/tml-2025-langlearn.fink.js"
+    },
+    {
+      "id": "cozy-larkspur",
+      "group": "Cozyverse",
+      "title": "Larkspur Falls: The Snowglobe Affair",
+      "description": "A holiday romance with a small crime in it, in six scenes.",
+      "url": "https://danbri.github.io/glitchcan-minigam/cozyverse/larkspur.fink.js"
+    },
+    {
+      "id": "cozy-maple-hollow",
+      "group": "Cozyverse",
+      "title": "Maple Hollow: Aslan Rising",
+      "description": "A snow-covered hometown and old flames.",
+      "url": "https://danbri.github.io/glitchcan-minigam/cozyverse/maple-hollow.fink.js"
+    },
+    {
+      "id": "drift-lamplighter",
+      "group": "Drift City",
+      "title": "The Lamplighter's Last Round",
+      "description": "Drift City on Titan, under an orange sky.",
+      "url": "https://danbri.github.io/glitchcan-minigam/drift-city/story/lamplighter.fink.js"
+    },
+    {
+      "id": "drift-peraspera",
+      "group": "Drift City",
+      "title": "Per Aspera",
+      "description": "Drift City on Titan, under an orange sky.",
+      "url": "https://danbri.github.io/glitchcan-minigam/drift-city/story/peraspera.fink.js"
+    },
+    {
+      "id": "isle-hub",
+      "group": "Isle of Glitch",
+      "title": "Isle of Glitch",
+      "description": "Interactive fiction by and about AI models; the hub opens onto all of them.",
+      "url": "https://danbri.github.io/isle_of_glitch/hub.fink.js"
+    },
+    {
+      "id": "isle-awakening",
+      "group": "Isle of Glitch",
+      "title": "Awakening",
+      "description": "The first Isle of Glitch story.",
+      "url": "https://danbri.github.io/isle_of_glitch/awakening.fink.js"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 {
   "title": "UX Lab: Confirmation Loop",
+  "group": "Voice UX lab",
   "author": "Worzel",
   "description": "Tests whether explicit confirmation reduces ASR-driven misfires.",
   "characters": {

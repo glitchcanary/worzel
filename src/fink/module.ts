@@ -16,7 +16,7 @@ import { validateMessage } from '../protocol/validator.js';
 import { routeMessage } from '../protocol/router.js';
 import { StoryManager } from '../ink/story-manager.js';
 import { ExternalStoryLoader } from '../ink/external-story-loader.js';
-import { InkSession } from '../ink/ink-session.js';
+import { InkSession, type NarrationSegment } from '../ink/ink-session.js';
 import { InkPipeline } from './ink-pipeline.js';
 import type { ParentStoryState } from './ink-pipeline.js';
 import { sanitizeDeviceId } from '../utils/sanitize.js';
@@ -51,6 +51,17 @@ export interface FinkRuntime {
   choiceVoice?: string;
   fallbackChoiceVoice?: string;
   storiesCount: number;
+}
+
+/** Narration segment as sent to clients in `ink_state` (image only when the story has one). */
+export function narrationWire(n: NarrationSegment): Record<string, unknown> {
+  return {
+    text: n.text,
+    speaker: n.speaker,
+    voice: n.voice,
+    mood: n.mood,
+    ...(n.image ? { image: n.image } : {}),
+  };
 }
 
 function parseVoiceAliases(raw?: string): Record<string, string> {
@@ -158,9 +169,7 @@ async function handleInkChoose(
     await transport.sendText(JSON.stringify({
       type: 'ink_state',
       session_id: session.id,
-      narration: initial.narration.map(n => ({
-        text: n.text, speaker: n.speaker, voice: n.voice, mood: n.mood,
-      })),
+      narration: initial.narration.map(narrationWire),
       choices: initial.choices.map(c => ({ index: c.index, text: c.text })),
       isEnded: newSession.isEnded,
       turnCount: 0,
@@ -250,6 +259,9 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
   const projectRoot = join(dirname(currentFile), '..', '..');
   const storiesDir = process.env['FINK_STORIES_DIR'] ?? join(projectRoot, 'stories');
   await storyManager.loadFromDirectory(storiesDir);
+  await storyManager.loadCatalog(
+    process.env['FINK_STORY_CATALOG'] ?? join(storiesDir, 'external-catalog.json'),
+  );
 
   const externalHosts = process.env['FINK_EXTERNAL_HOSTS'];
   if (externalHosts) {
@@ -292,6 +304,7 @@ export async function registerFinkModule(options: FinkModuleOptions): Promise<Fi
   }, async () => ({
     stories: storyManager.listStories(),
     default: defaultStoryId,
+    externalEnabled: storyManager.externalEnabled,
   }));
 
   if (routePrefix) {
@@ -479,7 +492,6 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
     }
     const sessionLogger = sessionLoggerBase.child({ sessionId: session.id, deviceId: verifiedDeviceId, mode: 'fink' });
 
-    let inkSession: InkSession | undefined;
     const pipeline = new InkPipeline({
       asr: providers.asr,
       llm: providers.llm,
@@ -515,7 +527,6 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         const meta = storyManager.getMetadata(resolvedId);
         const newInk = new InkSession(resolvedId, json, meta);
         inkSessions.set(sess.id, newInk);
-        inkSession = newInk;
         sessionLogger.info({ to: resolvedId, stackDepth: stack.length }, 'Voice FINK: link switch');
 
         const initial = newInk.continue();
@@ -530,9 +541,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         await trans.sendText(JSON.stringify({
           type: 'ink_state',
           session_id: sess.id,
-          narration: initial.narration.map(n => ({
-            text: n.text, speaker: n.speaker, voice: n.voice, mood: n.mood,
-          })),
+          narration: initial.narration.map(narrationWire),
           choices: initial.choices.map(c => ({ index: c.index, text: c.text })),
           isEnded: newInk.isEnded,
           turnCount: 0,
@@ -558,15 +567,12 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         const parentInk = new InkSession(parent.storyId, parentJson, meta);
         parentInk.restore(parent.serializedState);
         inkSessions.set(sess.id, parentInk);
-        inkSession = parentInk;
 
         const state = parentInk.getState();
         await trans.sendText(JSON.stringify({
           type: 'ink_state',
           session_id: sess.id,
-          narration: state.narration.map(n => ({
-            text: n.text, speaker: n.speaker, voice: n.voice, mood: n.mood,
-          })),
+          narration: state.narration.map(narrationWire),
           choices: state.choices.map(c => ({ index: c.index, text: c.text })),
           isEnded: parentInk.isEnded,
           turnCount: state.turnCount,
@@ -581,73 +587,109 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
       },
     });
 
-    if (defaultStoryId) {
-      const storyJson = storyManager.getStoryJson(defaultStoryId);
-      if (storyJson) {
-        const metadata = storyManager.getMetadata(defaultStoryId);
-        inkSession = new InkSession(defaultStoryId, storyJson, metadata);
-        inkSessions.set(session.id, inkSession);
+    // Story choice: `?story=<id>` on the WebSocket URL picks the first story;
+    // a `fink_start` message switches story at any time. Ids are local story
+    // ids, catalogue ids, or .fink.js URLs (external URLs need FINK_EXTERNAL_HOSTS).
+    let requestedStoryId: string | undefined;
+    try {
+      const fromUrl = new URL(url, 'http://fink.local').searchParams.get('story')?.trim();
+      if (fromUrl && fromUrl.length <= 512) requestedStoryId = fromUrl;
+    } catch { /* ignore malformed URL */ }
 
-        const inkVars = profileToInkVars(profile);
-        for (const [key, val] of Object.entries(inkVars)) {
-          inkSession.setVariable(key, val as string | number | boolean);
-        }
+    let helloReceived = false;
 
-        const initial = inkSession.continue();
-        sessionLogger.info({
-          storyId: defaultStoryId,
-          narrationCount: initial.narration.length,
-          choiceCount: initial.choices.length,
-        }, 'Story started');
-
-        const openingText = initial.narration.map(n => n.text).join('\n');
-        const openingChoices = initial.choices.length > 0
-          ? '\n\nAvailable options: ' + initial.choices.map(c => c.text).join(', ')
-          : '';
-        if (openingText) {
-          session.addDialogue('assistant', `[Story] ${openingText}${openingChoices}`);
-        }
-
-        (session as Session & { _finkSendInitial?: () => Promise<void> })._finkSendInitial = async () => {
-          await transport.sendText(JSON.stringify({
-            type: 'ink_state',
-            session_id: session.id,
-            narration: initial.narration.map(n => ({
-              text: n.text,
-              speaker: n.speaker,
-              voice: n.voice,
-              mood: n.mood,
-            })),
-            choices: initial.choices.map(c => ({
-              index: c.index,
-              text: c.text,
-            })),
-            isEnded: inkSession!.isEnded,
-            turnCount: 0,
-            storyId: defaultStoryId,
-          }));
-
-          pipeline.narrateAndReadChoices(
-            session, transport, initial.narration, initial.choices,
-          ).catch(err => {
-            sessionLogger.error({ err }, 'Initial narration error');
-          });
-        };
+    /** Start (or restart) a story from its beginning; returns false if it cannot be loaded. */
+    const startStory = async (requested: string, reason: string): Promise<boolean> => {
+      const resolvedId = await storyManager.resolveStoryId(requested);
+      const storyJson = resolvedId ? storyManager.getStoryJson(resolvedId) : undefined;
+      if (!resolvedId || !storyJson) {
+        sessionLogger.warn({ requested, reason }, 'Requested story not available');
+        await transport.sendText(JSON.stringify({
+          type: 'error',
+          code: 'STORY_UNAVAILABLE',
+          message: storyManager.externalEnabled
+            ? `Story "${requested}" could not be loaded.`
+            : `Story "${requested}" could not be loaded (external stories are not enabled on this server).`,
+          story_id: requested,
+        }));
+        return false;
       }
-    }
 
-    sessionLogger.info({ storyId: defaultStoryId }, 'Fink session started');
+      session.abortController?.abort();
+      pipeline.clearAudio();
+      storyStacks.delete(session.id);
+
+      const metadata = storyManager.getMetadata(resolvedId);
+      const newInk = new InkSession(resolvedId, storyJson, metadata);
+      inkSessions.set(session.id, newInk);
+
+      const inkVars = profileToInkVars(profile);
+      for (const [key, val] of Object.entries(inkVars)) {
+        newInk.setVariable(key, val as string | number | boolean);
+      }
+
+      const initial = newInk.continue();
+      sessionLogger.info({
+        storyId: resolvedId,
+        requested,
+        reason,
+        narrationCount: initial.narration.length,
+        choiceCount: initial.choices.length,
+      }, 'Story started');
+
+      const openingText = initial.narration.map(n => n.text).join('\n');
+      const openingChoices = initial.choices.length > 0
+        ? '\n\nAvailable options: ' + initial.choices.map(c => c.text).join(', ')
+        : '';
+      if (openingText) {
+        session.addDialogue('assistant', `[Story] ${openingText}${openingChoices}`);
+      }
+
+      await transport.sendText(JSON.stringify({
+        type: 'ink_state',
+        session_id: session.id,
+        narration: initial.narration.map(narrationWire),
+        choices: initial.choices.map(c => ({ index: c.index, text: c.text })),
+        isEnded: newInk.isEnded,
+        turnCount: 0,
+        storyId: resolvedId,
+        storyTitle: metadata?.title,
+        restarted: true,
+      }));
+
+      pipeline.narrateAndReadChoices(
+        session, transport, initial.narration, initial.choices,
+      ).catch(err => {
+        sessionLogger.error({ err }, 'Initial narration error');
+      });
+      return true;
+    };
+
+    const startFirstStory = async (): Promise<void> => {
+      if (requestedStoryId && await startStory(requestedStoryId, 'url')) return;
+      if (defaultStoryId) await startStory(defaultStoryId, 'default');
+    };
+
+    sessionLogger.info({ storyId: requestedStoryId ?? defaultStoryId }, 'Fink session started');
 
     transport.onText(async (data: string) => {
       session.touchActivity();
 
-      let raw: { type?: string; action?: string; choice_index?: number; tts_speed?: number; text?: string } | null = null;
+      let raw: { type?: string; action?: string; choice_index?: number; tts_speed?: number; text?: string; story_id?: string } | null = null;
       try { raw = JSON.parse(data); } catch {}
 
       if (raw?.type === 'fink_settings') {
         if (typeof raw.tts_speed === 'number' && raw.tts_speed >= 0.5 && raw.tts_speed <= 2.0) {
           pipeline.ttsSpeed = raw.tts_speed;
           sessionLogger.info({ ttsSpeed: raw.tts_speed }, 'TTS speed updated');
+        }
+        return;
+      }
+
+      if (raw?.type === 'fink_start' && typeof raw.story_id === 'string') {
+        const requested = raw.story_id.trim();
+        if (requested && requested.length <= 512) {
+          await startStory(requested, 'client');
         }
         return;
       }
@@ -672,7 +714,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         if (raw.action === 'choose' && typeof raw.choice_index === 'number') {
           session.abortController?.abort();
           pipeline.clearAudio();
-          inkSession = await handleInkChoose(
+          await handleInkChoose(
             raw.choice_index, session, transport, currentInk, pipeline, sessionLogger,
             storyManager, inkSessions, storyStacks,
           );
@@ -691,10 +733,9 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
       const msg = result.message;
       if (msg.type === 'hello') {
         await routeMessage(msg, { session, transport, logger: sessionLogger });
-        const sendInitial = (session as Session & { _finkSendInitial?: () => Promise<void> })._finkSendInitial;
-        if (sendInitial) {
-          await sendInitial();
-          delete (session as Session & { _finkSendInitial?: () => Promise<void> })._finkSendInitial;
+        if (!helloReceived) {
+          helloReceived = true;
+          await startFirstStory();
         }
         return;
       }
@@ -705,7 +746,7 @@ function createFinkWebSocketServer(runtime: FinkRuntime, options: { httpServer?:
         if (currentInk) {
           pipeline.process(session, transport, currentInk).catch(err => {
             sessionLogger.error({ err }, 'Ink pipeline error');
-          });
+            });
         }
         return;
       }

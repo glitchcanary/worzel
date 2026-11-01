@@ -24,6 +24,17 @@ export interface StoryMetadata {
   characters?: Record<string, StoryCharacterMetadata>;
   voices?: Record<string, StoryVoiceProfile>;
   finkData?: Record<string, unknown>;
+  /**
+   * URL of the story file. Base for `# BASEHREF:` and `# IMAGE:` paths.
+   * Absolute for external stories; relative to the Fink client page for local ones.
+   */
+  mediaBase?: string;
+  /** True for stories listed in the external catalogue (compiled on first use). */
+  external?: boolean;
+  /** Source URL of an external story. */
+  url?: string;
+  /** Catalogue group, for the story picker ("Worzel", "Glitch Canary", ...). */
+  group?: string;
 }
 
 export interface StoryCharacterMetadata {
@@ -51,6 +62,9 @@ export class StoryManager {
   /** External story loader (null if external loading is disabled). */
   private externalLoader: ExternalStoryLoader | null = null;
 
+  /** Catalogue of external stories, by catalogue id (compiled on first use). */
+  private catalog = new Map<string, StoryMetadata>();
+
   constructor(options?: { logger?: pino.Logger }) {
     this.logger = options?.logger;
   }
@@ -58,6 +72,53 @@ export class StoryManager {
   /** Enable external .fink.js story loading. */
   setExternalLoader(loader: ExternalStoryLoader): void {
     this.externalLoader = loader;
+  }
+
+  /** True when external .fink.js loading is configured. */
+  get externalEnabled(): boolean {
+    return this.externalLoader !== null;
+  }
+
+  /**
+   * Load a catalogue of external stories (JSON: { stories: [{ id, url, title, ... }] }).
+   * Entries are listed by listStories() and compiled on first use.
+   */
+  async loadCatalog(path: string): Promise<void> {
+    let data: { stories?: Array<Record<string, unknown>> };
+    try {
+      data = JSON.parse(await readFile(path, 'utf-8'));
+    } catch (err) {
+      this.logger?.warn({ path, err }, 'Story catalogue not found or not valid JSON');
+      return;
+    }
+    for (const entry of data.stories ?? []) {
+      const id = typeof entry['id'] === 'string' ? entry['id'] : undefined;
+      const url = typeof entry['url'] === 'string' ? entry['url'] : undefined;
+      if (!id || !url || this.stories.has(id)) continue;
+      this.catalog.set(id, {
+        id,
+        url,
+        external: true,
+        title: typeof entry['title'] === 'string' ? entry['title'] : id,
+        description: typeof entry['description'] === 'string' ? entry['description'] : undefined,
+        author: typeof entry['author'] === 'string' ? entry['author'] : undefined,
+        group: typeof entry['group'] === 'string' ? entry['group'] : undefined,
+        mediaBase: url,
+      });
+    }
+    this.logger?.info({ count: this.catalog.size }, 'Story catalogue loaded');
+  }
+
+  /**
+   * Resolve a story id from a client (local id, catalogue id, or story URL)
+   * to an id usable with getStoryJson(). Compiles external stories on first use.
+   */
+  async resolveStoryId(requested: string): Promise<string | null> {
+    if (this.hasStory(requested)) return requested;
+    const entry = this.catalog.get(requested);
+    if (entry?.url) return this.resolveExternalLink(entry.url, '');
+    if (/^https?:\/\//.test(requested)) return this.resolveExternalLink(requested, '');
+    return null;
   }
 
   /**
@@ -106,6 +167,7 @@ export class StoryManager {
 
     // Load metadata
     const metadata = await this.loadMetadata(storyId, storyDir);
+    metadata.mediaBase = `stories/${encodeURIComponent(storyId)}/story.fink.js`;
 
     this.stories.set(storyId, { json, metadata });
     this.logger?.info({ storyId, title: metadata.title }, 'Story loaded');
@@ -129,7 +191,10 @@ export class StoryManager {
    * List all available stories.
    */
   listStories(): StoryMetadata[] {
-    return [...this.stories.values()].map(s => s.metadata);
+    const local = [...this.stories.values()]
+      .map(s => s.metadata)
+      .filter(m => !m.finkData?.['external']);
+    return [...local, ...this.catalog.values()];
   }
 
   /**
@@ -186,9 +251,14 @@ export class StoryManager {
       const inkSource = await extractInkFromFinkJs(rawContent);
       const json = await this.compileInk(inkSource);
 
+      const listed = [...this.catalog.values()].find(c => c.url === resolvedUrl);
       const metadata: StoryMetadata = {
         id: resolvedUrl,
-        title: this.extractTitleFromInk(inkSource) ?? resolvedUrl,
+        title: listed?.title ?? this.extractTitleFromInk(inkSource) ?? resolvedUrl,
+        description: listed?.description,
+        group: listed?.group,
+        url: resolvedUrl,
+        mediaBase: resolvedUrl,
         finkData: { sourceUrl: resolvedUrl, external: true },
       };
 
@@ -230,6 +300,7 @@ export class StoryManager {
         characters: data.characters,
         voices: data.voices,
         finkData: data.finkData,
+        group: typeof data.group === 'string' ? data.group : undefined,
       };
     } catch {
       // No metadata file — use storyId as title
