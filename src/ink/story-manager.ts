@@ -11,7 +11,9 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type pino from 'pino';
+import { Story } from 'inkjs';
 import { extractInkFromFinkJs } from './fink-js-extractor.js';
+import { parseTags } from './ink-tags.js';
 import { resolveFinkUrl, getBaseUrl } from './fink-url-resolver.js';
 import type { ExternalStoryLoader } from './external-story-loader.js';
 
@@ -254,7 +256,7 @@ export class StoryManager {
       const listed = [...this.catalog.values()].find(c => c.url === resolvedUrl);
       const metadata: StoryMetadata = {
         id: resolvedUrl,
-        title: listed?.title ?? this.extractTitleFromInk(inkSource) ?? resolvedUrl,
+        title: listed?.title ?? this.titleFromGlobalTags(json) ?? resolvedUrl,
         description: listed?.description,
         group: listed?.group,
         url: resolvedUrl,
@@ -273,17 +275,17 @@ export class StoryManager {
     }
   }
 
-  /** Extract a title from Ink source (first meaningful comment or heading). */
-  private extractTitleFromInk(inkSource: string): string | null {
-    for (const line of inkSource.split('\n').slice(0, 20)) {
-      const trimmed = line.trim();
-      // Look for // Title-like comments
-      if (trimmed.startsWith('//') && trimmed.length > 4) {
-        const title = trimmed.replace(/^\/\/\s*=*\s*/, '').replace(/\s*=*\s*$/, '').trim();
-        if (title.length > 2 && title.length < 80) return title;
-      }
+  /**
+   * The story's `# title:` global tag, read through the inkjs Story API.
+   * Ink comments are never read as metadata.
+   */
+  private titleFromGlobalTags(storyJson: string): string | null {
+    try {
+      const title = parseTags(new Story(storyJson).globalTags ?? []).title?.trim();
+      return title ? title : null;
+    } catch {
+      return null;
     }
-    return null;
   }
 
   private async loadMetadata(storyId: string, storyDir: string): Promise<StoryMetadata> {
@@ -308,33 +310,14 @@ export class StoryManager {
     }
   }
 
-  /**
-   * Inject platform-provided knots (e.g. _inventory) if not defined in the source.
-   * See CLAUDE.md "Fink platform-provided knots" for design notes.
-   */
-  private injectPlatformKnots(source: string): string {
-    const knots: string[] = [];
-
-    // _inventory — stub until real inventory tracking is implemented
-    if (!source.includes('=== _inventory') && source.includes('_inventory')) {
-      knots.push(`
-=== _inventory ===
-You take stock of your journey so far. You're traveling light — nothing to speak of yet.
-+ [Continue] -> DONE
-`);
-      this.logger?.info('Injected platform _inventory knot');
-    }
-
-    return knots.length > 0 ? source + '\n' + knots.join('\n') : source;
-  }
-
   private async compileInk(source: string): Promise<string> {
     // Dynamic import of the full inkjs module (includes compiler)
     // This is optional — only needed when .ink source files are used
-    const patched = this.injectPlatformKnots(source);
+    // The source is compiled as written: nothing is injected. A story declares
+    // every VAR it uses and every knot it diverts to (same rule as glitchcan-minigam).
     try {
       const inkjs = await import('inkjs/full');
-      const compiler = new inkjs.Compiler(patched);
+      const compiler = new inkjs.Compiler(source);
       const story = compiler.Compile();
       return story.ToJson();
     } catch (err) {

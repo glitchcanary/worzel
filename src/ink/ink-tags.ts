@@ -13,6 +13,7 @@
  *   # input:freeform
  *   # pause:2000
  *   # FINK:story-id          (link to another story)
+ *   # title:Story Title       (global tag: the story's title)
  */
 
 export interface ParsedTags {
@@ -26,6 +27,7 @@ export interface ParsedTags {
   finkLink?: string;
   image?: string;
   basehref?: string;
+  title?: string;
   foaf: Record<string, string>;
   raw: string[];
 }
@@ -94,6 +96,9 @@ export function parseTags(tags: string[]): ParsedTags {
       case 'basehref':
         result.basehref = value;
         break;
+      case 'title':
+        result.title = value;
+        break;
     }
   }
 
@@ -116,6 +121,7 @@ export function mergeTags(existing: ParsedTags, incoming: ParsedTags): ParsedTag
     finkLink: incoming.finkLink ?? existing.finkLink,
     image: incoming.image ?? existing.image,
     basehref: incoming.basehref ?? existing.basehref,
+    title: incoming.title ?? existing.title,
     foaf: { ...existing.foaf, ...incoming.foaf },
     raw: [...existing.raw, ...incoming.raw],
   };
