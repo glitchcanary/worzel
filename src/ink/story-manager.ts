@@ -11,7 +11,9 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type pino from 'pino';
+import { Story } from 'inkjs';
 import { extractInkFromFinkJs } from './fink-js-extractor.js';
+import { parseTags } from './ink-tags.js';
 import { resolveFinkUrl, getBaseUrl } from './fink-url-resolver.js';
 import type { ExternalStoryLoader } from './external-story-loader.js';
 
@@ -24,6 +26,17 @@ export interface StoryMetadata {
   characters?: Record<string, StoryCharacterMetadata>;
   voices?: Record<string, StoryVoiceProfile>;
   finkData?: Record<string, unknown>;
+  /**
+   * URL of the story file. Base for `# BASEHREF:` and `# IMAGE:` paths.
+   * Absolute for external stories; relative to the Fink client page for local ones.
+   */
+  mediaBase?: string;
+  /** True for stories listed in the external catalogue (compiled on first use). */
+  external?: boolean;
+  /** Source URL of an external story. */
+  url?: string;
+  /** Catalogue group, for the story picker ("Worzel", "Glitch Canary", ...). */
+  group?: string;
 }
 
 export interface StoryCharacterMetadata {
@@ -51,6 +64,9 @@ export class StoryManager {
   /** External story loader (null if external loading is disabled). */
   private externalLoader: ExternalStoryLoader | null = null;
 
+  /** Catalogue of external stories, by catalogue id (compiled on first use). */
+  private catalog = new Map<string, StoryMetadata>();
+
   constructor(options?: { logger?: pino.Logger }) {
     this.logger = options?.logger;
   }
@@ -58,6 +74,53 @@ export class StoryManager {
   /** Enable external .fink.js story loading. */
   setExternalLoader(loader: ExternalStoryLoader): void {
     this.externalLoader = loader;
+  }
+
+  /** True when external .fink.js loading is configured. */
+  get externalEnabled(): boolean {
+    return this.externalLoader !== null;
+  }
+
+  /**
+   * Load a catalogue of external stories (JSON: { stories: [{ id, url, title, ... }] }).
+   * Entries are listed by listStories() and compiled on first use.
+   */
+  async loadCatalog(path: string): Promise<void> {
+    let data: { stories?: Array<Record<string, unknown>> };
+    try {
+      data = JSON.parse(await readFile(path, 'utf-8'));
+    } catch (err) {
+      this.logger?.warn({ path, err }, 'Story catalogue not found or not valid JSON');
+      return;
+    }
+    for (const entry of data.stories ?? []) {
+      const id = typeof entry['id'] === 'string' ? entry['id'] : undefined;
+      const url = typeof entry['url'] === 'string' ? entry['url'] : undefined;
+      if (!id || !url || this.stories.has(id)) continue;
+      this.catalog.set(id, {
+        id,
+        url,
+        external: true,
+        title: typeof entry['title'] === 'string' ? entry['title'] : id,
+        description: typeof entry['description'] === 'string' ? entry['description'] : undefined,
+        author: typeof entry['author'] === 'string' ? entry['author'] : undefined,
+        group: typeof entry['group'] === 'string' ? entry['group'] : undefined,
+        mediaBase: url,
+      });
+    }
+    this.logger?.info({ count: this.catalog.size }, 'Story catalogue loaded');
+  }
+
+  /**
+   * Resolve a story id from a client (local id, catalogue id, or story URL)
+   * to an id usable with getStoryJson(). Compiles external stories on first use.
+   */
+  async resolveStoryId(requested: string): Promise<string | null> {
+    if (this.hasStory(requested)) return requested;
+    const entry = this.catalog.get(requested);
+    if (entry?.url) return this.resolveExternalLink(entry.url, '');
+    if (/^https?:\/\//.test(requested)) return this.resolveExternalLink(requested, '');
+    return null;
   }
 
   /**
@@ -106,6 +169,7 @@ export class StoryManager {
 
     // Load metadata
     const metadata = await this.loadMetadata(storyId, storyDir);
+    metadata.mediaBase = `stories/${encodeURIComponent(storyId)}/story.fink.js`;
 
     this.stories.set(storyId, { json, metadata });
     this.logger?.info({ storyId, title: metadata.title }, 'Story loaded');
@@ -129,7 +193,10 @@ export class StoryManager {
    * List all available stories.
    */
   listStories(): StoryMetadata[] {
-    return [...this.stories.values()].map(s => s.metadata);
+    const local = [...this.stories.values()]
+      .map(s => s.metadata)
+      .filter(m => !m.finkData?.['external']);
+    return [...local, ...this.catalog.values()];
   }
 
   /**
@@ -186,9 +253,14 @@ export class StoryManager {
       const inkSource = await extractInkFromFinkJs(rawContent);
       const json = await this.compileInk(inkSource);
 
+      const listed = [...this.catalog.values()].find(c => c.url === resolvedUrl);
       const metadata: StoryMetadata = {
         id: resolvedUrl,
-        title: this.extractTitleFromInk(inkSource) ?? resolvedUrl,
+        title: listed?.title ?? this.titleFromGlobalTags(json) ?? resolvedUrl,
+        description: listed?.description,
+        group: listed?.group,
+        url: resolvedUrl,
+        mediaBase: resolvedUrl,
         finkData: { sourceUrl: resolvedUrl, external: true },
       };
 
@@ -203,17 +275,17 @@ export class StoryManager {
     }
   }
 
-  /** Extract a title from Ink source (first meaningful comment or heading). */
-  private extractTitleFromInk(inkSource: string): string | null {
-    for (const line of inkSource.split('\n').slice(0, 20)) {
-      const trimmed = line.trim();
-      // Look for // Title-like comments
-      if (trimmed.startsWith('//') && trimmed.length > 4) {
-        const title = trimmed.replace(/^\/\/\s*=*\s*/, '').replace(/\s*=*\s*$/, '').trim();
-        if (title.length > 2 && title.length < 80) return title;
-      }
+  /**
+   * The story's `# title:` global tag, read through the inkjs Story API.
+   * Ink comments are never read as metadata.
+   */
+  private titleFromGlobalTags(storyJson: string): string | null {
+    try {
+      const title = parseTags(new Story(storyJson).globalTags ?? []).title?.trim();
+      return title ? title : null;
+    } catch {
+      return null;
     }
-    return null;
   }
 
   private async loadMetadata(storyId: string, storyDir: string): Promise<StoryMetadata> {
@@ -230,6 +302,7 @@ export class StoryManager {
         characters: data.characters,
         voices: data.voices,
         finkData: data.finkData,
+        group: typeof data.group === 'string' ? data.group : undefined,
       };
     } catch {
       // No metadata file — use storyId as title
@@ -237,33 +310,14 @@ export class StoryManager {
     }
   }
 
-  /**
-   * Inject platform-provided knots (e.g. _inventory) if not defined in the source.
-   * See CLAUDE.md "Fink platform-provided knots" for design notes.
-   */
-  private injectPlatformKnots(source: string): string {
-    const knots: string[] = [];
-
-    // _inventory — stub until real inventory tracking is implemented
-    if (!source.includes('=== _inventory') && source.includes('_inventory')) {
-      knots.push(`
-=== _inventory ===
-You take stock of your journey so far. You're traveling light — nothing to speak of yet.
-+ [Continue] -> DONE
-`);
-      this.logger?.info('Injected platform _inventory knot');
-    }
-
-    return knots.length > 0 ? source + '\n' + knots.join('\n') : source;
-  }
-
   private async compileInk(source: string): Promise<string> {
     // Dynamic import of the full inkjs module (includes compiler)
     // This is optional — only needed when .ink source files are used
-    const patched = this.injectPlatformKnots(source);
+    // The source is compiled as written: nothing is injected. A story declares
+    // every VAR it uses and every knot it diverts to (same rule as glitchcan-minigam).
     try {
       const inkjs = await import('inkjs/full');
-      const compiler = new inkjs.Compiler(patched);
+      const compiler = new inkjs.Compiler(source);
       const story = compiler.Compile();
       return story.ToJson();
     } catch (err) {

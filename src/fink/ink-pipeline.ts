@@ -324,6 +324,12 @@ export class InkPipeline {
         this.logger.info({ sessionId: session.id }, 'Pipeline aborted');
       } else {
         this.logger.error({ err, sessionId: session.id }, 'Ink pipeline error');
+        // Tell the client, so it stops waiting for a reply.
+        await transport.sendText(JSON.stringify({
+          type: 'error',
+          code: 'PIPELINE_ERROR',
+          message: 'That turn could not be processed. Try again.',
+        })).catch(() => {});
       }
     }
   }
@@ -423,6 +429,12 @@ export class InkPipeline {
         this.logger.info({ sessionId: session.id }, 'Text pipeline aborted');
       } else {
         this.logger.error({ err, sessionId: session.id }, 'Text pipeline error');
+        // Tell the client, so it stops waiting for a reply.
+        await transport.sendText(JSON.stringify({
+          type: 'error',
+          code: 'PIPELINE_ERROR',
+          message: 'That turn could not be processed. Try again.',
+        })).catch(() => {});
       }
     }
   }
@@ -1215,7 +1227,7 @@ export class InkPipeline {
         speaker: n.speaker,
         voice: n.voice,
         mood: n.mood,
-        ...(n.tags.image ? { image: n.tags.image } : {}),
+        ...(n.image ? { image: n.image } : {}),
       })),
       choices: state.choices.map(c => ({
         index: c.index,

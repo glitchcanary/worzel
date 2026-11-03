@@ -15,6 +15,17 @@ import { Stage }              from './stage.js';
 import { StageWindowManager } from './stage-windows.js';
 import { StageDebug }         from './stage-debug.js';
 
+/** Fink window geometry: 520x700 centred, shrunk to fit small screens. */
+function finkWindowRect() {
+  const width  = Math.min(520, window.innerWidth  - 16);
+  const height = Math.min(700, window.innerHeight - 16);
+  return {
+    x: Math.max(8, Math.round((window.innerWidth  - width)  / 2)),
+    y: Math.max(8, Math.round((window.innerHeight - height) / 2)),
+    width, height,
+  };
+}
+
 // ── Feature flag: GAUSSIANS=OFF disables all 3D rendering ────────────────────
 const gaussiansMeta = document.querySelector('meta[name="fink:gaussians"]');
 if (gaussiansMeta?.getAttribute('content') === 'off') {
@@ -28,10 +39,7 @@ if (gaussiansMeta?.getAttribute('content') === 'off') {
   });
   const finkEl2 = document.createElement('fink-app');
   const finkWin2 = mgr2.add({
-    id: 'fink', title: 'Fink',
-    x: Math.round(window.innerWidth / 2) - 260,
-    y: Math.round(window.innerHeight / 2) - 350,
-    width: 520, height: 700, initialState: 'normal',
+    id: 'fink', title: 'Fink', ...finkWindowRect(), initialState: 'normal',
   });
   finkWin2.contentEl.style.pointerEvents = 'auto';
   finkWin2.contentEl.appendChild(finkEl2);
@@ -95,10 +103,7 @@ const finkEl = document.createElement('fink-app');
 const finkWin = mgr.add({
   id:           'fink',
   title:        'Fink',
-  x:            Math.round(window.innerWidth  / 2) - 260,
-  y:            Math.round(window.innerHeight / 2) - 350,
-  width:        520,
-  height:       700,
+  ...finkWindowRect(),
   initialState: 'normal',
 });
 finkWin.contentEl.style.pointerEvents = 'auto';

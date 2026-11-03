@@ -116,3 +116,9 @@ describe('mergeTags', () => {
     });
   });
 });
+
+describe('parseTags title', () => {
+  it('reads the title global tag', () => {
+    expect(parseTags(['title: Drift city']).title).toBe('Drift city');
+  });
+});

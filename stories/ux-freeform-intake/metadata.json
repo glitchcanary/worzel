@@ -1,5 +1,6 @@
 {
   "title": "UX Lab: Freeform Intake",
+  "group": "Voice UX lab",
   "author": "Worzel",
   "description": "Tests a single freeform input followed by constrained choice mode.",
   "characters": {

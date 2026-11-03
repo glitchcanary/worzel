@@ -25,27 +25,44 @@ export async function extractInkFromFinkJs(content: string): Promise<string> {
   const isolate = new ivm.Isolate({ memoryLimit: 32 });
   try {
     const context = await isolate.createContext();
-    const jail = context.global;
-
-    // Set up a capture variable and the oooOO tag function inside the isolate.
-    // Tagged template functions receive (strings[], ...values) — we reassemble
-    // them with String.raw semantics.
-    await jail.set('__captured', '');
+    // Capture contract (same as @foafos/backticks in glitchcan-minigam):
+    //   1. RAW capture (strings.raw), never cooked: authors write `\/\/` in
+    //      ink tag URLs and only raw capture keeps the backslashes.
+    //   2. Every `oooOO` block in document order, duplicates dropped,
+    //      joined by a real newline (String.fromCharCode(10)).
+    //   3. `OO(mediaType)` is accepted; only text/x-ink blocks are kept.
     await context.eval(`
-      function oooOO(strings) {
-        var result = strings[0];
-        for (var i = 1; i < arguments.length; i++) {
-          result += String(arguments[i]) + strings[i];
+      var __blocks = [];
+      function __rawOf(strings) {
+        if (strings && Array.isArray(strings.raw)) return strings.raw.join('');
+        return strings == null ? '' : String(strings);
+      }
+      function __make(mediaType) {
+        return function (strings) {
+          var raw = __rawOf(strings);
+          __blocks.push({ mediaType: mediaType, raw: raw });
+          return raw;
+        };
+      }
+      var oooOO = __make('text/x-ink');
+      function OO(mediaType) { return __make(String(mediaType || 'text/plain')); }
+      function __harvest() {
+        var seen = {}, out = [];
+        for (var i = 0; i < __blocks.length; i++) {
+          var b = __blocks[i];
+          if (b.mediaType !== 'text/x-ink') continue;
+          if (Object.prototype.hasOwnProperty.call(seen, b.raw)) continue;
+          seen[b.raw] = true;
+          out.push(b.raw);
         }
-        __captured = result;
+        return out.join(String.fromCharCode(10));
       }
     `);
 
     // Execute the .fink.js content inside the sandbox
     await context.eval(content, { timeout: 5000 });
 
-    // Retrieve the captured Ink source
-    const result = await jail.get('__captured', { copy: true });
+    const result = await context.eval('__harvest()', { timeout: 1000, copy: true });
     if (typeof result !== 'string' || !result.trim()) {
       throw new Error('No oooOO tagged template found in .fink.js content');
     }
