@@ -13,6 +13,8 @@ RUN npm ci
 
 COPY tsconfig.json ./
 COPY src/ src/
+# scripts/bundle-vendor.js runs as part of `npm run build`
+COPY scripts/ scripts/
 RUN npm run build
 
 # ---- production stage ----
@@ -32,6 +34,8 @@ COPY --from=build /app/dist/ dist/
 
 # Fink client UI and story files needed at runtime
 COPY fink/client/ fink/client/
+# Vendor bundles made by the build stage (fink/client/dist/ is gitignored)
+COPY --from=build /app/fink/client/dist/ fink/client/dist/
 COPY stories/ stories/
 
 # TTS cache and runtime temp directory
