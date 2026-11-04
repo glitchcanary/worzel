@@ -32,6 +32,10 @@ primary_region = 'iad'
   # General
   WORZEL_CORS_ORIGINS = 'http://localhost:8000,http://localhost:3000'
   FINK_DEFAULT_STORY = 'menu'
+  # Hosts allowed to serve external .fink.js stories. One string; separate
+  # several hosts with commas ('a.example, b.example'). Bare host names only:
+  # no scheme, path or port; exact match, no wildcards; HTTPS required.
+  FINK_EXTERNAL_HOSTS = 'danbri.github.io'
 
 # Persistent volume for TTS audio cache (survives deploys and restarts).
 # One volume per machine is required. Create with:
